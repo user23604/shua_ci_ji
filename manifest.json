@@ -1,0 +1,19 @@
+{
+  "name": "考研词汇自动刷词机",
+  "short_name": "刷词机",
+  "description": "横屏使用的考研词汇自动刷词机",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#0d0f12",
+  "theme_color": "#111318",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

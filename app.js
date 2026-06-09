@@ -1,0 +1,1355 @@
+"use strict";
+
+const ACCESS_KEY = "ky2027";
+const AUTH_KEY = "is_authenticated";
+const SETTINGS_KEY = "vocab_machine_settings_v1";
+const CLOUD_KEY = "vocab_machine_cloud_v1";
+const DAY_MS = 24 * 60 * 60 * 1000;
+const BOOKS = [
+  {
+    id: "27ky-shanguo-gaopin",
+    name: "27考研英语闪过高频词",
+    csv: "27ky_shanguo_gaopin.csv",
+    totalUnits: 30
+  }
+];
+
+const DEFAULT_SETTINGS = {
+  bookId: BOOKS[0].id,
+  unit: 1,
+  mode: "restart",
+  duration: 5,
+  zhDelay: 1.2,
+  summaryMode: "count",
+  summaryCount: 20,
+  speakEn: true,
+  speakZh: false,
+  rate: 1,
+  highOnly: false
+};
+
+const app = document.getElementById("app");
+
+const state = {
+  settings: loadJson(SETTINGS_KEY, DEFAULT_SETTINGS),
+  cloud: loadJson(CLOUD_KEY, { token: "", gistId: "" }),
+  wordsByBook: new Map(),
+  view: "auth",
+  words: [],
+  unitWords: [],
+  currentIndex: 0,
+  showZh: false,
+  speechPhase: "",
+  activeZhIndex: -1,
+  playbackToken: 0,
+  timers: [],
+  groupStats: { seen: 0, known: 0, unknown: 0 },
+  breakInfo: null,
+  undoWordId: null,
+  archiveOpen: false,
+  archiveTab: "unknown",
+  archiveStatus: "",
+  statsOpen: false,
+  statsMode: "day",
+  statsMonthOffset: 0,
+  reviewMode: null,
+  setupStatus: "",
+  wakeLock: null,
+  cardStartedAt: 0,
+  currentWordRecorded: false,
+  pointer: null
+};
+
+function loadJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? { ...fallback, ...JSON.parse(raw) } : { ...fallback };
+  } catch {
+    return { ...fallback };
+  }
+}
+
+function saveJson(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+function progressKey(bookId) {
+  return `progress:${bookId}`;
+}
+
+function marksKey(bookId) {
+  return `marks:${bookId}`;
+}
+
+function activityKey(bookId) {
+  return `activity:${bookId}`;
+}
+
+function loadProgress(bookId) {
+  return loadJson(progressKey(bookId), { lastWordId: null });
+}
+
+function saveProgress(bookId, progress) {
+  saveJson(progressKey(bookId), progress);
+}
+
+function loadMarks(bookId) {
+  const marks = loadJson(marksKey(bookId), { known: [], unknown: [] });
+  return {
+    known: Array.isArray(marks.known) ? marks.known : [],
+    unknown: Array.isArray(marks.unknown) ? marks.unknown : []
+  };
+}
+
+function saveMarks(bookId, marks) {
+  saveJson(marksKey(bookId), {
+    known: Array.from(new Set(marks.known.map(Number))).sort((a, b) => a - b),
+    unknown: Array.from(new Set(marks.unknown.map(Number))).sort((a, b) => a - b)
+  });
+}
+
+function loadActivity(bookId) {
+  const activity = loadJson(activityKey(bookId), { days: {} });
+  return { days: activity.days && typeof activity.days === "object" ? activity.days : {} };
+}
+
+function saveActivity(bookId, activity) {
+  saveJson(activityKey(bookId), activity);
+}
+
+function currentBook() {
+  return BOOKS.find((book) => book.id === state.settings.bookId) || BOOKS[0];
+}
+
+function persistSettings() {
+  const book = currentBook();
+  state.settings.unit = clamp(Number(state.settings.unit) || 1, 1, book.totalUnits);
+  saveJson(SETTINGS_KEY, state.settings);
+}
+
+function persistCloud() {
+  saveJson(CLOUD_KEY, state.cloud);
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function localDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function startOfLocalDay(date = new Date()) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function dateKeyToDate(key) {
+  const [year, month, day] = key.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.round(seconds || 0));
+  if (total < 60) return `${total}秒`;
+  const minutes = Math.round(total / 60);
+  if (minutes < 60) return `${minutes}分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours}小时${rest}分钟` : `${hours}小时`;
+}
+
+function formatHours(seconds) {
+  const hours = (seconds || 0) / 3600;
+  return hours >= 1 ? `${hours.toFixed(1)}h` : `${Math.round((seconds || 0) / 60)}m`;
+}
+
+function getActivityDay(activity, key) {
+  if (!activity.days[key]) {
+    activity.days[key] = { seconds: 0, words: 0, known: 0, unknown: 0, wordIds: [] };
+  }
+  const day = activity.days[key];
+  day.seconds = Number(day.seconds) || 0;
+  day.words = Number(day.words) || 0;
+  day.known = Number(day.known) || 0;
+  day.unknown = Number(day.unknown) || 0;
+  day.wordIds = Array.isArray(day.wordIds) ? day.wordIds.map(Number).filter(Boolean) : [];
+  return day;
+}
+
+function recordStudyActivity({ seconds = 0, wordId = null, counted = false, result = "" } = {}) {
+  const book = currentBook();
+  const activity = loadActivity(book.id);
+  const day = getActivityDay(activity, localDateKey());
+  day.seconds += Math.max(0, seconds);
+  if (counted) day.words += 1;
+  if (result === "known") day.known += 1;
+  if (result === "unknown") day.unknown += 1;
+  if (wordId) day.wordIds = Array.from(new Set([...day.wordIds, Number(wordId)])).sort((a, b) => a - b);
+  saveActivity(book.id, activity);
+}
+
+function commitCurrentCardActivity({ counted = false, result = "" } = {}) {
+  if (state.view !== "flash" || !state.cardStartedAt) return;
+  const word = state.unitWords[state.currentIndex];
+  if (!word) return;
+  const elapsed = clamp((Date.now() - state.cardStartedAt) / 1000, 0, 600);
+  if (elapsed < 0.5 && !counted) return;
+  recordStudyActivity({
+    seconds: elapsed,
+    wordId: word.id,
+    counted: counted && !state.currentWordRecorded,
+    result: counted && !state.currentWordRecorded ? result : ""
+  });
+  if (counted) state.currentWordRecorded = true;
+  state.cardStartedAt = Date.now();
+}
+
+function getPeriodRange(mode, baseDate = new Date()) {
+  const today = startOfLocalDay(baseDate);
+  if (mode === "week") {
+    const day = today.getDay() || 7;
+    const start = addDays(today, 1 - day);
+    return { start, end: addDays(start, 6), label: "本周" };
+  }
+  if (mode === "month") {
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    return { start, end, label: `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}` };
+  }
+  return { start: today, end: today, label: "今天" };
+}
+
+function collectActivityStats(mode) {
+  const activity = loadActivity(currentBook().id);
+  const { start, end, label } = getPeriodRange(mode);
+  const wordIds = new Set();
+  const totals = { seconds: 0, words: 0, known: 0, unknown: 0 };
+  for (let day = new Date(start); day <= end; day = addDays(day, 1)) {
+    const item = activity.days[localDateKey(day)];
+    if (!item) continue;
+    totals.seconds += Number(item.seconds) || 0;
+    totals.words += Number(item.words) || 0;
+    totals.known += Number(item.known) || 0;
+    totals.unknown += Number(item.unknown) || 0;
+    (item.wordIds || []).forEach((id) => wordIds.add(Number(id)));
+  }
+  return { label, totals, wordIds: Array.from(wordIds).sort((a, b) => a - b) };
+}
+
+function formatDefinition(word) {
+  if (!word) return "";
+  const source = state.settings.highOnly && word.zh_high ? word.zh_high : word.zh_full;
+  return String(source || "").replace(/\s+/g, " ").trim();
+}
+
+function setSetupStatus(message, type = "") {
+  state.setupStatus = message ? { message, type } : "";
+  if (state.view === "setup") renderSetup();
+}
+
+function clearTimers() {
+  state.playbackToken += 1;
+  state.timers.forEach((timer) => clearTimeout(timer));
+  state.timers = [];
+  state.speechPhase = "";
+  state.activeZhIndex = -1;
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+}
+
+function addTimer(fn, delay) {
+  const timer = window.setTimeout(fn, delay);
+  state.timers.push(timer);
+  return timer;
+}
+
+async function ensureWords(book = currentBook()) {
+  if (state.wordsByBook.has(book.id)) return state.wordsByBook.get(book.id);
+  const response = await fetch(book.csv);
+  if (!response.ok) {
+    throw new Error(`词库加载失败：${book.csv} (${response.status})`);
+  }
+  const text = await response.text();
+  const rows = parseCsv(text);
+  const words = mapWords(rows);
+  state.wordsByBook.set(book.id, words);
+  return words;
+}
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (inQuotes) {
+      if (ch === '"' && next === '"') {
+        field += '"';
+        i += 1;
+      } else if (ch === '"') {
+        inQuotes = false;
+      } else {
+        field += ch;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ",") {
+      row.push(field);
+      field = "";
+    } else if (ch === "\n") {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else if (ch === "\r") {
+      if (next === "\n") continue;
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += ch;
+    }
+  }
+
+  if (field.length || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+
+  return rows.filter((line) => line.some((cell) => String(cell).trim() !== ""));
+}
+
+function mapWords(rows) {
+  if (!rows.length) return [];
+  const headers = rows[0].map((header) => header.replace(/^\uFEFF/, "").trim());
+  const col = (name) => headers.indexOf(name);
+  const required = ["序号", "Unit", "单词", "真题词频", "完整释义（保留红色）", "标红释义"];
+  const missing = required.filter((name) => col(name) === -1);
+  if (missing.length) throw new Error(`CSV 缺少列：${missing.join("、")}`);
+
+  return rows.slice(1).map((row) => ({
+    id: Number.parseInt(row[col("序号")] || "0", 10),
+    unit: Number.parseInt(row[col("Unit")] || "0", 10),
+    en: String(row[col("单词")] || "").trim(),
+    freq: Number.parseInt(row[col("真题词频")] || "0", 10) || 0,
+    zh_full: String(row[col("完整释义（保留红色）")] || "").replace(/\s+/g, " ").trim(),
+    zh_high: String(row[col("标红释义")] || "").replace(/\s+/g, " ").trim()
+  })).filter((word) => word.id && word.unit && word.en);
+}
+
+function isAuthenticated() {
+  return localStorage.getItem(AUTH_KEY) === "true";
+}
+
+function init() {
+  normalizeSettings();
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && state.view === "flash") requestWakeLock();
+  });
+  if (isAuthenticated()) {
+    renderSetup();
+  } else {
+    renderAuth();
+  }
+}
+
+function normalizeSettings() {
+  const book = BOOKS.find((item) => item.id === state.settings.bookId) || BOOKS[0];
+  const summaryModes = new Set(["count", "unit", "manual"]);
+  state.settings = {
+    ...DEFAULT_SETTINGS,
+    ...state.settings,
+    bookId: book.id,
+    unit: clamp(Number(state.settings.unit) || 1, 1, book.totalUnits),
+    duration: clamp(Number(state.settings.duration) || DEFAULT_SETTINGS.duration, 2, 10),
+    zhDelay: clamp(Number(state.settings.zhDelay) || 0, 0, 5),
+    summaryMode: summaryModes.has(state.settings.summaryMode) ? state.settings.summaryMode : DEFAULT_SETTINGS.summaryMode,
+    summaryCount: clamp(Number(state.settings.summaryCount) || DEFAULT_SETTINGS.summaryCount, 5, 200),
+    rate: clamp(Number(state.settings.rate) || DEFAULT_SETTINGS.rate, 0.8, 2)
+  };
+  persistSettings();
+}
+
+function renderAuth(error = false) {
+  state.view = "auth";
+  releaseWakeLock();
+  clearTimers();
+  app.innerHTML = `
+    <section class="view auth-view">
+      <div class="auth-panel">
+        <h1>考研词汇自动刷词机</h1>
+        <p>输入访问密钥后进入个人词库。</p>
+        <form class="auth-form" id="authForm">
+          <label class="field-label">
+            访问密钥
+            <input class="input ${error ? "is-error" : ""}" id="passwordInput" type="password" autocomplete="current-password" autofocus>
+          </label>
+          <button class="btn btn--primary" type="submit">进入应用</button>
+          <div class="status ${error ? "status--error" : ""}">${error ? "密钥错误，请重试。" : ""}</div>
+        </form>
+      </div>
+    </section>
+  `;
+  const form = document.getElementById("authForm");
+  const input = document.getElementById("passwordInput");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (input.value === ACCESS_KEY) {
+      localStorage.setItem(AUTH_KEY, "true");
+      renderSetup();
+    } else {
+      renderAuth(true);
+    }
+  });
+  input.focus();
+}
+
+function renderSetup() {
+  state.view = "setup";
+  releaseWakeLock();
+  clearTimers();
+  normalizeSettings();
+  const book = currentBook();
+  const unitOptions = Array.from({ length: book.totalUnits }, (_, index) => {
+    const unit = index + 1;
+    return `<option value="${unit}" ${unit === state.settings.unit ? "selected" : ""}>Unit ${unit}</option>`;
+  }).join("");
+  const bookOptions = BOOKS.map((item) => `
+    <option value="${escapeHtml(item.id)}" ${item.id === state.settings.bookId ? "selected" : ""}>${escapeHtml(item.name)}</option>
+  `).join("");
+  const setupStatus = state.setupStatus
+    ? `<div class="status ${state.setupStatus.type ? `status--${state.setupStatus.type}` : ""}">${escapeHtml(state.setupStatus.message)}</div>`
+    : `<div class="status">词库文件：${escapeHtml(book.csv)}</div>`;
+  const summaryCountControl = state.settings.summaryMode === "count"
+    ? rangeControl("summaryCount", "每组单词数", state.settings.summaryCount, "个", 5, 120, 1)
+    : `<div class="status">当前模式不会按固定数量打断播放。</div>`;
+
+  app.innerHTML = `
+    <section class="view setup-view">
+      <header class="setup-topbar">
+        <div class="setup-title">
+          <h1>考研词汇自动刷词机</h1>
+          <p>${escapeHtml(book.name)}</p>
+        </div>
+        <div class="setup-actions">
+          <button class="btn btn--ghost" id="statsBtn" type="button">统计复盘</button>
+          <button class="btn btn--ghost" id="archiveBtn" type="button">归档复盘</button>
+          <button class="btn btn--ghost" id="logoutBtn" type="button">退出</button>
+        </div>
+      </header>
+
+      <section class="setup-grid">
+        <div class="settings-panel settings-panel--span2">
+          <h2 class="panel-title">书库与范围</h2>
+          <div class="control-list">
+            <label class="field-label">
+              词书
+              <select class="select" id="bookSelect">${bookOptions}</select>
+            </label>
+            <label class="field-label">
+              目标 Unit
+              <select class="select" id="unitSelect">${unitOptions}</select>
+            </label>
+            <div class="radio-group">
+              ${radio("mode", "restart", "从选定 Unit 开头重新开始")}
+              ${radio("mode", "resume", "恢复上一次学习进度")}
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-panel settings-panel--span2">
+          <h2 class="panel-title">节奏控制</h2>
+          <div class="control-list">
+            ${rangeControl("durationInput", "单词停留总时长", state.settings.duration, "秒", 2, 10, 0.5)}
+            ${rangeControl("delayInput", "中文释义延迟", state.settings.zhDelay, "秒", 0, 5, 0.1)}
+            <label class="field-label">
+              总结节点
+              <select class="select" id="summaryMode">
+                <option value="count" ${state.settings.summaryMode === "count" ? "selected" : ""}>每 X 个单词</option>
+                <option value="unit" ${state.settings.summaryMode === "unit" ? "selected" : ""}>当前整个 Unit 结束</option>
+                <option value="manual" ${state.settings.summaryMode === "manual" ? "selected" : ""}>手动点击完成</option>
+              </select>
+            </label>
+            ${summaryCountControl}
+          </div>
+        </div>
+
+        <div class="settings-panel">
+          <h2 class="panel-title">声音</h2>
+          <div class="control-list">
+            <div class="toggle-grid">
+              ${toggle("speakEn", "英文朗读", state.settings.speakEn)}
+              ${toggle("speakZh", "中文朗读", state.settings.speakZh)}
+            </div>
+            ${rangeControl("rateInput", "朗读语速", state.settings.rate, "x", 0.8, 2, 0.1)}
+          </div>
+        </div>
+
+        <div class="settings-panel">
+          <h2 class="panel-title">显示</h2>
+          <div class="control-list">
+            <div class="toggle-grid">
+              ${toggle("highOnly", "仅显示高频标红释义", state.settings.highOnly)}
+            </div>
+            ${setupStatus}
+          </div>
+        </div>
+
+        <div class="settings-panel settings-panel--span4">
+          <h2 class="panel-title">云同步</h2>
+          <div class="control-list">
+            <div class="sync-grid">
+              <label class="field-label">
+                GitHub PAT
+                <input class="input" id="tokenInput" type="password" value="${escapeHtml(state.cloud.token)}" autocomplete="off">
+              </label>
+              <label class="field-label">
+                Gist ID
+                <input class="input" id="gistInput" type="password" value="${escapeHtml(state.cloud.gistId)}" autocomplete="off">
+              </label>
+            </div>
+            <div class="sync-actions">
+              <button class="btn btn--ghost" id="pullBtn" type="button">从云端覆盖本地</button>
+              <button class="btn btn--ghost" id="pushBtn" type="button">将本地推到云端</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <button class="btn btn--primary btn--wide" id="startBtn" type="button">开始刷词</button>
+    </section>
+    ${state.archiveOpen ? renderArchiveDrawer() : ""}
+    ${state.statsOpen ? renderStatsDrawer() : ""}
+  `;
+
+  bindSetupEvents();
+  bindArchiveEvents();
+  bindStatsEvents();
+}
+
+function radio(name, value, label) {
+  return `
+    <label class="radio-option">
+      <input type="radio" name="${name}" value="${value}" ${state.settings[name] === value ? "checked" : ""}>
+      <span>${escapeHtml(label)}</span>
+    </label>
+  `;
+}
+
+function toggle(key, label, checked) {
+  return `
+    <label class="toggle-option">
+      <input type="checkbox" id="${key}" ${checked ? "checked" : ""}>
+      <span>${escapeHtml(label)}</span>
+    </label>
+  `;
+}
+
+function rangeControl(id, label, value, unit, min, max, step) {
+  return `
+    <div class="control-row">
+      <div class="control-head">
+        <span>${escapeHtml(label)}</span>
+        <span class="control-value" id="${id}Value">${escapeHtml(value)}${escapeHtml(unit)}</span>
+      </div>
+      <input class="range" id="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${value}">
+    </div>
+  `;
+}
+
+function bindSetupEvents() {
+  const bookSelect = document.getElementById("bookSelect");
+  const unitSelect = document.getElementById("unitSelect");
+  const startBtn = document.getElementById("startBtn");
+  const statsBtn = document.getElementById("statsBtn");
+  const archiveBtn = document.getElementById("archiveBtn");
+  const logoutBtn = document.getElementById("logoutBtn");
+  const tokenInput = document.getElementById("tokenInput");
+  const gistInput = document.getElementById("gistInput");
+
+  bookSelect.addEventListener("change", () => {
+    state.settings.bookId = bookSelect.value;
+    state.settings.unit = 1;
+    persistSettings();
+    state.setupStatus = "";
+    renderSetup();
+  });
+
+  unitSelect.addEventListener("change", () => {
+    state.settings.unit = Number(unitSelect.value);
+    persistSettings();
+  });
+
+  document.querySelectorAll('input[name="mode"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      state.settings.mode = input.value;
+      persistSettings();
+    });
+  });
+
+  bindRange("durationInput", "duration", "秒", Number);
+  bindRange("delayInput", "zhDelay", "秒", Number);
+  if (document.getElementById("summaryCount")) bindRange("summaryCount", "summaryCount", "个", Number);
+  bindRange("rateInput", "rate", "x", Number);
+  bindCheckbox("speakEn", "speakEn");
+  bindCheckbox("speakZh", "speakZh");
+  bindCheckbox("highOnly", "highOnly");
+
+  document.getElementById("summaryMode").addEventListener("change", (event) => {
+    state.settings.summaryMode = event.target.value;
+    persistSettings();
+    renderSetup();
+  });
+
+  tokenInput.addEventListener("input", () => {
+    state.cloud.token = tokenInput.value.trim();
+    persistCloud();
+  });
+
+  gistInput.addEventListener("input", () => {
+    state.cloud.gistId = gistInput.value.trim();
+    persistCloud();
+  });
+
+  document.getElementById("pullBtn").addEventListener("click", pullFromGist);
+  document.getElementById("pushBtn").addEventListener("click", pushToGist);
+  startBtn.addEventListener("click", startStudy);
+  statsBtn.addEventListener("click", openStats);
+  archiveBtn.addEventListener("click", openArchive);
+  logoutBtn.addEventListener("click", () => {
+    localStorage.removeItem(AUTH_KEY);
+    renderAuth();
+  });
+}
+
+function bindRange(elementId, key, unit, parser) {
+  const input = document.getElementById(elementId);
+  const output = document.getElementById(`${elementId}Value`);
+  input.addEventListener("input", () => {
+    const value = parser(input.value);
+    state.settings[key] = value;
+    output.textContent = `${value}${unit}`;
+    persistSettings();
+  });
+}
+
+function bindCheckbox(elementId, key) {
+  const input = document.getElementById(elementId);
+  input.addEventListener("change", () => {
+    state.settings[key] = input.checked;
+    persistSettings();
+  });
+}
+
+async function startStudy() {
+  clearTimers();
+  unlockSpeech();
+  setSetupStatus("正在加载词库...");
+  try {
+    const book = currentBook();
+    state.reviewMode = null;
+    state.words = await ensureWords(book);
+    state.unitWords = state.words.filter((word) => word.unit === state.settings.unit);
+    if (!state.unitWords.length) throw new Error(`Unit ${state.settings.unit} 没有词条`);
+    state.currentIndex = getStartIndex(book.id);
+    state.groupStats = { seen: 0, known: 0, unknown: 0 };
+    state.undoWordId = null;
+    state.showZh = false;
+    state.setupStatus = "";
+    await requestWakeLock();
+    renderFlashcard();
+  } catch (error) {
+    setSetupStatus(error.message || "词库加载失败", "error");
+  }
+}
+
+async function startReview(mode) {
+  clearTimers();
+  unlockSpeech();
+  try {
+    const book = currentBook();
+    const stats = collectActivityStats(mode);
+    if (!stats.wordIds.length) {
+      state.setupStatus = { message: `${stats.label}还没有可复盘的单词。`, type: "error" };
+      renderSetup();
+      return;
+    }
+    const idSet = new Set(stats.wordIds);
+    state.words = await ensureWords(book);
+    state.unitWords = state.words.filter((word) => idSet.has(word.id));
+    state.currentIndex = 0;
+    state.groupStats = { seen: 0, known: 0, unknown: 0 };
+    state.undoWordId = null;
+    state.showZh = false;
+    state.reviewMode = { mode, label: `${stats.label}复盘`, wordIds: stats.wordIds };
+    state.statsOpen = false;
+    state.archiveOpen = false;
+    await requestWakeLock();
+    renderFlashcard();
+  } catch (error) {
+    state.setupStatus = { message: error.message || "复盘启动失败", type: "error" };
+    renderSetup();
+  }
+}
+
+function getStartIndex(bookId) {
+  if (state.settings.mode !== "resume") return 0;
+  const progress = loadProgress(bookId);
+  const index = state.unitWords.findIndex((word) => word.id === Number(progress.lastWordId));
+  return index >= 0 ? index : 0;
+}
+
+function renderFlashcard() {
+  state.view = "flash";
+  clearTimers();
+  const book = currentBook();
+  const word = state.unitWords[state.currentIndex];
+  const next = state.unitWords[state.currentIndex + 1];
+  if (!word) {
+    renderBreak({ unitEnd: true, reviewEnd: Boolean(state.reviewMode) });
+    return;
+  }
+  saveProgress(book.id, { lastWordId: word.id, unit: word.unit, updatedAt: new Date().toISOString() });
+  const marks = loadMarks(book.id);
+  const marked = marks.known.includes(word.id) || marks.unknown.includes(word.id);
+  const undo = state.undoWordId === word.id && marked;
+
+  app.innerHTML = `
+    <section class="view flash-view">
+      <aside class="side-panel">
+        <button class="btn btn--ghost" id="backSetupBtn" type="button">返回设置页</button>
+        <button class="btn btn--ghost" id="statsBtn" type="button">统计复盘</button>
+        <button class="btn btn--ghost" id="archiveBtn" type="button">归档复盘</button>
+        <button class="btn btn--primary" id="finishBtn" type="button">✓ 完成</button>
+        <div class="progress-block">
+          <div class="progress-title">${escapeHtml(state.reviewMode?.label || book.name)}</div>
+          <div class="progress-main">Unit ${word.unit} [${state.currentIndex + 1}/${state.unitWords.length}]</div>
+          <div class="progress-sub">词频 ${word.freq} · ID ${word.id}${state.reviewMode ? " · 复盘" : ""}</div>
+        </div>
+      </aside>
+
+      <section class="stage">
+        <div class="card-stack" id="cardStack">
+          ${next ? renderWordCard(next, true) : ""}
+          ${renderWordCard(word, false, undo)}
+        </div>
+      </section>
+
+      <aside class="side-panel gesture-panel">
+        <div class="gesture-list">
+          ${gesture("↑", "斩")}
+          ${gesture("↓", "生词")}
+          ${gesture("←", "下一个")}
+          ${gesture("→", "上一个")}
+        </div>
+      </aside>
+    </section>
+    ${state.archiveOpen ? renderArchiveDrawer() : ""}
+    ${state.statsOpen ? renderStatsDrawer() : ""}
+  `;
+
+  document.getElementById("backSetupBtn").addEventListener("click", () => {
+    commitCurrentCardActivity();
+    state.reviewMode = null;
+    renderSetup();
+  });
+  document.getElementById("statsBtn").addEventListener("click", openStats);
+  document.getElementById("archiveBtn").addEventListener("click", openArchive);
+  document.getElementById("finishBtn").addEventListener("click", finishCurrentGroup);
+  const undoBtn = document.getElementById("undoMarkBtn");
+  if (undoBtn) undoBtn.addEventListener("click", () => undoMark(word.id));
+  bindCardGesture();
+  bindArchiveEvents();
+  bindStatsEvents();
+  state.cardStartedAt = Date.now();
+  state.currentWordRecorded = false;
+  scheduleWordTimers();
+}
+
+function renderWordCard(word, isNext = false, undo = false) {
+  const definition = formatDefinition(word);
+  const definitionId = isNext ? "" : ' id="definition"';
+  const enClass = !isNext && state.speechPhase === "en" ? " is-speaking" : "";
+  const zhHtml = isNext ? escapeHtml(definition) : renderDefinitionTokens(definition);
+  return `
+    <article class="word-card ${isNext ? "word-card--next" : ""}" id="${isNext ? "nextCard" : "activeCard"}">
+      <div class="word-card__meta">
+        <span>Unit ${word.unit}</span>
+        <span id="${isNext ? "" : "speechStatus"}">${word.freq ? `${word.freq} 次` : "无词频"}</span>
+      </div>
+      <div class="word-card__en${enClass}" id="${isNext ? "" : "wordEn"}">${escapeHtml(word.en)}</div>
+      <div class="word-card__zh ${!isNext && !state.showZh ? "is-hidden" : ""}"${definitionId}>${zhHtml}</div>
+      ${undo ? `<div class="word-card__actions"><button class="undo-btn" id="undoMarkBtn" type="button">撤销标记</button></div>` : ""}
+    </article>
+  `;
+}
+
+function splitDefinitionTokens(text) {
+  const matches = String(text || "").match(/[^ ]+/g);
+  return matches?.length ? matches : [String(text || "")];
+}
+
+function renderDefinitionTokens(text) {
+  let cursor = 0;
+  return splitDefinitionTokens(text).map((token, index) => {
+    const start = String(text).indexOf(token, cursor);
+    const safeStart = start >= 0 ? start : cursor;
+    const end = safeStart + token.length;
+    cursor = end;
+    const active = state.activeZhIndex === index ? " is-speaking" : "";
+    return `<span class="speech-token${active}" data-token-index="${index}" data-start="${safeStart}" data-end="${end}">${escapeHtml(token)}</span>`;
+  }).join(" ");
+}
+
+function gesture(symbol, label) {
+  return `
+    <div class="gesture-item">
+      <div class="gesture-symbol">${escapeHtml(symbol)}</div>
+      <div class="gesture-text">${escapeHtml(label)}</div>
+    </div>
+  `;
+}
+
+async function scheduleWordTimers() {
+  const word = state.unitWords[state.currentIndex];
+  if (!word || state.archiveOpen) return;
+  const token = ++state.playbackToken;
+  const startedAt = Date.now();
+  const totalMs = Math.max(2000, Number(state.settings.duration) * 1000);
+  const revealMs = clamp(Number(state.settings.zhDelay) * 1000, 0, totalMs);
+  const definition = formatDefinition(word);
+
+  if (state.settings.speakEn) {
+    await speakWithHighlight(word.en, "en-US", Math.max(600, revealMs || totalMs * 0.42), "en", token);
+  }
+  if (!isPlaybackToken(token)) return;
+
+  await sleepUntil(startedAt + revealMs, token);
+  if (!isPlaybackToken(token)) return;
+
+  state.showZh = true;
+  const definitionNode = document.getElementById("definition");
+  if (definitionNode) definitionNode.classList.remove("is-hidden");
+
+  if (state.settings.speakZh) {
+    await speakWithHighlight(definition, "zh-CN", Math.max(800, totalMs - revealMs), "zh", token);
+  }
+  if (!isPlaybackToken(token)) return;
+
+  await sleepUntil(startedAt + totalMs, token);
+  if (isPlaybackToken(token)) advanceWord("auto");
+}
+
+function isPlaybackToken(token) {
+  return token === state.playbackToken;
+}
+
+function sleepUntil(timestamp, token) {
+  const delay = Math.max(0, timestamp - Date.now());
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => {
+      if (isPlaybackToken(token)) resolve();
+    }, delay);
+    state.timers.push(timer);
+  });
+}
+
+function estimateSpeechMs(text, lang) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return 0;
+  if (lang.startsWith("zh")) {
+    const chars = normalized.replace(/\s+/g, "").length;
+    return Math.max(650, (chars / 5.2) * 1000);
+  }
+  const words = normalized.split(/\s+/).filter(Boolean).length;
+  return Math.max(620, (words / 2.7) * 1000);
+}
+
+function adaptiveSpeechRate(text, lang, budgetMs) {
+  const base = Number(state.settings.rate) || 1;
+  const estimate = estimateSpeechMs(text, lang);
+  if (!estimate || !budgetMs) return clamp(base, 0.8, 2);
+  return clamp(base * (estimate / Math.max(500, budgetMs)), 0.8, 2);
+}
+
+function speakWithHighlight(text, lang, budgetMs, phase, token) {
+  if (!("speechSynthesis" in window) || !text || !isPlaybackToken(token)) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = lang;
+    utterance.rate = adaptiveSpeechRate(text, lang, budgetMs);
+    utterance.onstart = () => {
+      if (!isPlaybackToken(token)) return;
+      setSpeechPhase(phase, utterance.rate);
+    };
+    utterance.onboundary = (event) => {
+      if (!isPlaybackToken(token) || phase !== "zh") return;
+      highlightZhByCharIndex(event.charIndex || 0);
+    };
+    utterance.onend = () => {
+      if (isPlaybackToken(token)) clearSpeechPhase();
+      resolve();
+    };
+    utterance.onerror = () => {
+      if (isPlaybackToken(token)) clearSpeechPhase();
+      resolve();
+    };
+    window.speechSynthesis.speak(utterance);
+
+    const fallbackMs = Math.max(900, estimateSpeechMs(text, lang) / utterance.rate + 500);
+    addTimer(() => {
+      if (isPlaybackToken(token)) clearSpeechPhase();
+      resolve();
+    }, fallbackMs);
+  });
+}
+
+function setSpeechPhase(phase, rate) {
+  state.speechPhase = phase;
+  state.activeZhIndex = -1;
+  const en = document.getElementById("wordEn");
+  const status = document.getElementById("speechStatus");
+  if (en) en.classList.toggle("is-speaking", phase === "en");
+  if (status) status.textContent = `${phase === "en" ? "朗读英文" : "朗读中文"} · ${rate.toFixed(1)}x`;
+  if (phase === "zh") highlightZhByCharIndex(0);
+}
+
+function clearSpeechPhase() {
+  state.speechPhase = "";
+  state.activeZhIndex = -1;
+  const en = document.getElementById("wordEn");
+  const status = document.getElementById("speechStatus");
+  if (en) en.classList.remove("is-speaking");
+  if (status) {
+    const word = state.unitWords[state.currentIndex];
+    status.textContent = word?.freq ? `${word.freq} 次` : "无词频";
+  }
+  document.querySelectorAll(".speech-token.is-speaking").forEach((node) => node.classList.remove("is-speaking"));
+}
+
+function highlightZhByCharIndex(charIndex) {
+  const tokens = Array.from(document.querySelectorAll(".speech-token"));
+  if (!tokens.length) return;
+  const active = tokens.find((node) => {
+    const start = Number(node.dataset.start) || 0;
+    const end = Number(node.dataset.end) || start;
+    return charIndex >= start && charIndex <= end;
+  }) || tokens[tokens.length - 1];
+  tokens.forEach((node) => node.classList.toggle("is-speaking", node === active));
+}
+
+function unlockSpeech() {
+  if (!("speechSynthesis" in window)) return;
+  const utterance = new SpeechSynthesisUtterance(" ");
+  utterance.volume = 0;
+  window.speechSynthesis.speak(utterance);
+}
+
+function bindCardGesture() {
+  const stack = document.getElementById("cardStack");
+  const card = document.getElementById("activeCard");
+  if (!stack || !card) return;
+
+  stack.addEventListener("pointerdown", (event) => {
+    clearTimers();
+    stack.setPointerCapture(event.pointerId);
+    state.pointer = {
+      id: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      dx: 0,
+      dy: 0
+    };
+    card.classList.remove("is-animated");
+  });
+
+  stack.addEventListener("pointermove", (event) => {
+    if (!state.pointer || state.pointer.id !== event.pointerId) return;
+    state.pointer.dx = event.clientX - state.pointer.startX;
+    state.pointer.dy = event.clientY - state.pointer.startY;
+    const rotate = state.pointer.dx / 28;
+    card.style.transform = `translate3d(${state.pointer.dx}px, ${state.pointer.dy}px, 0) rotate(${rotate}deg)`;
+  });
+
+  stack.addEventListener("pointerup", (event) => finishPointer(event, card));
+  stack.addEventListener("pointercancel", (event) => finishPointer(event, card, true));
+}
+
+function finishPointer(event, card, cancelled = false) {
+  if (!state.pointer || state.pointer.id !== event.pointerId) return;
+  const { dx, dy } = state.pointer;
+  state.pointer = null;
+  const threshold = Math.max(70, Math.min(window.innerWidth, window.innerHeight) * 0.14);
+
+  if (cancelled || Math.max(Math.abs(dx), Math.abs(dy)) < threshold) {
+    snapBack(card);
+    return;
+  }
+
+  if (Math.abs(dx) > Math.abs(dy)) {
+    if (dx < 0) {
+      animateOut(card, -window.innerWidth, dy, () => advanceWord("manual"));
+    } else {
+      animateOut(card, window.innerWidth, dy, goPrevious);
+    }
+  } else if (dy < 0) {
+    markCurrent("known");
+    animateOut(card, dx, -window.innerHeight, () => advanceWord("known"));
+  } else {
+    markCurrent("unknown");
+    animateOut(card, dx, window.innerHeight, () => advanceWord("unknown"));
+  }
+}
+
+function snapBack(card) {
+  card.classList.add("is-animated");
+  card.style.transform = "translate3d(0, 0, 0) rotate(0deg)";
+  addTimer(() => {
+    card.classList.remove("is-animated");
+    scheduleWordTimers();
+  }, 180);
+}
+
+function animateOut(card, x, y, done) {
+  card.classList.add("is-animated");
+  card.style.opacity = "0";
+  card.style.transform = `translate3d(${x}px, ${y}px, 0) rotate(${x / 34}deg)`;
+  addTimer(done, 210);
+}
+
+function markCurrent(kind) {
+  const book = currentBook();
+  const word = state.unitWords[state.currentIndex];
+  if (!word) return;
+  const marks = loadMarks(book.id);
+  marks.known = marks.known.filter((id) => id !== word.id);
+  marks.unknown = marks.unknown.filter((id) => id !== word.id);
+  marks[kind].push(word.id);
+  saveMarks(book.id, marks);
+}
+
+function undoMark(wordId) {
+  const book = currentBook();
+  const marks = loadMarks(book.id);
+  marks.known = marks.known.filter((id) => id !== wordId);
+  marks.unknown = marks.unknown.filter((id) => id !== wordId);
+  saveMarks(book.id, marks);
+  state.undoWordId = null;
+  renderFlashcard();
+}
+
+function advanceWord(reason) {
+  clearTimers();
+  state.groupStats.seen += 1;
+  if (reason === "known") state.groupStats.known += 1;
+  if (reason === "unknown") state.groupStats.unknown += 1;
+  state.undoWordId = null;
+  state.currentIndex += 1;
+  state.showZh = false;
+
+  if (state.currentIndex >= state.unitWords.length) {
+    renderBreak({ unitEnd: true });
+    return;
+  }
+
+  if (state.settings.summaryMode === "count" && state.groupStats.seen >= state.settings.summaryCount) {
+    renderBreak({ unitEnd: false });
+    return;
+  }
+
+  renderFlashcard();
+}
+
+function goPrevious() {
+  clearTimers();
+  if (state.currentIndex <= 0) {
+    renderFlashcard();
+    return;
+  }
+  state.currentIndex -= 1;
+  const word = state.unitWords[state.currentIndex];
+  const marks = loadMarks(currentBook().id);
+  state.undoWordId = marks.known.includes(word.id) || marks.unknown.includes(word.id) ? word.id : null;
+  state.showZh = true;
+  renderFlashcard();
+}
+
+function renderBreak(info) {
+  state.view = "break";
+  state.breakInfo = info;
+  clearTimers();
+  releaseWakeLock();
+  app.innerHTML = `
+    <section class="view break-view">
+      <div class="break-panel">
+        <h1>${info.unitEnd ? "Unit 阶段总结" : "间歇总结"}</h1>
+        <div class="stats-grid">
+          <div class="stat-box"><span>扫过</span><strong>${state.groupStats.seen}</strong></div>
+          <div class="stat-box"><span>已斩</span><strong>${state.groupStats.known}</strong></div>
+          <div class="stat-box"><span>重难点</span><strong>${state.groupStats.unknown}</strong></div>
+        </div>
+        <button class="btn btn--primary btn--wide" id="continueBtn" type="button">继续下一组</button>
+      </div>
+    </section>
+  `;
+  document.getElementById("continueBtn").addEventListener("click", continueAfterBreak);
+}
+
+async function continueAfterBreak() {
+  const book = currentBook();
+  state.groupStats = { seen: 0, known: 0, unknown: 0 };
+  state.showZh = false;
+  if (state.breakInfo?.unitEnd) {
+    if (state.settings.unit < book.totalUnits) {
+      state.settings.unit += 1;
+      persistSettings();
+      state.words = await ensureWords(book);
+      state.unitWords = state.words.filter((word) => word.unit === state.settings.unit);
+      state.currentIndex = 0;
+    } else {
+      setSetupStatus("全部 Unit 已完成。", "ok");
+      renderSetup();
+      return;
+    }
+  }
+  await requestWakeLock();
+  renderFlashcard();
+}
+
+async function openArchive() {
+  clearTimers();
+  state.archiveOpen = true;
+  state.archiveStatus = "正在加载归档...";
+  renderCurrentView();
+  try {
+    await ensureWords(currentBook());
+    state.archiveStatus = "";
+  } catch (error) {
+    state.archiveStatus = error.message || "归档加载失败";
+  }
+  renderCurrentView();
+}
+
+function closeArchive() {
+  state.archiveOpen = false;
+  state.archiveStatus = "";
+  renderCurrentView();
+}
+
+function renderCurrentView() {
+  if (state.view === "flash") renderFlashcard();
+  else if (state.view === "setup") renderSetup();
+  else if (state.view === "break") renderBreak(state.breakInfo || { unitEnd: false });
+  else renderAuth();
+}
+
+function renderArchiveDrawer() {
+  const book = currentBook();
+  const words = state.wordsByBook.get(book.id) || [];
+  const marks = loadMarks(book.id);
+  const ids = state.archiveTab === "known" ? marks.known : marks.unknown;
+  const groups = groupMarkedWords(words, ids);
+  const body = state.archiveStatus
+    ? `<div class="status">${escapeHtml(state.archiveStatus)}</div>`
+    : groups.length
+      ? groups.map(renderArchiveGroup).join("")
+      : `<div class="status">暂无记录。</div>`;
+
+  return `
+    <div class="archive-backdrop" id="archiveBackdrop">
+      <aside class="archive-drawer" role="dialog" aria-modal="true">
+        <header class="archive-head">
+          <h2>归档复盘</h2>
+          <button class="btn btn--ghost" id="closeArchiveBtn" type="button">关闭</button>
+        </header>
+        <div class="tabs">
+          <button class="tab ${state.archiveTab === "known" ? "is-active" : ""}" data-archive-tab="known" type="button">已删词库</button>
+          <button class="tab ${state.archiveTab === "unknown" ? "is-active" : ""}" data-archive-tab="unknown" type="button">重难点词库</button>
+        </div>
+        <div class="archive-body">${body}</div>
+      </aside>
+    </div>
+  `;
+}
+
+function groupMarkedWords(words, ids) {
+  const idSet = new Set(ids.map(Number));
+  const grouped = new Map();
+  words.filter((word) => idSet.has(word.id)).forEach((word) => {
+    if (!grouped.has(word.unit)) grouped.set(word.unit, []);
+    grouped.get(word.unit).push(word);
+  });
+  return Array.from(grouped.entries()).sort((a, b) => a[0] - b[0]);
+}
+
+function renderArchiveGroup([unit, words]) {
+  const list = words.map((word) => `
+    <div class="archive-word">
+      <strong>${escapeHtml(word.en)}</strong>
+      <span>${escapeHtml(formatDefinition(word))}</span>
+    </div>
+  `).join("");
+  return `
+    <details class="unit-group" open>
+      <summary>Unit ${unit} · ${words.length} 个</summary>
+      <div class="word-list">${list}</div>
+    </details>
+  `;
+}
+
+function bindArchiveEvents() {
+  const close = document.getElementById("closeArchiveBtn");
+  const backdrop = document.getElementById("archiveBackdrop");
+  if (close) close.addEventListener("click", closeArchive);
+  if (backdrop) {
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) closeArchive();
+    });
+  }
+  document.querySelectorAll("[data-archive-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.archiveTab = button.dataset.archiveTab;
+      renderCurrentView();
+    });
+  });
+}
+
+function requireCloudConfig() {
+  state.cloud.token = (state.cloud.token || "").trim();
+  state.cloud.gistId = (state.cloud.gistId || "").trim();
+  persistCloud();
+  if (!state.cloud.token || !state.cloud.gistId) {
+    throw new Error("请先填写 GitHub PAT 和 Gist ID。");
+  }
+}
+
+function collectSyncPayload() {
+  const progress = {};
+  const marks = {};
+  BOOKS.forEach((book) => {
+    progress[book.id] = loadProgress(book.id);
+    marks[book.id] = loadMarks(book.id);
+  });
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    activeBookId: state.settings.bookId,
+    settings: { ...state.settings },
+    progress,
+    marks
+  };
+}
+
+async function pushToGist() {
+  try {
+    requireCloudConfig();
+    setSetupStatus("正在推送到云端...");
+    const payload = collectSyncPayload();
+    const response = await fetch(`https://api.github.com/gists/${encodeURIComponent(state.cloud.gistId)}`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${state.cloud.token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        files: {
+          "sync.json": {
+            content: JSON.stringify(payload, null, 2)
+          }
+        }
+      })
+    });
+    if (!response.ok) throw new Error(`云端推送失败：${response.status}`);
+    setSetupStatus("本地进度已推送到云端。", "ok");
+  } catch (error) {
+    setSetupStatus(error.message || "云同步失败", "error");
+  }
+}
+
+async function pullFromGist() {
+  try {
+    requireCloudConfig();
+    setSetupStatus("正在从云端拉取...");
+    const response = await fetch(`https://api.github.com/gists/${encodeURIComponent(state.cloud.gistId)}`, {
+      headers: {
+        Authorization: `Bearer ${state.cloud.token}`,
+        Accept: "application/vnd.github+json"
+      }
+    });
+    if (!response.ok) throw new Error(`云端拉取失败：${response.status}`);
+    const gist = await response.json();
+    const file = gist.files?.["sync.json"];
+    if (!file?.content) throw new Error("Gist 中没有 sync.json。");
+    applySyncPayload(JSON.parse(file.content));
+    setSetupStatus("云端进度已覆盖本地。", "ok");
+  } catch (error) {
+    setSetupStatus(error.message || "云同步失败", "error");
+  }
+}
+
+function applySyncPayload(payload) {
+  if (!payload || payload.version !== 1) throw new Error("sync.json 格式不兼容。");
+  if (payload.settings) {
+    state.settings = { ...DEFAULT_SETTINGS, ...payload.settings };
+    normalizeSettings();
+  }
+  if (payload.progress) {
+    Object.entries(payload.progress).forEach(([bookId, progress]) => saveProgress(bookId, progress || {}));
+  }
+  if (payload.marks) {
+    Object.entries(payload.marks).forEach(([bookId, marks]) => saveMarks(bookId, marks || { known: [], unknown: [] }));
+  }
+  renderSetup();
+}
+
+async function requestWakeLock() {
+  if (!("wakeLock" in navigator)) return;
+  try {
+    state.wakeLock = await navigator.wakeLock.request("screen");
+    state.wakeLock.addEventListener("release", () => {
+      state.wakeLock = null;
+    });
+  } catch {
+    state.wakeLock = null;
+  }
+}
+
+function releaseWakeLock() {
+  if (state.wakeLock) {
+    state.wakeLock.release().catch(() => {});
+    state.wakeLock = null;
+  }
+}
+
+init();
