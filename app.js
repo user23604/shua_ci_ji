@@ -840,29 +840,48 @@ function gesture(symbol, label) {
 
 async function scheduleWordTimers() {
   const word = state.unitWords[state.currentIndex];
-  if (!word || state.archiveOpen) return;
+  if (!word || state.archiveOpen || state.statsOpen) return;
   const token = ++state.playbackToken;
   const startedAt = Date.now();
   const totalMs = Math.max(2000, Number(state.settings.duration) * 1000);
   const revealMs = clamp(Number(state.settings.zhDelay) * 1000, 0, totalMs);
   const definition = formatDefinition(word);
+  const hasEnSpeech = Boolean(state.settings.speakEn);
+  const hasZhSpeech = Boolean(state.settings.speakZh && definition);
+  const enBudget = revealMs > 0
+    ? Math.max(450, revealMs)
+    : hasEnSpeech && hasZhSpeech
+      ? Math.max(450, totalMs * 0.38)
+      : Math.max(450, totalMs);
+  const zhStartMs = revealMs > 0 ? revealMs : hasEnSpeech ? enBudget : 0;
 
-  if (state.settings.speakEn) {
-    await speakWithHighlight(word.en, "en-US", Math.max(600, revealMs || totalMs * 0.42), "en", token);
+  if (revealMs === 0) {
+    state.showZh = true;
+    const definitionNode = document.getElementById("definition");
+    if (definitionNode) definitionNode.classList.remove("is-hidden");
   }
-  if (!isPlaybackToken(token)) return;
+
+  if (hasEnSpeech) {
+    speakWithHighlight(word.en, "en-US", enBudget, "en", token);
+  }
 
   await sleepUntil(startedAt + revealMs, token);
   if (!isPlaybackToken(token)) return;
 
-  state.showZh = true;
-  const definitionNode = document.getElementById("definition");
-  if (definitionNode) definitionNode.classList.remove("is-hidden");
-
-  if (state.settings.speakZh) {
-    await speakWithHighlight(definition, "zh-CN", Math.max(800, totalMs - revealMs), "zh", token);
+  if (revealMs > 0) {
+    cancelSpeechOnly();
+    state.showZh = true;
+    const definitionNode = document.getElementById("definition");
+    if (definitionNode) definitionNode.classList.remove("is-hidden");
   }
+
+  await sleepUntil(startedAt + zhStartMs, token);
   if (!isPlaybackToken(token)) return;
+
+  cancelSpeechOnly();
+  if (hasZhSpeech) {
+    speakWithHighlight(definition, "zh-CN", Math.max(450, totalMs - zhStartMs), "zh", token);
+  }
 
   await sleepUntil(startedAt + totalMs, token);
   if (isPlaybackToken(token)) advanceWord("auto");
@@ -897,41 +916,41 @@ function adaptiveSpeechRate(text, lang, budgetMs) {
   const base = Number(state.settings.rate) || 1;
   const estimate = estimateSpeechMs(text, lang);
   if (!estimate || !budgetMs) return clamp(base, 0.8, 2);
-  return clamp(base * (estimate / Math.max(500, budgetMs)), 0.8, 2);
+  const neededRate = base * (estimate / Math.max(420, budgetMs));
+  return clamp(Math.max(base, neededRate), 0.8, 2.8);
 }
 
 function speakWithHighlight(text, lang, budgetMs, phase, token) {
   if (!("speechSynthesis" in window) || !text || !isPlaybackToken(token)) {
-    return Promise.resolve();
+    return;
   }
-  return new Promise((resolve) => {
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = lang;
-    utterance.rate = adaptiveSpeechRate(text, lang, budgetMs);
-    utterance.onstart = () => {
-      if (!isPlaybackToken(token)) return;
-      setSpeechPhase(phase, utterance.rate);
-    };
-    utterance.onboundary = (event) => {
-      if (!isPlaybackToken(token) || phase !== "zh") return;
-      highlightZhByCharIndex(event.charIndex || 0);
-    };
-    utterance.onend = () => {
-      if (isPlaybackToken(token)) clearSpeechPhase();
-      resolve();
-    };
-    utterance.onerror = () => {
-      if (isPlaybackToken(token)) clearSpeechPhase();
-      resolve();
-    };
-    window.speechSynthesis.speak(utterance);
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = lang;
+  utterance.rate = adaptiveSpeechRate(text, lang, budgetMs);
+  utterance.onstart = () => {
+    if (!isPlaybackToken(token)) return;
+    setSpeechPhase(phase, utterance.rate);
+    if (phase === "zh") simulateZhHighlight(text, budgetMs, token);
+  };
+  utterance.onboundary = (event) => {
+    if (!isPlaybackToken(token) || phase !== "zh") return;
+    highlightZhByCharIndex(event.charIndex || 0);
+  };
+  utterance.onend = () => {
+    if (isPlaybackToken(token)) clearSpeechPhase();
+  };
+  utterance.onerror = () => {
+    if (isPlaybackToken(token)) clearSpeechPhase();
+  };
+  window.speechSynthesis.speak(utterance);
+  addTimer(() => {
+    if (isPlaybackToken(token)) cancelSpeechOnly();
+  }, Math.max(250, budgetMs));
+}
 
-    const fallbackMs = Math.max(900, estimateSpeechMs(text, lang) / utterance.rate + 500);
-    addTimer(() => {
-      if (isPlaybackToken(token)) clearSpeechPhase();
-      resolve();
-    }, fallbackMs);
-  });
+function cancelSpeechOnly() {
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  clearSpeechPhase();
 }
 
 function setSpeechPhase(phase, rate) {
@@ -966,6 +985,21 @@ function highlightZhByCharIndex(charIndex) {
     return charIndex >= start && charIndex <= end;
   }) || tokens[tokens.length - 1];
   tokens.forEach((node) => node.classList.toggle("is-speaking", node === active));
+}
+
+function simulateZhHighlight(text, budgetMs, token) {
+  const tokens = splitDefinitionTokens(text);
+  if (!tokens.length) return;
+  const step = Math.max(80, budgetMs / tokens.length);
+  tokens.forEach((_, index) => {
+    addTimer(() => {
+      if (!isPlaybackToken(token)) return;
+      state.activeZhIndex = index;
+      document.querySelectorAll(".speech-token").forEach((node) => {
+        node.classList.toggle("is-speaking", Number(node.dataset.tokenIndex) === index);
+      });
+    }, index * step);
+  });
 }
 
 function unlockSpeech() {
@@ -1070,15 +1104,20 @@ function undoMark(wordId) {
 
 function advanceWord(reason) {
   clearTimers();
-  state.groupStats.seen += 1;
-  if (reason === "known") state.groupStats.known += 1;
-  if (reason === "unknown") state.groupStats.unknown += 1;
+  const wasRecorded = state.currentWordRecorded;
+  const result = reason === "known" || reason === "unknown" ? reason : "";
+  commitCurrentCardActivity({ counted: true, result });
+  if (!wasRecorded) {
+    state.groupStats.seen += 1;
+    if (reason === "known") state.groupStats.known += 1;
+    if (reason === "unknown") state.groupStats.unknown += 1;
+  }
   state.undoWordId = null;
   state.currentIndex += 1;
   state.showZh = false;
 
   if (state.currentIndex >= state.unitWords.length) {
-    renderBreak({ unitEnd: true });
+    renderBreak({ unitEnd: true, reviewEnd: Boolean(state.reviewMode) });
     return;
   }
 
@@ -1090,8 +1129,17 @@ function advanceWord(reason) {
   renderFlashcard();
 }
 
+function finishCurrentGroup() {
+  clearTimers();
+  const wasRecorded = state.currentWordRecorded;
+  commitCurrentCardActivity({ counted: true });
+  if (!wasRecorded) state.groupStats.seen += 1;
+  renderBreak({ manual: true, reviewEnd: Boolean(state.reviewMode) });
+}
+
 function goPrevious() {
   clearTimers();
+  commitCurrentCardActivity();
   if (state.currentIndex <= 0) {
     renderFlashcard();
     return;
@@ -1109,10 +1157,17 @@ function renderBreak(info) {
   state.breakInfo = info;
   clearTimers();
   releaseWakeLock();
+  const title = info.reviewEnd
+    ? `${state.reviewMode?.label || "复盘"}总结`
+    : info.manual
+      ? "手动完成总结"
+      : info.unitEnd
+        ? "Unit 阶段总结"
+        : "间歇总结";
   app.innerHTML = `
     <section class="view break-view">
       <div class="break-panel">
-        <h1>${info.unitEnd ? "Unit 阶段总结" : "间歇总结"}</h1>
+        <h1>${escapeHtml(title)}</h1>
         <div class="stats-grid">
           <div class="stat-box"><span>扫过</span><strong>${state.groupStats.seen}</strong></div>
           <div class="stat-box"><span>已斩</span><strong>${state.groupStats.known}</strong></div>
@@ -1127,6 +1182,14 @@ function renderBreak(info) {
 
 async function continueAfterBreak() {
   const book = currentBook();
+  if (state.breakInfo?.reviewEnd) {
+    const label = state.reviewMode?.label || "复盘";
+    state.reviewMode = null;
+    state.groupStats = { seen: 0, known: 0, unknown: 0 };
+    setSetupStatus(`${label}已完成。`, "ok");
+    renderSetup();
+    return;
+  }
   state.groupStats = { seen: 0, known: 0, unknown: 0 };
   state.showZh = false;
   if (state.breakInfo?.unitEnd) {
@@ -1147,7 +1210,9 @@ async function continueAfterBreak() {
 }
 
 async function openArchive() {
+  commitCurrentCardActivity();
   clearTimers();
+  state.statsOpen = false;
   state.archiveOpen = true;
   state.archiveStatus = "正在加载归档...";
   renderCurrentView();
@@ -1157,6 +1222,19 @@ async function openArchive() {
   } catch (error) {
     state.archiveStatus = error.message || "归档加载失败";
   }
+  renderCurrentView();
+}
+
+function openStats() {
+  commitCurrentCardActivity();
+  clearTimers();
+  state.archiveOpen = false;
+  state.statsOpen = true;
+  renderCurrentView();
+}
+
+function closeStats() {
+  state.statsOpen = false;
   renderCurrentView();
 }
 
@@ -1244,6 +1322,151 @@ function bindArchiveEvents() {
   });
 }
 
+function renderStatsDrawer() {
+  const book = currentBook();
+  const activity = loadActivity(book.id);
+  const stats = collectActivityStats(state.statsMode);
+  const reviewLabel = state.statsMode === "day" ? "复盘今天" : state.statsMode === "week" ? "复盘本周" : "复盘本月";
+  return `
+    <div class="stats-backdrop" id="statsBackdrop">
+      <aside class="stats-drawer" role="dialog" aria-modal="true">
+        <header class="archive-head">
+          <div>
+            <h2>统计复盘</h2>
+            <div class="status">${escapeHtml(book.name)}</div>
+          </div>
+          <button class="btn btn--ghost" id="closeStatsBtn" type="button">关闭</button>
+        </header>
+        <div class="tabs">
+          <button class="tab ${state.statsMode === "day" ? "is-active" : ""}" data-stats-mode="day" type="button">今天</button>
+          <button class="tab ${state.statsMode === "week" ? "is-active" : ""}" data-stats-mode="week" type="button">本周</button>
+          <button class="tab ${state.statsMode === "month" ? "is-active" : ""}" data-stats-mode="month" type="button">本月</button>
+        </div>
+        <div class="stats-body">
+          <section class="stats-summary">
+            <div class="stat-box"><span>${escapeHtml(stats.label)}时长</span><strong>${escapeHtml(formatDuration(stats.totals.seconds))}</strong></div>
+            <div class="stat-box"><span>扫过单词</span><strong>${stats.totals.words}</strong></div>
+            <div class="stat-box"><span>已斩 / 生词</span><strong>${stats.totals.known}/${stats.totals.unknown}</strong></div>
+          </section>
+          <button class="btn btn--primary btn--wide" id="startReviewBtn" type="button" ${stats.wordIds.length ? "" : "disabled"}>${escapeHtml(reviewLabel)}</button>
+          <section class="heat-section">
+            <div class="heat-head">
+              <h3>本周热力</h3>
+              <span>${escapeHtml(renderWeekRangeLabel())}</span>
+            </div>
+            ${renderWeekHeatmap(activity)}
+          </section>
+          <section class="heat-section">
+            <div class="heat-head">
+              <button class="heat-nav" data-month-nav="-1" type="button">‹</button>
+              <h3>${escapeHtml(renderMonthLabel())}</h3>
+              <button class="heat-nav" data-month-nav="1" type="button">›</button>
+            </div>
+            ${renderMonthHeatmap(activity)}
+          </section>
+        </div>
+      </aside>
+    </div>
+  `;
+}
+
+function renderWeekRangeLabel() {
+  const { start, end } = getPeriodRange("week");
+  return `${localDateKey(start).slice(5)} - ${localDateKey(end).slice(5)}`;
+}
+
+function monthBaseDate() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth() + state.statsMonthOffset, 1);
+}
+
+function renderMonthLabel() {
+  const base = monthBaseDate();
+  return `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function activityLevel(seconds) {
+  const minutes = (seconds || 0) / 60;
+  if (minutes <= 0) return 0;
+  if (minutes < 15) return 1;
+  if (minutes < 45) return 2;
+  if (minutes < 90) return 3;
+  return 4;
+}
+
+function renderWeekHeatmap(activity) {
+  const { start } = getPeriodRange("week");
+  const labels = ["一", "二", "三", "四", "五", "六", "日"];
+  return `
+    <div class="week-heatmap">
+      ${labels.map((label, index) => {
+        const date = addDays(start, index);
+        const key = localDateKey(date);
+        const day = activity.days[key] || {};
+        const level = activityLevel(day.seconds);
+        return `
+          <div class="week-cell heat-level-${level}" title="${escapeHtml(key)}">
+            <strong>${label}</strong>
+            <span>${day.seconds ? escapeHtml(formatHours(day.seconds)) : "0m"}</span>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderMonthHeatmap(activity) {
+  const base = monthBaseDate();
+  const first = new Date(base.getFullYear(), base.getMonth(), 1);
+  const last = new Date(base.getFullYear(), base.getMonth() + 1, 0);
+  const leading = (first.getDay() || 7) - 1;
+  const cells = [];
+  for (let i = 0; i < leading; i += 1) cells.push(`<div class="month-cell month-cell--empty"></div>`);
+  for (let day = 1; day <= last.getDate(); day += 1) {
+    const date = new Date(base.getFullYear(), base.getMonth(), day);
+    const key = localDateKey(date);
+    const item = activity.days[key] || {};
+    const level = activityLevel(item.seconds);
+    cells.push(`
+      <div class="month-cell heat-level-${level}" title="${escapeHtml(key)} ${escapeHtml(formatDuration(item.seconds || 0))}">
+        <strong>${day}</strong>
+        <span>${item.seconds ? escapeHtml(formatHours(item.seconds)) : ""}</span>
+      </div>
+    `);
+  }
+  return `
+    <div class="month-weekdays">
+      <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+    </div>
+    <div class="month-heatmap">${cells.join("")}</div>
+  `;
+}
+
+function bindStatsEvents() {
+  const close = document.getElementById("closeStatsBtn");
+  const backdrop = document.getElementById("statsBackdrop");
+  const review = document.getElementById("startReviewBtn");
+  if (close) close.addEventListener("click", closeStats);
+  if (backdrop) {
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) closeStats();
+    });
+  }
+  document.querySelectorAll("[data-stats-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.statsMode = button.dataset.statsMode;
+      renderCurrentView();
+    });
+  });
+  document.querySelectorAll("[data-month-nav]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.statsMonthOffset += Number(button.dataset.monthNav);
+      renderCurrentView();
+    });
+  });
+  if (review) review.addEventListener("click", () => startReview(state.statsMode));
+}
+
 function requireCloudConfig() {
   state.cloud.token = (state.cloud.token || "").trim();
   state.cloud.gistId = (state.cloud.gistId || "").trim();
@@ -1256,9 +1479,11 @@ function requireCloudConfig() {
 function collectSyncPayload() {
   const progress = {};
   const marks = {};
+  const activity = {};
   BOOKS.forEach((book) => {
     progress[book.id] = loadProgress(book.id);
     marks[book.id] = loadMarks(book.id);
+    activity[book.id] = loadActivity(book.id);
   });
   return {
     version: 1,
@@ -1266,7 +1491,8 @@ function collectSyncPayload() {
     activeBookId: state.settings.bookId,
     settings: { ...state.settings },
     progress,
-    marks
+    marks,
+    activity
   };
 }
 
@@ -1329,6 +1555,9 @@ function applySyncPayload(payload) {
   }
   if (payload.marks) {
     Object.entries(payload.marks).forEach(([bookId, marks]) => saveMarks(bookId, marks || { known: [], unknown: [] }));
+  }
+  if (payload.activity) {
+    Object.entries(payload.activity).forEach(([bookId, activity]) => saveActivity(bookId, activity || { days: {} }));
   }
   renderSetup();
 }
