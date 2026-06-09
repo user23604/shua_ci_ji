@@ -844,16 +844,21 @@ async function scheduleWordTimers() {
   const token = ++state.playbackToken;
   const startedAt = Date.now();
   const totalMs = Math.max(2000, Number(state.settings.duration) * 1000);
-  const revealMs = clamp(Number(state.settings.zhDelay) * 1000, 0, totalMs);
+  const requestedRevealMs = clamp(Number(state.settings.zhDelay) * 1000, 0, totalMs);
   const definition = formatDefinition(word);
   const hasEnSpeech = Boolean(state.settings.speakEn);
   const hasZhSpeech = Boolean(state.settings.speakZh && definition);
+  const minZhBudget = hasZhSpeech ? Math.min(1400, Math.max(700, estimateSpeechMs(definition, "zh-CN") / 2.8)) : 0;
+  const latestZhStartMs = hasZhSpeech ? Math.max(0, totalMs - minZhBudget) : totalMs;
+  const revealMs = hasZhSpeech ? Math.min(requestedRevealMs, latestZhStartMs) : requestedRevealMs;
   const enBudget = revealMs > 0
     ? Math.max(450, revealMs)
     : hasEnSpeech && hasZhSpeech
-      ? Math.max(450, totalMs * 0.38)
+      ? Math.min(Math.max(450, totalMs * 0.38), latestZhStartMs)
       : Math.max(450, totalMs);
-  const zhStartMs = revealMs > 0 ? revealMs : hasEnSpeech ? enBudget : 0;
+  const zhStartMs = hasZhSpeech
+    ? clamp(revealMs > 0 ? revealMs : hasEnSpeech ? enBudget : 0, 0, latestZhStartMs)
+    : totalMs;
 
   if (revealMs === 0) {
     state.showZh = true;
