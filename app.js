@@ -43,8 +43,9 @@ const state = {
   activeZhIndex: -1,
   playbackToken: 0,
   timers: [],
-  groupStats: { seen: 0, known: 0, unknown: 0 },
+  groupStats: createGroupStats(),
   breakInfo: null,
+  roundReturn: null,
   undoWordId: null,
   archiveOpen: false,
   archiveTab: "unknown",
@@ -55,10 +56,15 @@ const state = {
   reviewMode: null,
   setupStatus: "",
   wakeLock: null,
+  playbackPaused: false,
   cardStartedAt: 0,
   currentWordRecorded: false,
   pointer: null
 };
+
+function createGroupStats() {
+  return { seen: 0, known: 0, unknown: 0, unknownIds: [] };
+}
 
 function loadJson(key, fallback) {
   try {
@@ -142,6 +148,17 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function freqAlpha(freq) {
+  const words = state.words?.length ? state.words : state.wordsByBook.get(currentBook().id) || [];
+  const maxFreq = Math.max(1, ...words.map((word) => Number(word.freq) || 0));
+  const level = Math.log1p(Math.max(0, Number(freq) || 0)) / Math.log1p(maxFreq);
+  return (0.035 + clamp(level, 0, 1) * 0.245).toFixed(3);
 }
 
 function localDateKey(date = new Date()) {
@@ -260,6 +277,55 @@ function formatDefinition(word) {
   return String(source || "").replace(/\s+/g, " ").trim();
 }
 
+function splitDefinitionLines(text) {
+  const normalized = String(text || "")
+    .replace(/\s+/g, " ")
+    .replace(/\s+(?=(?:interj|prep|conj|pron|adj|adv|aux|num|art|vi|vt|ad|int|n|v|a)\.)/gi, "\n")
+    .trim();
+  if (!normalized) return [];
+  return normalized.split("\n").flatMap((section) => (
+    section.split("；").map((line) => line.trim()).filter(Boolean)
+  ));
+}
+
+function highlightTerms(highlight) {
+  const raw = String(highlight || "").replace(/\s+/g, " ").trim();
+  if (!raw) return [];
+  const parts = raw.split(/[；;，,、]/).map((item) => item.trim()).filter(Boolean);
+  return Array.from(new Set([raw, ...parts])).sort((a, b) => b.length - a.length);
+}
+
+function highlightText(text, highlight) {
+  const terms = highlightTerms(highlight).filter((term) => text.includes(term));
+  if (!terms.length) return escapeHtml(text);
+  const pattern = new RegExp(terms.map(escapeRegExp).join("|"), "g");
+  let cursor = 0;
+  let html = "";
+  for (const match of text.matchAll(pattern)) {
+    const start = match.index || 0;
+    html += escapeHtml(text.slice(cursor, start));
+    html += `<mark class="meaning-highlight">${escapeHtml(match[0])}</mark>`;
+    cursor = start + match[0].length;
+  }
+  html += escapeHtml(text.slice(cursor));
+  return html;
+}
+
+function renderDefinitionHtml(word) {
+  const text = formatDefinition(word);
+  const highlight = word?.zh_high || "";
+  const lines = splitDefinitionLines(text);
+  let cursor = 0;
+  return lines.map((line, index) => {
+    const start = text.indexOf(line, cursor);
+    const safeStart = start >= 0 ? start : cursor;
+    const end = safeStart + line.length;
+    cursor = end;
+    const active = state.activeZhIndex === index ? " is-speaking" : "";
+    return `<span class="meaning-line speech-token${active}" data-token-index="${index}" data-start="${safeStart}" data-end="${end}">${highlightText(line, highlight)}</span>`;
+  }).join("");
+}
+
 function setSetupStatus(message, type = "") {
   state.setupStatus = message ? { message, type } : "";
   if (state.view === "setup") renderSetup();
@@ -372,8 +438,11 @@ function init() {
     navigator.serviceWorker.register("sw.js").catch(() => {});
   }
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && state.view === "flash") requestWakeLock();
+    if (document.visibilityState === "hidden") pausePlaybackForBackground();
   });
+  window.addEventListener("pagehide", pausePlaybackForBackground);
+  window.addEventListener("blur", pausePlaybackForBackground);
+  window.addEventListener("resize", fitActiveWord);
   if (isAuthenticated()) {
     renderSetup();
   } else {
@@ -676,13 +745,16 @@ async function startStudy() {
   try {
     const book = currentBook();
     state.reviewMode = null;
+    state.roundReturn = null;
+    state.playbackPaused = false;
     state.words = await ensureWords(book);
     state.unitWords = state.words.filter((word) => word.unit === state.settings.unit);
     if (!state.unitWords.length) throw new Error(`Unit ${state.settings.unit} 没有词条`);
     state.currentIndex = getStartIndex(book.id);
-    state.groupStats = { seen: 0, known: 0, unknown: 0 };
+    state.groupStats = createGroupStats();
     state.undoWordId = null;
     state.showZh = false;
+    state.playbackPaused = false;
     state.setupStatus = "";
     await requestWakeLock();
     renderFlashcard();
@@ -706,10 +778,12 @@ async function startReview(mode) {
     state.words = await ensureWords(book);
     state.unitWords = state.words.filter((word) => idSet.has(word.id));
     state.currentIndex = 0;
-    state.groupStats = { seen: 0, known: 0, unknown: 0 };
+    state.groupStats = createGroupStats();
     state.undoWordId = null;
     state.showZh = false;
     state.reviewMode = { mode, label: `${stats.label}复盘`, wordIds: stats.wordIds };
+    state.roundReturn = null;
+    state.playbackPaused = false;
     state.statsOpen = false;
     state.archiveOpen = false;
     await requestWakeLock();
@@ -753,6 +827,11 @@ function renderFlashcard() {
           <div class="progress-title">${escapeHtml(state.reviewMode?.label || book.name)}</div>
           <div class="progress-main">Unit ${word.unit} [${state.currentIndex + 1}/${state.unitWords.length}]</div>
           <div class="progress-sub">词频 ${word.freq} · ID ${word.id}${state.reviewMode ? " · 复盘" : ""}</div>
+          <div class="live-counter" aria-label="本轮实时计数">
+            <span>扫过 <strong>${state.groupStats.seen}</strong></span>
+            <span>已斩 <strong>${state.groupStats.known}</strong></span>
+            <span>重难点 <strong>${state.groupStats.unknown}</strong></span>
+          </div>
         </div>
       </aside>
 
@@ -761,6 +840,7 @@ function renderFlashcard() {
           ${next ? renderWordCard(next, true) : ""}
           ${renderWordCard(word, false, undo)}
         </div>
+        ${state.playbackPaused ? renderResumeOverlay() : ""}
       </section>
 
       <aside class="side-panel gesture-panel">
@@ -786,11 +866,14 @@ function renderFlashcard() {
   document.getElementById("finishBtn").addEventListener("click", finishCurrentGroup);
   const undoBtn = document.getElementById("undoMarkBtn");
   if (undoBtn) undoBtn.addEventListener("click", () => undoMark(word.id));
+  const resumeBtn = document.getElementById("resumePlaybackBtn");
+  if (resumeBtn) resumeBtn.addEventListener("click", resumePlayback);
   bindCardGesture();
   bindArchiveEvents();
   bindStatsEvents();
   state.cardStartedAt = Date.now();
   state.currentWordRecorded = false;
+  requestAnimationFrame(fitActiveWord);
   scheduleWordTimers();
 }
 
@@ -798,17 +881,28 @@ function renderWordCard(word, isNext = false, undo = false) {
   const definition = formatDefinition(word);
   const definitionId = isNext ? "" : ' id="definition"';
   const enClass = !isNext && state.speechPhase === "en" ? " is-speaking" : "";
-  const zhHtml = isNext ? escapeHtml(definition) : renderDefinitionTokens(definition);
+  const zhHtml = isNext ? escapeHtml(definition) : renderDefinitionHtml(word);
+  const freqLabel = word.freq ? `${word.freq} 次` : "0 次";
+  const alpha = Number(freqAlpha(word.freq));
   return `
-    <article class="word-card ${isNext ? "word-card--next" : ""}" id="${isNext ? "nextCard" : "activeCard"}">
+    <article class="word-card ${isNext ? "word-card--next" : ""}" id="${isNext ? "nextCard" : "activeCard"}" style="--freq-alpha: ${alpha.toFixed(3)}; --freq-alpha-soft: ${(alpha * 0.35).toFixed(3)}">
+      <div class="freq-watermark">${escapeHtml(freqLabel)}</div>
       <div class="word-card__meta">
         <span>Unit ${word.unit}</span>
-        <span id="${isNext ? "" : "speechStatus"}">${word.freq ? `${word.freq} 次` : "无词频"}</span>
+        <span id="${isNext ? "" : "speechStatus"}">${escapeHtml(freqLabel)}</span>
       </div>
-      <div class="word-card__en${enClass}" id="${isNext ? "" : "wordEn"}">${escapeHtml(word.en)}</div>
+      <div class="word-card__en-shell"><div class="word-card__en${enClass}" id="${isNext ? "" : "wordEn"}">${escapeHtml(word.en)}</div></div>
       <div class="word-card__zh ${!isNext && !state.showZh ? "is-hidden" : ""}"${definitionId}>${zhHtml}</div>
       ${undo ? `<div class="word-card__actions"><button class="undo-btn" id="undoMarkBtn" type="button">撤销标记</button></div>` : ""}
     </article>
+  `;
+}
+
+function renderResumeOverlay() {
+  return `
+    <div class="resume-overlay">
+      <button class="btn btn--primary btn--wide" id="resumePlaybackBtn" type="button">恢复播放</button>
+    </div>
   `;
 }
 
@@ -840,7 +934,7 @@ function gesture(symbol, label) {
 
 async function scheduleWordTimers() {
   const word = state.unitWords[state.currentIndex];
-  if (!word || state.archiveOpen || state.statsOpen) return;
+  if (!word || state.archiveOpen || state.statsOpen || state.playbackPaused) return;
   const token = ++state.playbackToken;
   const startedAt = Date.now();
   const totalMs = Math.max(2000, Number(state.settings.duration) * 1000);
@@ -890,6 +984,34 @@ async function scheduleWordTimers() {
 
   await sleepUntil(startedAt + totalMs, token);
   if (isPlaybackToken(token)) advanceWord("auto");
+}
+
+function pausePlaybackForBackground() {
+  if (state.view !== "flash" || state.playbackPaused) return;
+  commitCurrentCardActivity();
+  clearTimers();
+  releaseWakeLock();
+  state.playbackPaused = true;
+  renderFlashcard();
+}
+
+async function resumePlayback() {
+  if (state.view !== "flash") return;
+  state.playbackPaused = false;
+  await requestWakeLock();
+  renderFlashcard();
+}
+
+function fitActiveWord() {
+  const wordNode = document.getElementById("wordEn");
+  const shell = wordNode?.closest(".word-card__en-shell");
+  if (!wordNode || !shell) return;
+  wordNode.style.fontSize = "";
+  const baseSize = Number.parseFloat(getComputedStyle(wordNode).fontSize) || 72;
+  const available = shell.clientWidth;
+  if (!available) return;
+  const scale = Math.min(1, available / Math.max(1, wordNode.scrollWidth));
+  wordNode.style.fontSize = `${Math.max(26, Math.floor(baseSize * scale))}px`;
 }
 
 function isPlaybackToken(token) {
@@ -976,7 +1098,7 @@ function clearSpeechPhase() {
   if (en) en.classList.remove("is-speaking");
   if (status) {
     const word = state.unitWords[state.currentIndex];
-    status.textContent = word?.freq ? `${word.freq} 次` : "无词频";
+    status.textContent = word?.freq ? `${word.freq} 次` : "0 次";
   }
   document.querySelectorAll(".speech-token.is-speaking").forEach((node) => node.classList.remove("is-speaking"));
 }
@@ -993,14 +1115,14 @@ function highlightZhByCharIndex(charIndex) {
 }
 
 function simulateZhHighlight(text, budgetMs, token) {
-  const tokens = splitDefinitionTokens(text);
-  if (!tokens.length) return;
-  const step = Math.max(80, budgetMs / tokens.length);
-  tokens.forEach((_, index) => {
+  const nodes = Array.from(document.querySelectorAll(".speech-token"));
+  if (!nodes.length) return;
+  const step = Math.max(120, budgetMs / nodes.length);
+  nodes.forEach((_, index) => {
     addTimer(() => {
       if (!isPlaybackToken(token)) return;
       state.activeZhIndex = index;
-      document.querySelectorAll(".speech-token").forEach((node) => {
+      nodes.forEach((node) => {
         node.classList.toggle("is-speaking", Number(node.dataset.tokenIndex) === index);
       });
     }, index * step);
@@ -1020,12 +1142,14 @@ function bindCardGesture() {
   if (!stack || !card) return;
 
   stack.addEventListener("pointerdown", (event) => {
+    if (state.playbackPaused) return;
     clearTimers();
     stack.setPointerCapture(event.pointerId);
     state.pointer = {
       id: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
+      startTime: performance.now(),
       dx: 0,
       dy: 0
     };
@@ -1046,11 +1170,16 @@ function bindCardGesture() {
 
 function finishPointer(event, card, cancelled = false) {
   if (!state.pointer || state.pointer.id !== event.pointerId) return;
-  const { dx, dy } = state.pointer;
+  const { dx, dy, startTime } = state.pointer;
   state.pointer = null;
-  const threshold = Math.max(70, Math.min(window.innerWidth, window.innerHeight) * 0.14);
+  const minSide = Math.min(window.innerWidth, window.innerHeight);
+  const threshold = clamp(minSide * 0.07, 34, 58);
+  const elapsed = Math.max(1, performance.now() - startTime);
+  const distance = Math.max(Math.abs(dx), Math.abs(dy));
+  const velocity = distance / elapsed;
+  const flick = distance > 24 && velocity > 0.42;
 
-  if (cancelled || Math.max(Math.abs(dx), Math.abs(dy)) < threshold) {
+  if (cancelled || (distance < threshold && !flick)) {
     snapBack(card);
     return;
   }
@@ -1058,6 +1187,8 @@ function finishPointer(event, card, cancelled = false) {
   if (Math.abs(dx) > Math.abs(dy)) {
     if (dx < 0) {
       animateOut(card, -window.innerWidth, dy, () => advanceWord("manual"));
+    } else if (state.currentIndex <= 0) {
+      snapBack(card);
     } else {
       animateOut(card, window.innerWidth, dy, goPrevious);
     }
@@ -1115,7 +1246,13 @@ function advanceWord(reason) {
   if (!wasRecorded) {
     state.groupStats.seen += 1;
     if (reason === "known") state.groupStats.known += 1;
-    if (reason === "unknown") state.groupStats.unknown += 1;
+    if (reason === "unknown") {
+      state.groupStats.unknown += 1;
+      const currentWord = state.unitWords[state.currentIndex];
+      if (currentWord) {
+        state.groupStats.unknownIds = Array.from(new Set([...(state.groupStats.unknownIds || []), currentWord.id]));
+      }
+    }
   }
   state.undoWordId = null;
   state.currentIndex += 1;
@@ -1162,6 +1299,7 @@ function renderBreak(info) {
   state.breakInfo = info;
   clearTimers();
   releaseWakeLock();
+  const roundUnknownIds = getRoundUnknownIds();
   const title = info.reviewEnd
     ? `${state.reviewMode?.label || "复盘"}总结`
     : info.manual
@@ -1179,23 +1317,43 @@ function renderBreak(info) {
           <div class="stat-box"><span>重难点</span><strong>${state.groupStats.unknown}</strong></div>
         </div>
         <button class="btn btn--primary btn--wide" id="continueBtn" type="button">继续下一组</button>
+        ${roundUnknownIds.length && !info.reviewEnd ? `<button class="btn btn--ghost btn--wide" id="roundUnknownReviewBtn" type="button">仅复习本轮重难点 (${roundUnknownIds.length})</button>` : ""}
       </div>
     </section>
   `;
   document.getElementById("continueBtn").addEventListener("click", continueAfterBreak);
+  const roundReviewBtn = document.getElementById("roundUnknownReviewBtn");
+  if (roundReviewBtn) roundReviewBtn.addEventListener("click", startRoundUnknownReview);
 }
 
 async function continueAfterBreak() {
   const book = currentBook();
+  if (state.breakInfo?.reviewEnd && state.reviewMode?.mode === "round-unknown" && state.roundReturn) {
+    const ret = state.roundReturn;
+    state.reviewMode = null;
+    state.roundReturn = null;
+    state.unitWords = ret.unitWords;
+    state.currentIndex = ret.currentIndex;
+    state.groupStats = createGroupStats();
+    state.showZh = false;
+    if (state.currentIndex >= state.unitWords.length) {
+      state.groupStats = ret.groupStats || createGroupStats();
+      renderBreak(ret.breakInfo || { unitEnd: true });
+      return;
+    }
+    await requestWakeLock();
+    renderFlashcard();
+    return;
+  }
   if (state.breakInfo?.reviewEnd) {
     const label = state.reviewMode?.label || "复盘";
     state.reviewMode = null;
-    state.groupStats = { seen: 0, known: 0, unknown: 0 };
+    state.groupStats = createGroupStats();
     setSetupStatus(`${label}已完成。`, "ok");
     renderSetup();
     return;
   }
-  state.groupStats = { seen: 0, known: 0, unknown: 0 };
+  state.groupStats = createGroupStats();
   state.showZh = false;
   if (state.breakInfo?.unitEnd) {
     if (state.settings.unit < book.totalUnits) {
@@ -1210,6 +1368,30 @@ async function continueAfterBreak() {
       return;
     }
   }
+  await requestWakeLock();
+  renderFlashcard();
+}
+
+function getRoundUnknownIds() {
+  return Array.from(new Set((state.groupStats.unknownIds || []).map(Number).filter(Boolean)));
+}
+
+async function startRoundUnknownReview() {
+  const ids = getRoundUnknownIds();
+  if (!ids.length) return;
+  const idSet = new Set(ids);
+  state.roundReturn = {
+    unitWords: state.unitWords,
+    currentIndex: state.currentIndex,
+    groupStats: { ...state.groupStats, unknownIds: [...(state.groupStats.unknownIds || [])] },
+    breakInfo: state.breakInfo
+  };
+  state.unitWords = state.unitWords.filter((word) => idSet.has(word.id));
+  state.currentIndex = 0;
+  state.groupStats = createGroupStats();
+  state.showZh = false;
+  state.playbackPaused = false;
+  state.reviewMode = { mode: "round-unknown", label: "本轮重难点复习", wordIds: ids };
   await requestWakeLock();
   renderFlashcard();
 }

@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "vocab-machine-v4";
+const CACHE_NAME = "vocab-machine-v5";
 const ASSETS = [
   "./",
   "./index.html",

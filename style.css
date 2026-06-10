@@ -387,12 +387,56 @@ button:not(:disabled) {
   line-height: 1.45;
 }
 
+.live-counter {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.live-counter strong {
+  color: var(--accent);
+  font-size: 16px;
+  animation: counter-pop 0.22s ease both;
+}
+
+@keyframes counter-pop {
+  0% {
+    transform: scale(0.95);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
 .stage {
   min-width: 0;
   height: calc(100dvh - 24px);
   display: grid;
   place-items: center;
   position: relative;
+}
+
+.resume-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  border-radius: var(--card-radius);
+  background: rgba(5, 8, 12, 0.36);
+  backdrop-filter: blur(4px);
+}
+
+.resume-overlay .btn {
+  max-width: 260px;
+  box-shadow: var(--shadow);
 }
 
 .card-stack {
@@ -412,13 +456,27 @@ button:not(:disabled) {
   align-items: center;
   gap: clamp(14px, 3vh, 28px);
   border-radius: var(--card-radius);
-  background: var(--surface);
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, var(--freq-alpha, 0.04)), rgba(15, 118, 110, var(--freq-alpha-soft, 0.015))),
+    var(--surface);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
   padding: clamp(18px, 4vw, 44px);
   transform: translate3d(0, 0, 0);
   will-change: transform;
   overflow: hidden;
+}
+
+.freq-watermark {
+  position: absolute;
+  right: 18px;
+  bottom: 4px;
+  color: rgba(15, 118, 110, calc(var(--freq-alpha, 0.06) + 0.08));
+  font-size: clamp(52px, 12vw, 128px);
+  line-height: 1;
+  font-weight: 950;
+  pointer-events: none;
+  z-index: 0;
 }
 
 .word-card--next {
@@ -443,16 +501,27 @@ button:not(:disabled) {
   color: var(--muted);
   font-size: 13px;
   font-weight: 800;
+  z-index: 2;
+}
+
+.word-card__en-shell {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  z-index: 2;
 }
 
 .word-card__en {
-  width: 100%;
+  max-width: 100%;
   text-align: center;
   font-size: clamp(48px, 10vw, 112px);
   line-height: 0.98;
   font-weight: 950;
   letter-spacing: 0;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
 }
 
 .word-card__en.is-speaking,
@@ -480,15 +549,29 @@ button:not(:disabled) {
   color: var(--text);
   font-size: clamp(20px, 3.2vw, 34px);
   line-height: 1.36;
-  text-align: center;
+  text-align: left;
   font-weight: 760;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  z-index: 2;
 }
 
 .speech-token {
-  display: inline-block;
+  display: block;
   border-radius: 6px;
-  padding: 0 2px;
+  padding: 1px 6px;
   transition: color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.meaning-line {
+  max-width: 100%;
+}
+
+.meaning-highlight {
+  background: transparent;
+  color: var(--danger);
+  font-weight: 950;
 }
 
 .word-card__zh.is-hidden {
@@ -566,6 +649,10 @@ button:not(:disabled) {
 .break-panel h1 {
   margin: 0;
   font-size: 26px;
+}
+
+.break-panel .btn + .btn {
+  margin-top: 10px;
 }
 
 .stats-grid {
@@ -942,6 +1029,11 @@ button:not(:disabled) {
     margin-top: 0;
     grid-template-columns: 1fr auto;
     align-items: end;
+  }
+
+  .live-counter {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .progress-title {
