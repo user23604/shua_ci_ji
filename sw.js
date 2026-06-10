@@ -1,20 +1,24 @@
 "use strict";
 
-const CACHE_NAME = "vocab-machine-v5";
-const ASSETS = [
+const CACHE_NAME = "vocab-machine-v6";
+const CORE_ASSETS = [
   "./",
   "./index.html",
   "./style.css",
   "./app.js",
   "./manifest.json",
+  "./sw.js"
+];
+const STATIC_ASSETS = [
   "./icon.svg",
   "./27ky_shanguo_gaopin.csv"
 ];
+const PRECACHE_ASSETS = [...CORE_ASSETS, ...STATIC_ASSETS];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(ASSETS))
+      .then((cache) => cache.addAll(PRECACHE_ASSETS))
       .then(() => self.skipWaiting())
   );
 });
@@ -22,23 +26,61 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
       .then(() => self.clients.claim())
   );
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-        return response;
-      });
-    })
-  );
+
+  if (isCoreRequest(url)) {
+    event.respondWith(networkFirst(event.request));
+    return;
+  }
+
+  event.respondWith(staleWhileRevalidate(event.request));
 });
+
+function isCoreRequest(url) {
+  const pathname = url.pathname.split("/").pop() || "index.html";
+  return pathname === "" ||
+    pathname === "index.html" ||
+    pathname === "app.js" ||
+    pathname === "style.css" ||
+    pathname === "manifest.json" ||
+    pathname === "sw.js";
+}
+
+async function networkFirst(request) {
+  const cache = await caches.open(CACHE_NAME);
+  try {
+    const response = await fetch(noStoreRequest(request));
+    if (response.ok) await cache.put(request, response.clone());
+    return response;
+  } catch {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    throw new Error("Network unavailable and no cache match.");
+  }
+}
+
+async function staleWhileRevalidate(request) {
+  const cache = await caches.open(CACHE_NAME);
+  const cached = await cache.match(request);
+  const fetched = fetch(request).then((response) => {
+    if (response.ok) cache.put(request, response.clone());
+    return response;
+  }).catch(() => null);
+  return cached || fetched;
+}
+
+function noStoreRequest(request) {
+  return new Request(request, { cache: "no-store" });
+}

@@ -283,9 +283,7 @@ function splitDefinitionLines(text) {
     .replace(/\s+(?=(?:interj|prep|conj|pron|adj|adv|aux|num|art|vi|vt|ad|int|n|v|a)\.)/gi, "\n")
     .trim();
   if (!normalized) return [];
-  return normalized.split("\n").flatMap((section) => (
-    section.split("；").map((line) => line.trim()).filter(Boolean)
-  ));
+  return normalized.split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
 function highlightTerms(highlight) {
@@ -434,9 +432,7 @@ function isAuthenticated() {
 
 function init() {
   normalizeSettings();
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
-  }
+  registerServiceWorker();
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") pausePlaybackForBackground();
   });
@@ -448,6 +444,29 @@ function init() {
   } else {
     renderAuth();
   }
+}
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (refreshing) return;
+    refreshing = true;
+    window.location.reload();
+  });
+  navigator.serviceWorker.register("sw.js").then((registration) => {
+    if (registration.waiting) registration.waiting.postMessage({ type: "SKIP_WAITING" });
+    registration.addEventListener("updatefound", () => {
+      const worker = registration.installing;
+      if (!worker) return;
+      worker.addEventListener("statechange", () => {
+        if (worker.state === "installed" && navigator.serviceWorker.controller) {
+          worker.postMessage({ type: "SKIP_WAITING" });
+        }
+      });
+    });
+    registration.update().catch(() => {});
+  }).catch(() => {});
 }
 
 function normalizeSettings() {
