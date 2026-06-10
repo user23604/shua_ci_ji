@@ -338,10 +338,55 @@ button:not(:disabled) {
   gap: 12px;
 }
 
-.sync-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
+.cloud-sync-indicator {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 80;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px) scale(0.92);
+  transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.cloud-sync-indicator__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #7edc94;
+  box-shadow: 0 0 0 5px rgba(126, 220, 148, 0.14), 0 0 18px rgba(22, 128, 60, 0.34);
+}
+
+.cloud-sync-indicator.is-syncing,
+.cloud-sync-indicator.is-ok,
+.cloud-sync-indicator.is-error {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.cloud-sync-indicator.is-syncing .cloud-sync-indicator__dot {
+  animation: syncPulse 1.25s ease-in-out infinite;
+}
+
+.cloud-sync-indicator.is-error .cloud-sync-indicator__dot {
+  background: #f1b35e;
+  box-shadow: 0 0 0 5px rgba(241, 179, 94, 0.16), 0 0 18px rgba(161, 92, 7, 0.28);
+}
+
+@keyframes syncPulse {
+  0%,
+  100% {
+    transform: scale(0.76);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
 }
 
 .flash-view {

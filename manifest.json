@@ -1,11 +1,11 @@
 {
   "name": "考研词汇自动刷词机",
   "short_name": "刷词机",
-  "description": "横屏使用的考研词汇自动刷词机",
+  "description": "横竖屏均可使用的考研词汇自动刷词机",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "orientation": "landscape",
+  "orientation": "any",
   "background_color": "#0d0f12",
   "theme_color": "#111318",
   "icons": [

@@ -4,7 +4,11 @@ const ACCESS_KEY = "ky2027";
 const AUTH_KEY = "is_authenticated";
 const SETTINGS_KEY = "vocab_machine_settings_v1";
 const CLOUD_KEY = "vocab_machine_cloud_v1";
+const SYNC_META_KEY = "vocab_machine_sync_meta_v1";
 const DAY_MS = 24 * 60 * 60 * 1000;
+const AUTO_SYNC_DEBOUNCE_MS = 700;
+const AUTO_SYNC_PUSH_GAP_MS = 1500;
+const SYNC_OK_VISIBLE_MS = 2000;
 const BOOKS = [
   {
     id: "27ky-shanguo-gaopin",
@@ -33,6 +37,7 @@ const app = document.getElementById("app");
 const state = {
   settings: loadJson(SETTINGS_KEY, DEFAULT_SETTINGS),
   cloud: loadJson(CLOUD_KEY, { token: "", gistId: "" }),
+  syncMeta: loadJson(SYNC_META_KEY, { localUpdatedAt: "" }),
   wordsByBook: new Map(),
   view: "auth",
   words: [],
@@ -59,7 +64,14 @@ const state = {
   playbackPaused: false,
   cardStartedAt: 0,
   currentWordRecorded: false,
-  pointer: null
+  pointer: null,
+  applyingRemote: false,
+  syncStatus: "idle",
+  syncConfigTimer: null,
+  syncHideTimer: null,
+  syncPullPromise: null,
+  syncPushPromise: null,
+  lastPushStartedAt: 0
 };
 
 function createGroupStats() {
@@ -97,6 +109,7 @@ function loadProgress(bookId) {
 
 function saveProgress(bookId, progress) {
   saveJson(progressKey(bookId), progress);
+  touchLocalSync();
 }
 
 function loadMarks(bookId) {
@@ -112,6 +125,7 @@ function saveMarks(bookId, marks) {
     known: Array.from(new Set(marks.known.map(Number))).sort((a, b) => a - b),
     unknown: Array.from(new Set(marks.unknown.map(Number))).sort((a, b) => a - b)
   });
+  touchLocalSync();
 }
 
 function loadActivity(bookId) {
@@ -121,20 +135,32 @@ function loadActivity(bookId) {
 
 function saveActivity(bookId, activity) {
   saveJson(activityKey(bookId), activity);
+  touchLocalSync();
 }
 
 function currentBook() {
   return BOOKS.find((book) => book.id === state.settings.bookId) || BOOKS[0];
 }
 
-function persistSettings() {
+function persistSettings({ touch = true } = {}) {
   const book = currentBook();
   state.settings.unit = clamp(Number(state.settings.unit) || 1, 1, book.totalUnits);
   saveJson(SETTINGS_KEY, state.settings);
+  if (touch) touchLocalSync();
 }
 
 function persistCloud() {
   saveJson(CLOUD_KEY, state.cloud);
+}
+
+function persistSyncMeta() {
+  saveJson(SYNC_META_KEY, state.syncMeta);
+}
+
+function touchLocalSync() {
+  if (state.applyingRemote) return;
+  state.syncMeta.localUpdatedAt = new Date().toISOString();
+  persistSyncMeta();
 }
 
 function clamp(value, min, max) {
@@ -329,6 +355,45 @@ function setSetupStatus(message, type = "") {
   if (state.view === "setup") renderSetup();
 }
 
+function renderSyncIndicator() {
+  const status = state.syncStatus || "idle";
+  const label = status === "syncing"
+    ? "云同步中"
+    : status === "ok"
+      ? "云同步完成"
+      : status === "error"
+        ? "云同步失败"
+        : "云同步空闲";
+  return `
+    <div class="cloud-sync-indicator is-${escapeHtml(status)}" id="cloudSyncIndicator" aria-label="${escapeHtml(label)}">
+      <span class="cloud-sync-indicator__dot"></span>
+    </div>
+  `;
+}
+
+function setSyncStatus(status) {
+  state.syncStatus = status;
+  if (state.syncHideTimer) {
+    clearTimeout(state.syncHideTimer);
+    state.syncHideTimer = null;
+  }
+  const indicator = document.getElementById("cloudSyncIndicator");
+  if (indicator) {
+    indicator.className = `cloud-sync-indicator is-${status}`;
+    indicator.setAttribute("aria-label", status === "syncing" ? "云同步中" : status === "ok" ? "云同步完成" : status === "error" ? "云同步失败" : "云同步空闲");
+  }
+  if (status === "ok" || status === "error") {
+    state.syncHideTimer = window.setTimeout(() => {
+      state.syncStatus = "idle";
+      const current = document.getElementById("cloudSyncIndicator");
+      if (current) {
+        current.className = "cloud-sync-indicator is-idle";
+        current.setAttribute("aria-label", "云同步空闲");
+      }
+    }, SYNC_OK_VISIBLE_MS);
+  }
+}
+
 function clearTimers() {
   state.playbackToken += 1;
   state.timers.forEach((timer) => clearTimeout(timer));
@@ -434,13 +499,20 @@ function init() {
   normalizeSettings();
   registerServiceWorker();
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") pausePlaybackForBackground();
+    if (document.visibilityState === "hidden") {
+      pausePlaybackForBackground();
+      autoPushToGist({ keepalive: true, reason: "hidden" });
+    }
   });
-  window.addEventListener("pagehide", pausePlaybackForBackground);
+  window.addEventListener("pagehide", () => {
+    pausePlaybackForBackground();
+    autoPushToGist({ keepalive: true, reason: "pagehide" });
+  });
   window.addEventListener("blur", pausePlaybackForBackground);
   window.addEventListener("resize", fitActiveWord);
   if (isAuthenticated()) {
     renderSetup();
+    queueAutoPull("init");
   } else {
     renderAuth();
   }
@@ -483,7 +555,7 @@ function normalizeSettings() {
     summaryCount: clamp(Number(state.settings.summaryCount) || DEFAULT_SETTINGS.summaryCount, 5, 200),
     rate: clamp(Number(state.settings.rate) || DEFAULT_SETTINGS.rate, 0.8, 2)
   };
-  persistSettings();
+  persistSettings({ touch: false });
 }
 
 function renderAuth(error = false) {
@@ -505,6 +577,7 @@ function renderAuth(error = false) {
         </form>
       </div>
     </section>
+    ${renderSyncIndicator()}
   `;
   const form = document.getElementById("authForm");
   const input = document.getElementById("passwordInput");
@@ -624,10 +697,6 @@ function renderSetup() {
                 <input class="input" id="gistInput" type="password" value="${escapeHtml(state.cloud.gistId)}" autocomplete="off">
               </label>
             </div>
-            <div class="sync-actions">
-              <button class="btn btn--ghost" id="pullBtn" type="button">从云端覆盖本地</button>
-              <button class="btn btn--ghost" id="pushBtn" type="button">将本地推到云端</button>
-            </div>
           </div>
         </div>
       </section>
@@ -636,6 +705,7 @@ function renderSetup() {
     </section>
     ${state.archiveOpen ? renderArchiveDrawer() : ""}
     ${state.statsOpen ? renderStatsDrawer() : ""}
+    ${renderSyncIndicator()}
   `;
 
   bindSetupEvents();
@@ -720,15 +790,15 @@ function bindSetupEvents() {
   tokenInput.addEventListener("input", () => {
     state.cloud.token = tokenInput.value.trim();
     persistCloud();
+    queueAutoPull("config");
   });
 
   gistInput.addEventListener("input", () => {
     state.cloud.gistId = gistInput.value.trim();
     persistCloud();
+    queueAutoPull("config");
   });
 
-  document.getElementById("pullBtn").addEventListener("click", pullFromGist);
-  document.getElementById("pushBtn").addEventListener("click", pushToGist);
   startBtn.addEventListener("click", startStudy);
   statsBtn.addEventListener("click", openStats);
   archiveBtn.addEventListener("click", openArchive);
@@ -873,12 +943,14 @@ function renderFlashcard() {
     </section>
     ${state.archiveOpen ? renderArchiveDrawer() : ""}
     ${state.statsOpen ? renderStatsDrawer() : ""}
+    ${renderSyncIndicator()}
   `;
 
   document.getElementById("backSetupBtn").addEventListener("click", () => {
     commitCurrentCardActivity();
     state.reviewMode = null;
     renderSetup();
+    autoPushToGist({ reason: "back-setup" });
   });
   document.getElementById("statsBtn").addEventListener("click", openStats);
   document.getElementById("archiveBtn").addEventListener("click", openArchive);
@@ -1314,6 +1386,7 @@ function goPrevious() {
 }
 
 function renderBreak(info) {
+  const enteringBreak = state.view !== "break";
   state.view = "break";
   state.breakInfo = info;
   clearTimers();
@@ -1339,10 +1412,12 @@ function renderBreak(info) {
         ${roundUnknownIds.length && !info.reviewEnd ? `<button class="btn btn--ghost btn--wide" id="roundUnknownReviewBtn" type="button">仅复习本轮重难点 (${roundUnknownIds.length})</button>` : ""}
       </div>
     </section>
+    ${renderSyncIndicator()}
   `;
   document.getElementById("continueBtn").addEventListener("click", continueAfterBreak);
   const roundReviewBtn = document.getElementById("roundUnknownReviewBtn");
   if (roundReviewBtn) roundReviewBtn.addEventListener("click", startRoundUnknownReview);
+  if (enteringBreak) autoPushToGist({ reason: "break" });
 }
 
 async function continueAfterBreak() {
@@ -1673,15 +1748,6 @@ function bindStatsEvents() {
   if (review) review.addEventListener("click", () => startReview(state.statsMode));
 }
 
-function requireCloudConfig() {
-  state.cloud.token = (state.cloud.token || "").trim();
-  state.cloud.gistId = (state.cloud.gistId || "").trim();
-  persistCloud();
-  if (!state.cloud.token || !state.cloud.gistId) {
-    throw new Error("请先填写 GitHub PAT 和 Gist ID。");
-  }
-}
-
 function collectSyncPayload() {
   const progress = {};
   const marks = {};
@@ -1702,70 +1768,185 @@ function collectSyncPayload() {
   };
 }
 
-async function pushToGist() {
+function normalizeCloudConfig() {
+  state.cloud.token = (state.cloud.token || "").trim();
+  state.cloud.gistId = (state.cloud.gistId || "").trim();
+  persistCloud();
+  return Boolean(state.cloud.token && state.cloud.gistId);
+}
+
+function queueAutoPull(reason = "auto") {
+  if (!normalizeCloudConfig()) return;
+  if (state.syncConfigTimer) clearTimeout(state.syncConfigTimer);
+  state.syncConfigTimer = window.setTimeout(() => {
+    state.syncConfigTimer = null;
+    autoPullFromGist(reason);
+  }, reason === "init" ? 0 : AUTO_SYNC_DEBOUNCE_MS);
+}
+
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function dateMs(value) {
+  const time = Date.parse(value || "");
+  return Number.isFinite(time) ? time : 0;
+}
+
+function latestLocalProgressMs() {
+  return BOOKS.reduce((latest, book) => {
+    const progress = loadProgress(book.id);
+    return Math.max(latest, dateMs(progress.updatedAt));
+  }, 0);
+}
+
+function localSyncMs() {
+  return Math.max(dateMs(state.syncMeta.localUpdatedAt), latestLocalProgressMs());
+}
+
+function sanitizeProgressPayload(progress) {
+  return isPlainObject(progress) ? progress : { lastWordId: null };
+}
+
+function sanitizeMarksPayload(marks) {
+  return {
+    known: Array.isArray(marks?.known) ? marks.known : [],
+    unknown: Array.isArray(marks?.unknown) ? marks.unknown : []
+  };
+}
+
+function sanitizeActivityPayload(activity) {
+  return {
+    days: isPlainObject(activity?.days) ? activity.days : {}
+  };
+}
+
+function parseSyncPayloadContent(content) {
+  if (!String(content || "").trim()) return { kind: "empty" };
   try {
-    requireCloudConfig();
-    setSetupStatus("正在推送到云端...");
-    const payload = collectSyncPayload();
-    const response = await fetch(`https://api.github.com/gists/${encodeURIComponent(state.cloud.gistId)}`, {
-      method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${state.cloud.token}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        files: {
-          "sync.json": {
-            content: JSON.stringify(payload, null, 2)
-          }
-        }
-      })
-    });
-    if (!response.ok) throw new Error(`云端推送失败：${response.status}`);
-    setSetupStatus("本地进度已推送到云端。", "ok");
-  } catch (error) {
-    setSetupStatus(error.message || "云同步失败", "error");
+    const payload = JSON.parse(content);
+    if (!isPlainObject(payload) || !Object.keys(payload).length) return { kind: "empty" };
+    if (payload.version !== 1 && (payload.version || payload.settings || payload.progress)) return { kind: "invalid" };
+    if (!isPlainObject(payload.settings) || !isPlainObject(payload.progress)) return { kind: "empty" };
+    return { kind: "valid", payload };
+  } catch {
+    return { kind: "empty" };
   }
 }
 
-async function pullFromGist() {
-  try {
-    requireCloudConfig();
-    setSetupStatus("正在从云端拉取...");
-    const response = await fetch(`https://api.github.com/gists/${encodeURIComponent(state.cloud.gistId)}`, {
-      headers: {
-        Authorization: `Bearer ${state.cloud.token}`,
-        Accept: "application/vnd.github+json"
+async function fetchGistSyncPayload() {
+  const response = await fetch(`https://api.github.com/gists/${encodeURIComponent(state.cloud.gistId)}`, {
+    headers: {
+      Authorization: `Bearer ${state.cloud.token}`,
+      Accept: "application/vnd.github+json"
+    }
+  });
+  if (!response.ok) throw new Error(`云端拉取失败：${response.status}`);
+  const gist = await response.json();
+  const file = gist.files?.["sync.json"];
+  if (!file?.content) return { kind: "empty" };
+  return parseSyncPayloadContent(file.content);
+}
+
+async function autoPullFromGist(reason = "auto") {
+  if (!normalizeCloudConfig()) return false;
+  if (state.syncPullPromise) return state.syncPullPromise;
+  state.syncPullPromise = (async () => {
+    setSyncStatus("syncing");
+    try {
+      const result = await fetchGistSyncPayload();
+      if (result.kind === "empty") {
+        await autoPushToGist({ force: true, reason: `${reason}-init-empty` });
+        return true;
       }
-    });
-    if (!response.ok) throw new Error(`云端拉取失败：${response.status}`);
-    const gist = await response.json();
-    const file = gist.files?.["sync.json"];
-    if (!file?.content) throw new Error("Gist 中没有 sync.json。");
-    applySyncPayload(JSON.parse(file.content));
-    setSetupStatus("云端进度已覆盖本地。", "ok");
-  } catch (error) {
-    setSetupStatus(error.message || "云同步失败", "error");
-  }
+      if (result.kind !== "valid") {
+        setSyncStatus("error");
+        return false;
+      }
+      const payload = result.payload;
+      const remoteMs = dateMs(payload.updatedAt);
+      const localMs = localSyncMs();
+      if (remoteMs > localMs) {
+        applySyncPayload(payload);
+        renderCurrentView();
+        setSyncStatus("ok");
+      } else if (localMs > remoteMs) {
+        await autoPushToGist({ force: true, reason: `${reason}-local-newer` });
+      } else {
+        setSyncStatus("ok");
+      }
+      return true;
+    } catch {
+      setSyncStatus("error");
+      return false;
+    } finally {
+      state.syncPullPromise = null;
+    }
+  })();
+  return state.syncPullPromise;
+}
+
+async function autoPushToGist({ keepalive = false, force = false, reason = "auto" } = {}) {
+  if (!normalizeCloudConfig()) return false;
+  if (state.syncPushPromise) return state.syncPushPromise;
+  const now = Date.now();
+  if (!force && now - state.lastPushStartedAt < AUTO_SYNC_PUSH_GAP_MS) return false;
+  state.lastPushStartedAt = now;
+  state.syncPushPromise = (async () => {
+    setSyncStatus("syncing");
+    const payload = collectSyncPayload();
+    try {
+      const response = await fetch(`https://api.github.com/gists/${encodeURIComponent(state.cloud.gistId)}`, {
+        method: "PATCH",
+        keepalive,
+        headers: {
+          Authorization: `Bearer ${state.cloud.token}`,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          files: {
+            "sync.json": {
+              content: JSON.stringify(payload, null, 2)
+            }
+          }
+        })
+      });
+      if (!response.ok) throw new Error(`云端推送失败：${response.status}`);
+      state.syncMeta.localUpdatedAt = payload.updatedAt;
+      persistSyncMeta();
+      setSyncStatus("ok");
+      return true;
+    } catch {
+      setSyncStatus("error");
+      return false;
+    } finally {
+      state.syncPushPromise = null;
+    }
+  })();
+  return state.syncPushPromise;
 }
 
 function applySyncPayload(payload) {
-  if (!payload || payload.version !== 1) throw new Error("sync.json 格式不兼容。");
-  if (payload.settings) {
+  if (!isPlainObject(payload) || payload.version !== 1) return false;
+  if (!isPlainObject(payload.settings) || !isPlainObject(payload.progress)) return false;
+  state.applyingRemote = true;
+  try {
     state.settings = { ...DEFAULT_SETTINGS, ...payload.settings };
     normalizeSettings();
+    Object.entries(payload.progress).forEach(([bookId, progress]) => saveProgress(bookId, sanitizeProgressPayload(progress)));
+    if (isPlainObject(payload.marks)) {
+      Object.entries(payload.marks).forEach(([bookId, marks]) => saveMarks(bookId, sanitizeMarksPayload(marks)));
+    }
+    if (isPlainObject(payload.activity)) {
+      Object.entries(payload.activity).forEach(([bookId, activity]) => saveActivity(bookId, sanitizeActivityPayload(activity)));
+    }
+  } finally {
+    state.applyingRemote = false;
   }
-  if (payload.progress) {
-    Object.entries(payload.progress).forEach(([bookId, progress]) => saveProgress(bookId, progress || {}));
-  }
-  if (payload.marks) {
-    Object.entries(payload.marks).forEach(([bookId, marks]) => saveMarks(bookId, marks || { known: [], unknown: [] }));
-  }
-  if (payload.activity) {
-    Object.entries(payload.activity).forEach(([bookId, activity]) => saveActivity(bookId, activity || { days: {} }));
-  }
-  renderSetup();
+  state.syncMeta.localUpdatedAt = payload.updatedAt || new Date().toISOString();
+  persistSyncMeta();
+  return true;
 }
 
 async function requestWakeLock() {
