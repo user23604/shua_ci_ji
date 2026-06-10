@@ -477,7 +477,7 @@ function normalizeSettings() {
     ...state.settings,
     bookId: book.id,
     unit: clamp(Number(state.settings.unit) || 1, 1, book.totalUnits),
-    duration: clamp(Number(state.settings.duration) || DEFAULT_SETTINGS.duration, 2, 10),
+    duration: clamp(Number(state.settings.duration) || DEFAULT_SETTINGS.duration, 1, 10),
     zhDelay: clamp(Number(state.settings.zhDelay) || 0, 0, 5),
     summaryMode: summaryModes.has(state.settings.summaryMode) ? state.settings.summaryMode : DEFAULT_SETTINGS.summaryMode,
     summaryCount: clamp(Number(state.settings.summaryCount) || DEFAULT_SETTINGS.summaryCount, 5, 200),
@@ -576,7 +576,7 @@ function renderSetup() {
         <div class="settings-panel settings-panel--span2">
           <h2 class="panel-title">节奏控制</h2>
           <div class="control-list">
-            ${rangeControl("durationInput", "单词停留总时长", state.settings.duration, "秒", 2, 10, 0.5)}
+            ${rangeControl("durationInput", "单词停留总时长", state.settings.duration, "秒", 1, 10, 0.1)}
             ${rangeControl("delayInput", "中文释义延迟", state.settings.zhDelay, "秒", 0, 5, 0.1)}
             <label class="field-label">
               总结节点
@@ -956,7 +956,7 @@ async function scheduleWordTimers() {
   if (!word || state.archiveOpen || state.statsOpen || state.playbackPaused) return;
   const token = ++state.playbackToken;
   const startedAt = Date.now();
-  const totalMs = Math.max(2000, Number(state.settings.duration) * 1000);
+  const totalMs = Math.max(1000, Number(state.settings.duration) * 1000);
   const requestedRevealMs = clamp(Number(state.settings.zhDelay) * 1000, 0, totalMs);
   const definition = formatDefinition(word);
   const hasEnSpeech = Boolean(state.settings.speakEn);
