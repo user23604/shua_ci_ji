@@ -9,6 +9,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const AUTO_SYNC_DEBOUNCE_MS = 700;
 const AUTO_SYNC_PUSH_GAP_MS = 1500;
 const SYNC_OK_VISIBLE_MS = 2000;
+const SYNC_STATUS_LABELS = {
+  idle: "云同步空闲",
+  syncing: "云同步中",
+  ok: "云同步完成",
+  error: "云同步失败"
+};
 const BOOKS = [
   {
     id: "27ky-shanguo-gaopin",
@@ -65,7 +71,6 @@ const state = {
   cardStartedAt: 0,
   currentWordRecorded: false,
   pointer: null,
-  applyingRemote: false,
   syncStatus: "idle",
   syncConfigTimer: null,
   syncHideTimer: null,
@@ -81,7 +86,9 @@ function createGroupStats() {
 function loadJson(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? { ...fallback, ...JSON.parse(raw) } : { ...fallback };
+    if (!raw) return { ...fallback };
+    const parsed = JSON.parse(raw);
+    return isPlainObject(parsed) ? { ...fallback, ...parsed } : { ...fallback };
   } catch {
     return { ...fallback };
   }
@@ -107,9 +114,9 @@ function loadProgress(bookId) {
   return loadJson(progressKey(bookId), { lastWordId: null });
 }
 
-function saveProgress(bookId, progress) {
+function saveProgress(bookId, progress, { touch = true } = {}) {
   saveJson(progressKey(bookId), progress);
-  touchLocalSync();
+  if (touch) touchLocalSync();
 }
 
 function loadMarks(bookId) {
@@ -120,12 +127,12 @@ function loadMarks(bookId) {
   };
 }
 
-function saveMarks(bookId, marks) {
+function saveMarks(bookId, marks, { touch = true } = {}) {
   saveJson(marksKey(bookId), {
     known: Array.from(new Set(marks.known.map(Number))).sort((a, b) => a - b),
     unknown: Array.from(new Set(marks.unknown.map(Number))).sort((a, b) => a - b)
   });
-  touchLocalSync();
+  if (touch) touchLocalSync();
 }
 
 function loadActivity(bookId) {
@@ -133,9 +140,9 @@ function loadActivity(bookId) {
   return { days: activity.days && typeof activity.days === "object" ? activity.days : {} };
 }
 
-function saveActivity(bookId, activity) {
+function saveActivity(bookId, activity, { touch = true } = {}) {
   saveJson(activityKey(bookId), activity);
-  touchLocalSync();
+  if (touch) touchLocalSync();
 }
 
 function currentBook() {
@@ -158,7 +165,6 @@ function persistSyncMeta() {
 }
 
 function touchLocalSync() {
-  if (state.applyingRemote) return;
   state.syncMeta.localUpdatedAt = new Date().toISOString();
   persistSyncMeta();
 }
@@ -357,13 +363,7 @@ function setSetupStatus(message, type = "") {
 
 function renderSyncIndicator() {
   const status = state.syncStatus || "idle";
-  const label = status === "syncing"
-    ? "云同步中"
-    : status === "ok"
-      ? "云同步完成"
-      : status === "error"
-        ? "云同步失败"
-        : "云同步空闲";
+  const label = syncStatusLabel(status);
   return `
     <div class="cloud-sync-indicator is-${escapeHtml(status)}" id="cloudSyncIndicator" aria-label="${escapeHtml(label)}">
       <span class="cloud-sync-indicator__dot"></span>
@@ -380,7 +380,7 @@ function setSyncStatus(status) {
   const indicator = document.getElementById("cloudSyncIndicator");
   if (indicator) {
     indicator.className = `cloud-sync-indicator is-${status}`;
-    indicator.setAttribute("aria-label", status === "syncing" ? "云同步中" : status === "ok" ? "云同步完成" : status === "error" ? "云同步失败" : "云同步空闲");
+    indicator.setAttribute("aria-label", syncStatusLabel(status));
   }
   if (status === "ok" || status === "error") {
     state.syncHideTimer = window.setTimeout(() => {
@@ -388,10 +388,14 @@ function setSyncStatus(status) {
       const current = document.getElementById("cloudSyncIndicator");
       if (current) {
         current.className = "cloud-sync-indicator is-idle";
-        current.setAttribute("aria-label", "云同步空闲");
+        current.setAttribute("aria-label", syncStatusLabel("idle"));
       }
     }, SYNC_OK_VISIBLE_MS);
   }
+}
+
+function syncStatusLabel(status) {
+  return SYNC_STATUS_LABELS[status] || SYNC_STATUS_LABELS.idle;
 }
 
 function clearTimers() {
@@ -501,12 +505,12 @@ function init() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       pausePlaybackForBackground();
-      autoPushToGist({ keepalive: true, reason: "hidden" });
+      autoPushToGist({ keepalive: true });
     }
   });
   window.addEventListener("pagehide", () => {
     pausePlaybackForBackground();
-    autoPushToGist({ keepalive: true, reason: "pagehide" });
+    autoPushToGist({ keepalive: true });
   });
   window.addEventListener("blur", pausePlaybackForBackground);
   window.addEventListener("resize", fitActiveWord);
@@ -890,7 +894,7 @@ function getStartIndex(bookId) {
   return index >= 0 ? index : 0;
 }
 
-function renderFlashcard() {
+function renderFlashcard({ touchProgress = true } = {}) {
   state.view = "flash";
   clearTimers();
   const book = currentBook();
@@ -900,7 +904,7 @@ function renderFlashcard() {
     renderBreak({ unitEnd: true, reviewEnd: Boolean(state.reviewMode) });
     return;
   }
-  saveProgress(book.id, { lastWordId: word.id, unit: word.unit, updatedAt: new Date().toISOString() });
+  saveProgress(book.id, { lastWordId: word.id, unit: word.unit, updatedAt: new Date().toISOString() }, { touch: touchProgress });
   const marks = loadMarks(book.id);
   const marked = marks.known.includes(word.id) || marks.unknown.includes(word.id);
   const undo = state.undoWordId === word.id && marked;
@@ -950,7 +954,7 @@ function renderFlashcard() {
     commitCurrentCardActivity();
     state.reviewMode = null;
     renderSetup();
-    autoPushToGist({ reason: "back-setup" });
+    autoPushToGist();
   });
   document.getElementById("statsBtn").addEventListener("click", openStats);
   document.getElementById("archiveBtn").addEventListener("click", openArchive);
@@ -1417,7 +1421,7 @@ function renderBreak(info) {
   document.getElementById("continueBtn").addEventListener("click", continueAfterBreak);
   const roundReviewBtn = document.getElementById("roundUnknownReviewBtn");
   if (roundReviewBtn) roundReviewBtn.addEventListener("click", startRoundUnknownReview);
-  if (enteringBreak) autoPushToGist({ reason: "break" });
+  if (enteringBreak) autoPushToGist();
 }
 
 async function continueAfterBreak() {
@@ -1525,8 +1529,8 @@ function closeArchive() {
   renderCurrentView();
 }
 
-function renderCurrentView() {
-  if (state.view === "flash") renderFlashcard();
+function renderCurrentView(options = {}) {
+  if (state.view === "flash") renderFlashcard(options);
   else if (state.view === "setup") renderSetup();
   else if (state.view === "break") renderBreak(state.breakInfo || { unitEnd: false });
   else renderAuth();
@@ -1780,7 +1784,7 @@ function queueAutoPull(reason = "auto") {
   if (state.syncConfigTimer) clearTimeout(state.syncConfigTimer);
   state.syncConfigTimer = window.setTimeout(() => {
     state.syncConfigTimer = null;
-    autoPullFromGist(reason);
+    autoPullFromGist();
   }, reason === "init" ? 0 : AUTO_SYNC_DEBOUNCE_MS);
 }
 
@@ -1826,11 +1830,11 @@ function parseSyncPayloadContent(content) {
   try {
     const payload = JSON.parse(content);
     if (!isPlainObject(payload) || !Object.keys(payload).length) return { kind: "empty" };
-    if (payload.version !== 1 && (payload.version || payload.settings || payload.progress)) return { kind: "invalid" };
+    if (payload.version !== undefined && payload.version !== 1) return { kind: "invalid" };
     if (!isPlainObject(payload.settings) || !isPlainObject(payload.progress)) return { kind: "empty" };
     return { kind: "valid", payload };
   } catch {
-    return { kind: "empty" };
+    return { kind: "invalid" };
   }
 }
 
@@ -1848,7 +1852,7 @@ async function fetchGistSyncPayload() {
   return parseSyncPayloadContent(file.content);
 }
 
-async function autoPullFromGist(reason = "auto") {
+async function autoPullFromGist() {
   if (!normalizeCloudConfig()) return false;
   if (state.syncPullPromise) return state.syncPullPromise;
   state.syncPullPromise = (async () => {
@@ -1856,7 +1860,7 @@ async function autoPullFromGist(reason = "auto") {
     try {
       const result = await fetchGistSyncPayload();
       if (result.kind === "empty") {
-        await autoPushToGist({ force: true, reason: `${reason}-init-empty` });
+        await autoPushToGist({ force: true });
         return true;
       }
       if (result.kind !== "valid") {
@@ -1868,10 +1872,10 @@ async function autoPullFromGist(reason = "auto") {
       const localMs = localSyncMs();
       if (remoteMs > localMs) {
         applySyncPayload(payload);
-        renderCurrentView();
+        renderCurrentView({ touchProgress: false });
         setSyncStatus("ok");
       } else if (localMs > remoteMs) {
-        await autoPushToGist({ force: true, reason: `${reason}-local-newer` });
+        await autoPushToGist({ force: true });
       } else {
         setSyncStatus("ok");
       }
@@ -1886,8 +1890,9 @@ async function autoPullFromGist(reason = "auto") {
   return state.syncPullPromise;
 }
 
-async function autoPushToGist({ keepalive = false, force = false, reason = "auto" } = {}) {
+async function autoPushToGist({ keepalive = false, force = false } = {}) {
   if (!normalizeCloudConfig()) return false;
+  if (state.syncPullPromise && !force) return state.syncPullPromise;
   if (state.syncPushPromise) return state.syncPushPromise;
   const now = Date.now();
   if (!force && now - state.lastPushStartedAt < AUTO_SYNC_PUSH_GAP_MS) return false;
@@ -1930,19 +1935,14 @@ async function autoPushToGist({ keepalive = false, force = false, reason = "auto
 function applySyncPayload(payload) {
   if (!isPlainObject(payload) || payload.version !== 1) return false;
   if (!isPlainObject(payload.settings) || !isPlainObject(payload.progress)) return false;
-  state.applyingRemote = true;
-  try {
-    state.settings = { ...DEFAULT_SETTINGS, ...payload.settings };
-    normalizeSettings();
-    Object.entries(payload.progress).forEach(([bookId, progress]) => saveProgress(bookId, sanitizeProgressPayload(progress)));
-    if (isPlainObject(payload.marks)) {
-      Object.entries(payload.marks).forEach(([bookId, marks]) => saveMarks(bookId, sanitizeMarksPayload(marks)));
-    }
-    if (isPlainObject(payload.activity)) {
-      Object.entries(payload.activity).forEach(([bookId, activity]) => saveActivity(bookId, sanitizeActivityPayload(activity)));
-    }
-  } finally {
-    state.applyingRemote = false;
+  state.settings = { ...DEFAULT_SETTINGS, ...payload.settings };
+  normalizeSettings();
+  Object.entries(payload.progress).forEach(([bookId, progress]) => saveProgress(bookId, sanitizeProgressPayload(progress), { touch: false }));
+  if (isPlainObject(payload.marks)) {
+    Object.entries(payload.marks).forEach(([bookId, marks]) => saveMarks(bookId, sanitizeMarksPayload(marks), { touch: false }));
+  }
+  if (isPlainObject(payload.activity)) {
+    Object.entries(payload.activity).forEach(([bookId, activity]) => saveActivity(bookId, sanitizeActivityPayload(activity), { touch: false }));
   }
   state.syncMeta.localUpdatedAt = payload.updatedAt || new Date().toISOString();
   persistSyncMeta();
