@@ -1,7 +1,7 @@
 "use strict";
 
 const CACHE_PREFIX = "vocab-machine-";
-const CACHE_NAME = `${CACHE_PREFIX}v7`;
+const CACHE_NAME = `${CACHE_PREFIX}v8`;
 const CORE_ASSETS = [
   "./",
   "./index.html",
@@ -12,7 +12,9 @@ const CORE_ASSETS = [
 ];
 const STATIC_ASSETS = [
   "./icon.svg",
-  "./27ky_shanguo_gaopin.csv"
+  "./27ky_shanguo_gaopin.csv",
+  "./hongbaoshu_bikao.csv",
+  "./hongbaoshu_jichu.csv"
 ];
 const PRECACHE_ASSETS = [...CORE_ASSETS, ...STATIC_ASSETS];
 

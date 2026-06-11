@@ -20,6 +20,18 @@ const BOOKS = [
     name: "27考研英语闪过高频词",
     csv: "27ky_shanguo_gaopin.csv",
     totalUnits: 30
+  },
+  {
+    id: "hongbaoshu-bikao",
+    name: "红宝书 必考词",
+    csv: "hongbaoshu_bikao.csv",
+    totalUnits: 26
+  },
+  {
+    id: "hongbaoshu-jichu",
+    name: "红宝书 基础词",
+    csv: "hongbaoshu_jichu.csv",
+    totalUnits: 30
   }
 ];
 
