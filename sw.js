@@ -1,6 +1,7 @@
 "use strict";
 
-const CACHE_NAME = "vocab-machine-v6";
+const CACHE_PREFIX = "vocab-machine-";
+const CACHE_NAME = `${CACHE_PREFIX}v7`;
 const CORE_ASSETS = [
   "./",
   "./index.html",
@@ -26,7 +27,11 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(
+        keys
+          .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
+          .map((key) => caches.delete(key))
+      ))
       .then(() => self.clients.claim())
   );
 });
@@ -78,7 +83,10 @@ async function staleWhileRevalidate(request) {
     if (response.ok) cache.put(request, response.clone());
     return response;
   }).catch(() => null);
-  return cached || fetched;
+  if (cached) return cached;
+  const response = await fetched;
+  if (response) return response;
+  throw new Error("Network unavailable and no cache match.");
 }
 
 function noStoreRequest(request) {
