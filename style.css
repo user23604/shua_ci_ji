@@ -514,6 +514,132 @@ button:not(:disabled) {
   overflow: hidden;
 }
 
+.card-swipe-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.card-swipe-edge {
+  position: absolute;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.card-swipe-edge--left,
+.card-swipe-edge--right {
+  top: 12%;
+  bottom: 12%;
+  width: 22%;
+}
+
+.card-swipe-edge--left {
+  left: 0;
+  background: linear-gradient(90deg, rgba(52, 181, 169, 0.22), rgba(52, 181, 169, 0));
+}
+
+.card-swipe-edge--right {
+  right: 0;
+  background: linear-gradient(270deg, rgba(52, 181, 169, 0.18), rgba(52, 181, 169, 0));
+}
+
+.card-swipe-edge--up,
+.card-swipe-edge--down {
+  left: 12%;
+  right: 12%;
+  height: 22%;
+}
+
+.card-swipe-edge--up {
+  top: 0;
+  background: linear-gradient(180deg, rgba(22, 128, 60, 0.18), rgba(22, 128, 60, 0));
+}
+
+.card-swipe-edge--down {
+  bottom: 0;
+  background: linear-gradient(0deg, rgba(180, 35, 24, 0.17), rgba(180, 35, 24, 0));
+}
+
+.word-card.is-swipe-left .card-swipe-edge--left,
+.word-card.is-swipe-right .card-swipe-edge--right,
+.word-card.is-swipe-up .card-swipe-edge--up,
+.word-card.is-swipe-down .card-swipe-edge--down {
+  opacity: 1;
+}
+
+.card-tap-zone {
+  position: absolute;
+  z-index: 3;
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: var(--card-radius);
+  background: transparent;
+  opacity: 0;
+  outline: none;
+}
+
+.card-tap-zone::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.card-tap-zone--left,
+.card-tap-zone--right {
+  top: 20%;
+  bottom: 20%;
+  width: 24%;
+}
+
+.card-tap-zone--left {
+  left: 0;
+}
+
+.card-tap-zone--right {
+  right: 0;
+}
+
+.card-tap-zone--up,
+.card-tap-zone--down {
+  left: 26%;
+  right: 26%;
+  height: 22%;
+}
+
+.card-tap-zone--up {
+  top: 0;
+}
+
+.card-tap-zone--down {
+  bottom: 0;
+}
+
+.card-tap-zone--left::after {
+  background: linear-gradient(90deg, rgba(52, 181, 169, 0.11), rgba(52, 181, 169, 0));
+}
+
+.card-tap-zone--right::after {
+  background: linear-gradient(270deg, rgba(52, 181, 169, 0.1), rgba(52, 181, 169, 0));
+}
+
+.card-tap-zone--up::after {
+  background: linear-gradient(180deg, rgba(22, 128, 60, 0.1), rgba(22, 128, 60, 0));
+}
+
+.card-tap-zone--down::after {
+  background: linear-gradient(0deg, rgba(180, 35, 24, 0.1), rgba(180, 35, 24, 0));
+}
+
+.card-tap-zone:hover::after,
+.card-tap-zone:focus-visible::after {
+  opacity: 1;
+}
+
 .freq-watermark {
   position: absolute;
   right: 18px;
@@ -548,7 +674,7 @@ button:not(:disabled) {
   color: var(--muted);
   font-size: 13px;
   font-weight: 800;
-  z-index: 2;
+  z-index: 4;
 }
 
 .word-card__en-shell {
@@ -556,7 +682,7 @@ button:not(:disabled) {
   min-width: 0;
   display: flex;
   justify-content: center;
-  z-index: 2;
+  z-index: 4;
 }
 
 .word-card__en {
@@ -601,7 +727,7 @@ button:not(:disabled) {
   display: grid;
   justify-items: center;
   gap: 6px;
-  z-index: 2;
+  z-index: 4;
 }
 
 .speech-token {
@@ -633,6 +759,7 @@ button:not(:disabled) {
   display: flex;
   align-items: center;
   justify-content: center;
+  z-index: 5;
 }
 
 .undo-btn {

@@ -14,6 +14,20 @@ const SYNC_STATUS_LABELS = {
   ok: "云同步完成",
   error: "云同步失败"
 };
+const SUMMARY_MODES = new Set(["count", "unit", "manual"]);
+const STUDY_MODES = new Set(["restart", "resume"]);
+const PER_BOOK_SETTING_KEYS = [
+  "unit",
+  "mode",
+  "duration",
+  "zhDelay",
+  "summaryMode",
+  "summaryCount",
+  "speakEn",
+  "speakZh",
+  "rate",
+  "highOnly"
+];
 const BOOKS = [
   {
     id: "27ky-shanguo-gaopin",
@@ -46,7 +60,8 @@ const DEFAULT_SETTINGS = {
   speakEn: true,
   speakZh: false,
   rate: 1,
-  highOnly: false
+  highOnly: false,
+  bookSettings: {}
 };
 
 const app = document.getElementById("app");
@@ -158,8 +173,61 @@ function currentBook() {
 function persistSettings({ touch = true } = {}) {
   const book = currentBook();
   state.settings.unit = clamp(Number(state.settings.unit) || 1, 1, book.totalUnits);
+  rememberCurrentBookSettings(book.id);
   saveJson(SETTINGS_KEY, state.settings);
   if (touch) touchLocalSync();
+}
+
+function rememberCurrentBookSettings(bookId = state.settings.bookId) {
+  const book = BOOKS.find((item) => item.id === bookId) || currentBook();
+  state.settings.bookSettings = normalizeBookSettingsStore(state.settings.bookSettings);
+  state.settings.bookSettings[book.id] = createBookSettingsSnapshot(book, state.settings);
+}
+
+function restoreBookSettings(bookId) {
+  const book = BOOKS.find((item) => item.id === bookId) || BOOKS[0];
+  const store = normalizeBookSettingsStore(state.settings.bookSettings);
+  const remembered = store[book.id];
+  state.settings = {
+    ...state.settings,
+    ...(remembered || { unit: 1 }),
+    bookId: book.id,
+    bookSettings: store
+  };
+  normalizeSettings();
+}
+
+function createBookSettingsSnapshot(book, source) {
+  const normalized = normalizeBookSettingValues(book, source);
+  return PER_BOOK_SETTING_KEYS.reduce((snapshot, key) => {
+    snapshot[key] = normalized[key];
+    return snapshot;
+  }, {});
+}
+
+function normalizeBookSettingsStore(store) {
+  if (!isPlainObject(store)) return {};
+  return Object.entries(store).reduce((normalized, [bookId, values]) => {
+    const book = BOOKS.find((item) => item.id === bookId);
+    if (book && isPlainObject(values)) normalized[book.id] = createBookSettingsSnapshot(book, values);
+    return normalized;
+  }, {});
+}
+
+function normalizeBookSettingValues(book, values) {
+  const source = { ...DEFAULT_SETTINGS, ...(isPlainObject(values) ? values : {}) };
+  return {
+    unit: clamp(Number(source.unit) || 1, 1, book.totalUnits),
+    mode: STUDY_MODES.has(source.mode) ? source.mode : DEFAULT_SETTINGS.mode,
+    duration: clamp(Number(source.duration) || DEFAULT_SETTINGS.duration, 1, 10),
+    zhDelay: clamp(Number(source.zhDelay) || 0, 0, 5),
+    summaryMode: SUMMARY_MODES.has(source.summaryMode) ? source.summaryMode : DEFAULT_SETTINGS.summaryMode,
+    summaryCount: clamp(Number(source.summaryCount) || DEFAULT_SETTINGS.summaryCount, 5, 200),
+    speakEn: typeof source.speakEn === "boolean" ? source.speakEn : DEFAULT_SETTINGS.speakEn,
+    speakZh: typeof source.speakZh === "boolean" ? source.speakZh : DEFAULT_SETTINGS.speakZh,
+    rate: clamp(Number(source.rate) || DEFAULT_SETTINGS.rate, 0.8, 2),
+    highOnly: typeof source.highOnly === "boolean" ? source.highOnly : DEFAULT_SETTINGS.highOnly
+  };
 }
 
 function persistCloud() {
@@ -560,17 +628,14 @@ function registerServiceWorker() {
 
 function normalizeSettings() {
   const book = BOOKS.find((item) => item.id === state.settings.bookId) || BOOKS[0];
-  const summaryModes = new Set(["count", "unit", "manual"]);
+  const bookSettings = normalizeBookSettingsStore(state.settings.bookSettings);
+  const bookValues = normalizeBookSettingValues(book, state.settings);
   state.settings = {
     ...DEFAULT_SETTINGS,
     ...state.settings,
+    ...bookValues,
     bookId: book.id,
-    unit: clamp(Number(state.settings.unit) || 1, 1, book.totalUnits),
-    duration: clamp(Number(state.settings.duration) || DEFAULT_SETTINGS.duration, 1, 10),
-    zhDelay: clamp(Number(state.settings.zhDelay) || 0, 0, 5),
-    summaryMode: summaryModes.has(state.settings.summaryMode) ? state.settings.summaryMode : DEFAULT_SETTINGS.summaryMode,
-    summaryCount: clamp(Number(state.settings.summaryCount) || DEFAULT_SETTINGS.summaryCount, 5, 200),
-    rate: clamp(Number(state.settings.rate) || DEFAULT_SETTINGS.rate, 0.8, 2)
+    bookSettings
   };
   persistSettings({ touch: false });
 }
@@ -771,8 +836,8 @@ function bindSetupEvents() {
   const gistInput = document.getElementById("gistInput");
 
   bookSelect.addEventListener("change", () => {
-    state.settings.bookId = bookSelect.value;
-    state.settings.unit = 1;
+    rememberCurrentBookSettings();
+    restoreBookSettings(bookSelect.value);
     persistSettings();
     state.setupStatus = "";
     renderSetup();
@@ -1000,6 +1065,7 @@ function renderWordCard(word, isNext = false, undo = false) {
   const alpha = Number(freqAlpha(word.freq));
   return `
     <article class="word-card ${isNext ? "word-card--next" : ""}" id="${isNext ? "nextCard" : "activeCard"}" style="--freq-alpha: ${alpha.toFixed(3)}; --freq-alpha-soft: ${(alpha * 0.35).toFixed(3)}">
+      ${isNext ? "" : renderCardSwipeControls()}
       <div class="freq-watermark">${escapeHtml(freqLabel)}</div>
       <div class="word-card__meta">
         <span>Unit ${word.unit}</span>
@@ -1009,6 +1075,21 @@ function renderWordCard(word, isNext = false, undo = false) {
       <div class="word-card__zh ${!isNext && !state.showZh ? "is-hidden" : ""}"${definitionId}>${zhHtml}</div>
       ${undo ? `<div class="word-card__actions"><button class="undo-btn" id="undoMarkBtn" type="button">撤销标记</button></div>` : ""}
     </article>
+  `;
+}
+
+function renderCardSwipeControls() {
+  return `
+    <div class="card-swipe-edges" aria-hidden="true">
+      <span class="card-swipe-edge card-swipe-edge--left"></span>
+      <span class="card-swipe-edge card-swipe-edge--right"></span>
+      <span class="card-swipe-edge card-swipe-edge--up"></span>
+      <span class="card-swipe-edge card-swipe-edge--down"></span>
+    </div>
+    <button class="card-tap-zone card-tap-zone--left" data-card-tap="left" type="button" aria-label="下一个"></button>
+    <button class="card-tap-zone card-tap-zone--right" data-card-tap="right" type="button" aria-label="上一个"></button>
+    <button class="card-tap-zone card-tap-zone--up" data-card-tap="up" type="button" aria-label="标记为已斩"></button>
+    <button class="card-tap-zone card-tap-zone--down" data-card-tap="down" type="button" aria-label="标记为重难点"></button>
   `;
 }
 
@@ -1235,6 +1316,14 @@ function bindCardGesture() {
   const card = document.getElementById("activeCard");
   if (!stack || !card) return;
 
+  card.querySelectorAll("[data-card-tap]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      triggerCardDirection(button.dataset.cardTap, card);
+    });
+  });
+
   stack.addEventListener("pointerdown", (event) => {
     if (state.playbackPaused) return;
     clearTimers();
@@ -1255,6 +1344,7 @@ function bindCardGesture() {
     state.pointer.dx = event.clientX - state.pointer.startX;
     state.pointer.dy = event.clientY - state.pointer.startY;
     const rotate = state.pointer.dx / 28;
+    updateCardSwipeFeedback(card, state.pointer.dx, state.pointer.dy);
     card.style.transform = `translate3d(${state.pointer.dx}px, ${state.pointer.dy}px, 0) rotate(${rotate}deg)`;
   });
 
@@ -1278,20 +1368,58 @@ function finishPointer(event, card, cancelled = false) {
     return;
   }
 
-  if (Math.abs(dx) > Math.abs(dy)) {
-    if (dx < 0) {
-      animateOut(card, -window.innerWidth, dy, () => advanceWord("manual"));
-    } else if (state.currentIndex <= 0) {
+  triggerCardDirection(swipeDirectionFromDelta(dx, dy), card, { dx, dy });
+}
+
+function swipeDirectionFromDelta(dx, dy) {
+  if (Math.abs(dx) >= Math.abs(dy)) return dx < 0 ? "left" : "right";
+  return dy < 0 ? "up" : "down";
+}
+
+function updateCardSwipeFeedback(card, dx, dy) {
+  const distance = Math.max(Math.abs(dx), Math.abs(dy));
+  if (distance < 14) {
+    clearCardSwipeFeedback(card);
+    return;
+  }
+  setCardSwipeFeedback(card, swipeDirectionFromDelta(dx, dy));
+}
+
+function setCardSwipeFeedback(card, direction) {
+  clearCardSwipeFeedback(card);
+  if (["left", "right", "up", "down"].includes(direction)) {
+    card.classList.add(`is-swipe-${direction}`);
+  }
+}
+
+function clearCardSwipeFeedback(card) {
+  if (!card) return;
+  card.classList.remove("is-swipe-left", "is-swipe-right", "is-swipe-up", "is-swipe-down");
+}
+
+function triggerCardDirection(direction, card = document.getElementById("activeCard"), offset = {}) {
+  if (!card || state.playbackPaused) return;
+  clearTimers();
+  card.classList.remove("is-animated");
+  setCardSwipeFeedback(card, direction);
+  const dx = Number(offset.dx) || 0;
+  const dy = Number(offset.dy) || 0;
+  if (direction === "left") {
+    animateOut(card, -window.innerWidth, dy, () => advanceWord("manual"));
+  } else if (direction === "right") {
+    if (state.currentIndex <= 0) {
       snapBack(card);
     } else {
       animateOut(card, window.innerWidth, dy, goPrevious);
     }
-  } else if (dy < 0) {
+  } else if (direction === "up") {
     markCurrent("known");
     animateOut(card, dx, -window.innerHeight, () => advanceWord("known"));
-  } else {
+  } else if (direction === "down") {
     markCurrent("unknown");
     animateOut(card, dx, window.innerHeight, () => advanceWord("unknown"));
+  } else {
+    snapBack(card);
   }
 }
 
@@ -1299,6 +1427,7 @@ function snapBack(card) {
   card.classList.add("is-animated");
   card.style.transform = "translate3d(0, 0, 0) rotate(0deg)";
   addTimer(() => {
+    clearCardSwipeFeedback(card);
     card.classList.remove("is-animated");
     scheduleWordTimers();
   }, 180);
