@@ -5,7 +5,6 @@ const AUTH_KEY = "is_authenticated";
 const SETTINGS_KEY = "vocab_machine_settings_v1";
 const CLOUD_KEY = "vocab_machine_cloud_v1";
 const SYNC_META_KEY = "vocab_machine_sync_meta_v1";
-const DAY_MS = 24 * 60 * 60 * 1000;
 const AUTO_SYNC_DEBOUNCE_MS = 700;
 const AUTO_SYNC_PUSH_GAP_MS = 1500;
 const SYNC_OK_VISIBLE_MS = 2000;
@@ -45,6 +44,7 @@ const state = {
   cloud: loadJson(CLOUD_KEY, { token: "", gistId: "" }),
   syncMeta: loadJson(SYNC_META_KEY, { localUpdatedAt: "" }),
   wordsByBook: new Map(),
+  maxFreqByBook: new Map(),
   view: "auth",
   words: [],
   unitWords: [],
@@ -111,37 +111,31 @@ function activityKey(bookId) {
 }
 
 function loadProgress(bookId) {
-  return loadJson(progressKey(bookId), { lastWordId: null });
+  return sanitizeProgressPayload(loadJson(progressKey(bookId), { lastWordId: null }));
 }
 
 function saveProgress(bookId, progress, { touch = true } = {}) {
-  saveJson(progressKey(bookId), progress);
+  saveJson(progressKey(bookId), sanitizeProgressPayload(progress));
   if (touch) touchLocalSync();
 }
 
 function loadMarks(bookId) {
   const marks = loadJson(marksKey(bookId), { known: [], unknown: [] });
-  return {
-    known: Array.isArray(marks.known) ? marks.known : [],
-    unknown: Array.isArray(marks.unknown) ? marks.unknown : []
-  };
+  return sanitizeMarksPayload(marks);
 }
 
 function saveMarks(bookId, marks, { touch = true } = {}) {
-  saveJson(marksKey(bookId), {
-    known: Array.from(new Set(marks.known.map(Number))).sort((a, b) => a - b),
-    unknown: Array.from(new Set(marks.unknown.map(Number))).sort((a, b) => a - b)
-  });
+  saveJson(marksKey(bookId), sanitizeMarksPayload(marks));
   if (touch) touchLocalSync();
 }
 
 function loadActivity(bookId) {
   const activity = loadJson(activityKey(bookId), { days: {} });
-  return { days: activity.days && typeof activity.days === "object" ? activity.days : {} };
+  return sanitizeActivityPayload(activity);
 }
 
 function saveActivity(bookId, activity, { touch = true } = {}) {
-  saveJson(activityKey(bookId), activity);
+  saveJson(activityKey(bookId), sanitizeActivityPayload(activity));
   if (touch) touchLocalSync();
 }
 
@@ -187,8 +181,7 @@ function escapeRegExp(value) {
 }
 
 function freqAlpha(freq) {
-  const words = state.words?.length ? state.words : state.wordsByBook.get(currentBook().id) || [];
-  const maxFreq = Math.max(1, ...words.map((word) => Number(word.freq) || 0));
+  const maxFreq = state.maxFreqByBook.get(currentBook().id) || 1;
   const level = Math.log1p(Math.max(0, Number(freq) || 0)) / Math.log1p(maxFreq);
   return (0.035 + clamp(level, 0, 1) * 0.245).toFixed(3);
 }
@@ -208,11 +201,6 @@ function addDays(date, days) {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
   return next;
-}
-
-function dateKeyToDate(key) {
-  const [year, month, day] = key.split("-").map(Number);
-  return new Date(year, month - 1, day);
 }
 
 function formatDuration(seconds) {
@@ -362,16 +350,17 @@ function setSetupStatus(message, type = "") {
 }
 
 function renderSyncIndicator() {
-  const status = state.syncStatus || "idle";
+  const status = normalizeSyncStatus(state.syncStatus);
   const label = syncStatusLabel(status);
   return `
-    <div class="cloud-sync-indicator is-${escapeHtml(status)}" id="cloudSyncIndicator" aria-label="${escapeHtml(label)}">
+    <div class="cloud-sync-indicator is-${status}" id="cloudSyncIndicator" aria-label="${escapeHtml(label)}">
       <span class="cloud-sync-indicator__dot"></span>
     </div>
   `;
 }
 
 function setSyncStatus(status) {
+  status = normalizeSyncStatus(status);
   state.syncStatus = status;
   if (state.syncHideTimer) {
     clearTimeout(state.syncHideTimer);
@@ -395,22 +384,33 @@ function setSyncStatus(status) {
 }
 
 function syncStatusLabel(status) {
-  return SYNC_STATUS_LABELS[status] || SYNC_STATUS_LABELS.idle;
+  return SYNC_STATUS_LABELS[normalizeSyncStatus(status)];
+}
+
+function normalizeSyncStatus(status) {
+  return Object.prototype.hasOwnProperty.call(SYNC_STATUS_LABELS, status) ? status : "idle";
 }
 
 function clearTimers() {
   state.playbackToken += 1;
-  state.timers.forEach((timer) => clearTimeout(timer));
+  state.timers.forEach((timer) => {
+    clearTimeout(timer.id);
+    if (timer.onCancel) timer.onCancel();
+  });
   state.timers = [];
   state.speechPhase = "";
   state.activeZhIndex = -1;
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
 }
 
-function addTimer(fn, delay) {
-  const timer = window.setTimeout(fn, delay);
+function addTimer(fn, delay, onCancel = null) {
+  const timer = { id: 0, onCancel };
+  timer.id = window.setTimeout(() => {
+    state.timers = state.timers.filter((item) => item !== timer);
+    fn();
+  }, delay);
   state.timers.push(timer);
-  return timer;
+  return timer.id;
 }
 
 async function ensureWords(book = currentBook()) {
@@ -423,6 +423,7 @@ async function ensureWords(book = currentBook()) {
   const rows = parseCsv(text);
   const words = mapWords(rows);
   state.wordsByBook.set(book.id, words);
+  state.maxFreqByBook.set(book.id, Math.max(1, ...words.map((word) => Number(word.freq) || 0)));
   return words;
 }
 
@@ -815,6 +816,7 @@ function bindSetupEvents() {
 function bindRange(elementId, key, unit, parser) {
   const input = document.getElementById(elementId);
   const output = document.getElementById(`${elementId}Value`);
+  if (!input || !output) return;
   input.addEventListener("input", () => {
     const value = parser(input.value);
     state.settings[key] = value;
@@ -825,6 +827,7 @@ function bindRange(elementId, key, unit, parser) {
 
 function bindCheckbox(elementId, key) {
   const input = document.getElementById(elementId);
+  if (!input) return;
   input.addEventListener("change", () => {
     state.settings[key] = input.checked;
     persistSettings();
@@ -904,7 +907,9 @@ function renderFlashcard({ touchProgress = true } = {}) {
     renderBreak({ unitEnd: true, reviewEnd: Boolean(state.reviewMode) });
     return;
   }
-  saveProgress(book.id, { lastWordId: word.id, unit: word.unit, updatedAt: new Date().toISOString() }, { touch: touchProgress });
+  if (!state.reviewMode) {
+    saveProgress(book.id, { lastWordId: word.id, unit: word.unit, updatedAt: new Date().toISOString() }, { touch: touchProgress });
+  }
   const marks = loadMarks(book.id);
   const marked = marks.known.includes(word.id) || marks.unknown.includes(word.id);
   const undo = state.undoWordId === word.id && marked;
@@ -975,6 +980,8 @@ function renderFlashcard({ touchProgress = true } = {}) {
 function renderWordCard(word, isNext = false, undo = false) {
   const definition = formatDefinition(word);
   const definitionId = isNext ? "" : ' id="definition"';
+  const speechStatusId = isNext ? "" : ' id="speechStatus"';
+  const wordEnId = isNext ? "" : ' id="wordEn"';
   const enClass = !isNext && state.speechPhase === "en" ? " is-speaking" : "";
   const zhHtml = isNext ? escapeHtml(definition) : renderDefinitionHtml(word);
   const freqLabel = word.freq ? `${word.freq} 次` : "0 次";
@@ -984,9 +991,9 @@ function renderWordCard(word, isNext = false, undo = false) {
       <div class="freq-watermark">${escapeHtml(freqLabel)}</div>
       <div class="word-card__meta">
         <span>Unit ${word.unit}</span>
-        <span id="${isNext ? "" : "speechStatus"}">${escapeHtml(freqLabel)}</span>
+        <span${speechStatusId}>${escapeHtml(freqLabel)}</span>
       </div>
-      <div class="word-card__en-shell"><div class="word-card__en${enClass}" id="${isNext ? "" : "wordEn"}">${escapeHtml(word.en)}</div></div>
+      <div class="word-card__en-shell"><div class="word-card__en${enClass}"${wordEnId}>${escapeHtml(word.en)}</div></div>
       <div class="word-card__zh ${!isNext && !state.showZh ? "is-hidden" : ""}"${definitionId}>${zhHtml}</div>
       ${undo ? `<div class="word-card__actions"><button class="undo-btn" id="undoMarkBtn" type="button">撤销标记</button></div>` : ""}
     </article>
@@ -999,23 +1006,6 @@ function renderResumeOverlay() {
       <button class="btn btn--primary btn--wide" id="resumePlaybackBtn" type="button">恢复播放</button>
     </div>
   `;
-}
-
-function splitDefinitionTokens(text) {
-  const matches = String(text || "").match(/[^ ]+/g);
-  return matches?.length ? matches : [String(text || "")];
-}
-
-function renderDefinitionTokens(text) {
-  let cursor = 0;
-  return splitDefinitionTokens(text).map((token, index) => {
-    const start = String(text).indexOf(token, cursor);
-    const safeStart = start >= 0 ? start : cursor;
-    const end = safeStart + token.length;
-    cursor = end;
-    const active = state.activeZhIndex === index ? " is-speaking" : "";
-    return `<span class="speech-token${active}" data-token-index="${index}" data-start="${safeStart}" data-end="${end}">${escapeHtml(token)}</span>`;
-  }).join(" ");
 }
 
 function gesture(symbol, label) {
@@ -1059,7 +1049,7 @@ async function scheduleWordTimers() {
     speakWithHighlight(word.en, "en-US", enBudget, "en", token);
   }
 
-  await sleepUntil(startedAt + revealMs, token);
+  await sleepUntil(startedAt + revealMs);
   if (!isPlaybackToken(token)) return;
 
   if (revealMs > 0) {
@@ -1069,7 +1059,7 @@ async function scheduleWordTimers() {
     if (definitionNode) definitionNode.classList.remove("is-hidden");
   }
 
-  await sleepUntil(startedAt + zhStartMs, token);
+  await sleepUntil(startedAt + zhStartMs);
   if (!isPlaybackToken(token)) return;
 
   cancelSpeechOnly();
@@ -1077,7 +1067,7 @@ async function scheduleWordTimers() {
     speakWithHighlight(definition, "zh-CN", Math.max(450, totalMs - zhStartMs), "zh", token);
   }
 
-  await sleepUntil(startedAt + totalMs, token);
+  await sleepUntil(startedAt + totalMs);
   if (isPlaybackToken(token)) advanceWord("auto");
 }
 
@@ -1113,13 +1103,10 @@ function isPlaybackToken(token) {
   return token === state.playbackToken;
 }
 
-function sleepUntil(timestamp, token) {
+function sleepUntil(timestamp) {
   const delay = Math.max(0, timestamp - Date.now());
   return new Promise((resolve) => {
-    const timer = window.setTimeout(() => {
-      if (isPlaybackToken(token)) resolve();
-    }, delay);
-    state.timers.push(timer);
+    addTimer(resolve, delay, resolve);
   });
 }
 
@@ -1566,7 +1553,7 @@ function renderArchiveDrawer() {
 }
 
 function groupMarkedWords(words, ids) {
-  const idSet = new Set(ids.map(Number));
+  const idSet = new Set(normalizeIdList(ids));
   const grouped = new Map();
   words.filter((word) => idSet.has(word.id)).forEach((word) => {
     if (!grouped.has(word.unit)) grouped.set(word.unit, []);
@@ -1808,20 +1795,48 @@ function localSyncMs() {
   return Math.max(dateMs(state.syncMeta.localUpdatedAt), latestLocalProgressMs());
 }
 
+function normalizeIdList(ids) {
+  return Array.from(new Set((Array.isArray(ids) ? ids : [])
+    .map(Number)
+    .filter((id) => Number.isFinite(id) && id > 0)))
+    .sort((a, b) => a - b);
+}
+
 function sanitizeProgressPayload(progress) {
-  return isPlainObject(progress) ? progress : { lastWordId: null };
+  if (!isPlainObject(progress)) return { lastWordId: null };
+  const lastWordId = Number(progress.lastWordId);
+  const unit = Number(progress.unit);
+  const sanitized = {
+    ...progress,
+    lastWordId: Number.isFinite(lastWordId) && lastWordId > 0 ? lastWordId : null
+  };
+  if (Number.isFinite(unit) && unit > 0) sanitized.unit = unit;
+  else delete sanitized.unit;
+  return sanitized;
 }
 
 function sanitizeMarksPayload(marks) {
   return {
-    known: Array.isArray(marks?.known) ? marks.known : [],
-    unknown: Array.isArray(marks?.unknown) ? marks.unknown : []
+    known: normalizeIdList(marks?.known),
+    unknown: normalizeIdList(marks?.unknown)
   };
 }
 
 function sanitizeActivityPayload(activity) {
+  const sourceDays = isPlainObject(activity?.days) ? activity.days : {};
+  const days = {};
+  Object.entries(sourceDays).forEach(([key, value]) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(key) || !isPlainObject(value)) return;
+    days[key] = {
+      seconds: Math.max(0, Number(value.seconds) || 0),
+      words: Math.max(0, Number(value.words) || 0),
+      known: Math.max(0, Number(value.known) || 0),
+      unknown: Math.max(0, Number(value.unknown) || 0),
+      wordIds: normalizeIdList(value.wordIds)
+    };
+  });
   return {
-    days: isPlainObject(activity?.days) ? activity.days : {}
+    days
   };
 }
 
@@ -1848,8 +1863,22 @@ async function fetchGistSyncPayload() {
   if (!response.ok) throw new Error(`云端拉取失败：${response.status}`);
   const gist = await response.json();
   const file = gist.files?.["sync.json"];
-  if (!file?.content) return { kind: "empty" };
-  return parseSyncPayloadContent(file.content);
+  if (!file) return { kind: "empty" };
+  const content = await readGistFileContent(file);
+  return parseSyncPayloadContent(content);
+}
+
+async function readGistFileContent(file) {
+  if (typeof file.content === "string") return file.content;
+  if (!file.raw_url) return "";
+  const response = await fetch(file.raw_url, {
+    headers: {
+      Authorization: `Bearer ${state.cloud.token}`,
+      Accept: "application/vnd.github.raw"
+    }
+  });
+  if (!response.ok) throw new Error(`云端文件读取失败：${response.status}`);
+  return response.text();
 }
 
 async function autoPullFromGist() {
