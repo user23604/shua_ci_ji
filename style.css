@@ -142,6 +142,12 @@ button:not(:disabled) {
   outline: none;
 }
 
+.select {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .input:focus,
 .select:focus,
 .range:focus-visible {

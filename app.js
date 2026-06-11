@@ -8,8 +8,8 @@ const SYNC_META_KEY = "vocab_machine_sync_meta_v1";
 const AUTO_SYNC_DEBOUNCE_MS = 700;
 const AUTO_SYNC_PUSH_GAP_MS = 1500;
 const SYNC_OK_VISIBLE_MS = 2000;
-const PLAYBACK_RATE_MIN = 0.7;
-const PLAYBACK_RATE_MAX = 2.4;
+const PLAYBACK_RATE_MIN = 0.5;
+const PLAYBACK_RATE_MAX = 5;
 const SYNC_STATUS_LABELS = {
   idle: "云同步空闲",
   syncing: "云同步中",
@@ -91,6 +91,7 @@ const state = {
   statsMonthOffset: 0,
   reviewMode: null,
   setupStatus: "",
+  setupPrimeBookIds: new Set(),
   wakeLock: null,
   playbackPaused: false,
   cardStartedAt: 0,
@@ -135,6 +136,10 @@ function activityKey(bookId) {
   return `activity:${bookId}`;
 }
 
+function unitStatsKey(bookId) {
+  return `unit_stats:${bookId}`;
+}
+
 function loadProgress(bookId) {
   return sanitizeProgressPayload(loadJson(progressKey(bookId), { lastWordId: null }));
 }
@@ -161,6 +166,15 @@ function loadActivity(bookId) {
 
 function saveActivity(bookId, activity, { touch = true } = {}) {
   saveJson(activityKey(bookId), sanitizeActivityPayload(activity));
+  if (touch) touchLocalSync();
+}
+
+function loadUnitStats(bookId) {
+  return sanitizeUnitStatsPayload(loadJson(unitStatsKey(bookId), { units: {} }));
+}
+
+function saveUnitStats(bookId, stats, { touch = true } = {}) {
+  saveJson(unitStatsKey(bookId), sanitizeUnitStatsPayload(stats));
   if (touch) touchLocalSync();
 }
 
@@ -511,6 +525,7 @@ function clearTimers() {
   state.speechPhase = "";
   state.activeZhIndex = -1;
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  clearSpeechPhase();
 }
 
 function addTimer(fn, delay, onCancel = null) {
@@ -722,9 +737,11 @@ function renderSetup() {
   clearTimers();
   normalizeSettings();
   const book = currentBook();
+  const setupWords = state.wordsByBook.get(book.id) || [];
   const unitOptions = Array.from({ length: book.totalUnits }, (_, index) => {
     const unit = index + 1;
-    return `<option value="${unit}" ${unit === state.settings.unit ? "selected" : ""}>Unit ${unit}</option>`;
+    const label = unitOptionLabel(book, unit, setupWords);
+    return `<option value="${unit}" ${unit === state.settings.unit ? "selected" : ""}>${escapeHtml(label)}</option>`;
   }).join("");
   const bookOptions = BOOKS.map((item) => `
     <option value="${escapeHtml(item.id)}" ${item.id === state.settings.bookId ? "selected" : ""}>${escapeHtml(item.name)}</option>
@@ -762,6 +779,7 @@ function renderSetup() {
               目标 Unit
               <select class="select" id="unitSelect">${unitOptions}</select>
             </label>
+            ${renderSelectedUnitStats(book, setupWords)}
             <div class="radio-group">
               ${radio("mode", "restart", "从选定 Unit 开头重新开始")}
               ${radio("mode", "resume", "恢复上一次学习进度")}
@@ -834,6 +852,47 @@ function renderSetup() {
   bindSetupEvents();
   bindArchiveEvents();
   bindStatsEvents();
+  primeSetupBookData(book);
+}
+
+function primeSetupBookData(book) {
+  if (state.wordsByBook.has(book.id) || state.setupPrimeBookIds.has(book.id)) return;
+  state.setupPrimeBookIds.add(book.id);
+  ensureWords(book)
+    .then(() => {
+      state.setupPrimeBookIds.delete(book.id);
+      if (state.view === "setup" && currentBook().id === book.id) renderSetup();
+    })
+    .catch(() => {
+      state.setupPrimeBookIds.delete(book.id);
+    });
+}
+
+function unitOptionLabel(book, unit, words) {
+  const info = unitProgressInfo(book, unit, words);
+  const progress = info.total ? `${info.seen}/${info.total}` : "加载中";
+  return `Unit ${unit} · 进度 ${progress} · 完整看完 ${info.completed} 次`;
+}
+
+function renderSelectedUnitStats(book, words) {
+  const info = unitProgressInfo(book, state.settings.unit, words);
+  const progress = info.total ? `${info.seen}/${info.total}` : "正在读取词表";
+  return `<div class="status">当前 Unit：进度 ${escapeHtml(progress)} · 完整看完 ${info.completed} 次</div>`;
+}
+
+function unitProgressInfo(book, unit, words = []) {
+  const progress = loadProgress(book.id);
+  const stats = loadUnitStats(book.id);
+  const unitWords = words.filter((word) => Number(word.unit) === Number(unit));
+  const total = unitWords.length;
+  const completed = Number(stats.units[String(unit)]?.completed) || 0;
+  let seen = 0;
+  if (Number(progress.unit) === Number(unit)) {
+    const lastWordId = Number(progress.lastWordId);
+    const index = unitWords.findIndex((word) => Number(word.id) === lastWordId);
+    seen = index >= 0 ? index + 1 : 0;
+  }
+  return { seen, total, completed };
 }
 
 function radio(name, value, label) {
@@ -887,6 +946,7 @@ function bindSetupEvents() {
   unitSelect.addEventListener("change", () => {
     state.settings.unit = Number(unitSelect.value);
     persistSettings();
+    renderSetup();
   });
 
   document.querySelectorAll('input[name="mode"]').forEach((input) => {
@@ -1011,6 +1071,17 @@ function getStartIndex(bookId) {
   const progress = loadProgress(bookId);
   const index = state.unitWords.findIndex((word) => word.id === Number(progress.lastWordId));
   return index >= 0 ? index : 0;
+}
+
+function recordUnitCompletion(bookId, unit) {
+  const stats = loadUnitStats(bookId);
+  const key = String(unit);
+  const item = stats.units[key] || { completed: 0 };
+  stats.units[key] = {
+    completed: Math.max(0, Number(item.completed) || 0) + 1,
+    updatedAt: new Date().toISOString()
+  };
+  saveUnitStats(bookId, stats);
 }
 
 function renderFlashcard({ touchProgress = true } = {}) {
@@ -1153,36 +1224,36 @@ async function scheduleWordTimers() {
   const word = state.unitWords[state.currentIndex];
   if (!word || state.archiveOpen || state.statsOpen || state.playbackPaused) return;
   const token = ++state.playbackToken;
-  const startedAt = Date.now();
-  const definition = formatDefinition(word);
   const spokenDefinition = formatSpokenDefinition(word);
-  const hasEnSpeech = Boolean(state.settings.speakEn);
-  const hasZhSpeech = Boolean(state.settings.speakZh && spokenDefinition);
-  const enBudget = hasEnSpeech ? speechBudgetMs(word.en, "en-US", 560) : quietBudgetMs(word.en, "en-US", 420);
-  const revealAt = startedAt + enBudget + phaseGapMs(160);
-  const zhBudget = spokenDefinition
-    ? hasZhSpeech
-      ? speechBudgetMs(spokenDefinition, "zh-CN", 620)
-      : quietBudgetMs(spokenDefinition, "zh-CN", 720)
-    : phaseGapMs(320);
-  const finishAt = revealAt + zhBudget + phaseGapMs(420);
+  const speechAvailable = "speechSynthesis" in window;
+  const hasEnSpeech = Boolean(state.settings.speakEn && speechAvailable);
+  const hasZhSpeech = Boolean(state.settings.speakZh && spokenDefinition && speechAvailable);
 
   if (hasEnSpeech) {
-    speakWithHighlight(word.en, "en-US", enBudget, "en", token);
+    await speakWithHighlight(word.en, "en-US", "en", token);
+  } else {
+    await sleepFor(quietBudgetMs(word.en, "en-US", 420));
   }
 
-  await sleepUntil(revealAt);
+  if (!isPlaybackToken(token)) return;
+  await sleepFor(phaseGapMs(160));
   if (!isPlaybackToken(token)) return;
 
-  cancelSpeechOnly();
   state.showZh = true;
   const definitionNode = document.getElementById("definition");
   if (definitionNode) definitionNode.classList.remove("is-hidden");
-  if (hasZhSpeech) {
-    speakWithHighlight(spokenDefinition, "zh-CN", zhBudget, "zh", token, { followBoundaries: false });
+  if (spokenDefinition) {
+    if (hasZhSpeech) {
+      await speakWithHighlight(spokenDefinition, "zh-CN", "zh", token, { followBoundaries: false });
+    } else {
+      await sleepFor(quietBudgetMs(spokenDefinition, "zh-CN", 720));
+    }
+  } else {
+    await sleepFor(phaseGapMs(320));
   }
 
-  await sleepUntil(finishAt);
+  if (!isPlaybackToken(token)) return;
+  await sleepFor(phaseGapMs(420));
   if (isPlaybackToken(token)) advanceWord("auto");
 }
 
@@ -1218,10 +1289,9 @@ function isPlaybackToken(token) {
   return token === state.playbackToken;
 }
 
-function sleepUntil(timestamp) {
-  const delay = Math.max(0, timestamp - Date.now());
+function sleepFor(delay) {
   return new Promise((resolve) => {
-    addTimer(resolve, delay, resolve);
+    addTimer(resolve, Math.max(0, delay), resolve);
   });
 }
 
@@ -1253,37 +1323,89 @@ function phaseGapMs(baseMs) {
   return Math.max(120, baseMs / playbackRate());
 }
 
-function speakWithHighlight(text, lang, budgetMs, phase, token, { followBoundaries = true } = {}) {
-  if (!("speechSynthesis" in window) || !text || !isPlaybackToken(token)) {
-    return;
+function speakWithHighlight(text, lang, phase, token, { followBoundaries = true } = {}) {
+  return new Promise((resolve) => {
+    if (!("speechSynthesis" in window) || !text || !isPlaybackToken(token)) {
+      resolve(false);
+      return;
+    }
+    waitForSpeechVoices(token).then(() => {
+      if (!isPlaybackToken(token)) {
+        resolve(false);
+        return;
+      }
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = lang;
+      const voice = selectSpeechVoice(lang);
+      if (voice) {
+        utterance.voice = voice;
+        utterance.lang = voice.lang || lang;
+      }
+      utterance.rate = playbackRate();
+      const highlightBudget = speechBudgetMs(text, lang, phase === "zh" ? 620 : 560);
+      let settled = false;
+      const settle = (completed = true) => {
+        if (settled) return;
+        settled = true;
+        if (isPlaybackToken(token)) clearSpeechPhase();
+        resolve(completed);
+      };
+      const settleCanceled = () => {
+        if (settled) return;
+        settled = true;
+        resolve(false);
+      };
+      const pollDone = () => {
+        if (settled) return;
+        if (!isPlaybackToken(token)) {
+          settleCanceled();
+          return;
+        }
+        if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
+          settle(true);
+          return;
+        }
+        addTimer(pollDone, 240, settleCanceled);
+      };
+      utterance.onstart = () => {
+        if (!isPlaybackToken(token)) return;
+        setSpeechPhase(phase, utterance.rate);
+        if (phase === "zh") simulateZhHighlight(text, highlightBudget, token);
+      };
+      utterance.onboundary = (event) => {
+        if (!followBoundaries || !isPlaybackToken(token) || phase !== "zh") return;
+        highlightZhByCharIndex(event.charIndex || 0);
+      };
+      utterance.onend = () => settle(true);
+      utterance.onerror = () => settle(true);
+      window.speechSynthesis.speak(utterance);
+      addTimer(pollDone, Math.max(1200, highlightBudget + 800), settleCanceled);
+    });
+  });
+}
+
+function waitForSpeechVoices(token, timeoutMs = 500) {
+  if (!("speechSynthesis" in window) || window.speechSynthesis.getVoices().length) {
+    return Promise.resolve();
   }
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = lang;
-  const voice = selectSpeechVoice(lang);
-  if (voice) {
-    utterance.voice = voice;
-    utterance.lang = voice.lang || lang;
-  }
-  utterance.rate = playbackRate();
-  utterance.onstart = () => {
-    if (!isPlaybackToken(token)) return;
-    setSpeechPhase(phase, utterance.rate);
-    if (phase === "zh") simulateZhHighlight(text, budgetMs, token);
-  };
-  utterance.onboundary = (event) => {
-    if (!followBoundaries || !isPlaybackToken(token) || phase !== "zh") return;
-    highlightZhByCharIndex(event.charIndex || 0);
-  };
-  utterance.onend = () => {
-    if (isPlaybackToken(token)) clearSpeechPhase();
-  };
-  utterance.onerror = () => {
-    if (isPlaybackToken(token)) clearSpeechPhase();
-  };
-  window.speechSynthesis.speak(utterance);
-  addTimer(() => {
-    if (isPlaybackToken(token)) cancelSpeechOnly();
-  }, Math.max(350, budgetMs * 1.18 + 140));
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (typeof window.speechSynthesis.removeEventListener === "function") {
+        window.speechSynthesis.removeEventListener("voiceschanged", handleVoicesChanged);
+      }
+      resolve();
+    };
+    const handleVoicesChanged = () => {
+      if (!isPlaybackToken(token) || window.speechSynthesis.getVoices().length) finish();
+    };
+    if (typeof window.speechSynthesis.addEventListener === "function") {
+      window.speechSynthesis.addEventListener("voiceschanged", handleVoicesChanged);
+    }
+    addTimer(finish, timeoutMs, finish);
+  });
 }
 
 function selectSpeechVoice(lang) {
@@ -1294,7 +1416,7 @@ function selectSpeechVoice(lang) {
   const family = lowerLang.slice(0, 2);
   const candidates = voices.filter((voice) => String(voice.lang || "").toLowerCase().startsWith(family));
   const preferred = lowerLang.startsWith("en")
-    ? [/google us english/i, /microsoft (aria|jenny|guy|david|mark).*english/i, /samantha/i, /alex/i, /daniel/i, /karen/i, /en-us/i, /english.*united states/i]
+    ? [/google us english/i, /microsoft (aria|jenny|guy|david|mark|zira).*english/i, /samantha/i, /alex/i, /daniel/i, /karen/i, /en-us/i, /english.*united states/i]
     : [/xiaoxiao/i, /tingting/i, /mei-jia/i, /google.*(普通话|mandarin|chinese)/i, /zh-cn/i, /chinese/i];
   const text = (voice) => `${voice.name || ""} ${voice.lang || ""}`;
   return preferred.map((pattern) => candidates.find((voice) => pattern.test(text(voice)))).find(Boolean) ||
@@ -1576,6 +1698,9 @@ function renderBreak(info) {
   state.breakInfo = info;
   clearTimers();
   releaseWakeLock();
+  if (enteringBreak && info.unitEnd && !info.reviewEnd && !info.manual && !state.reviewMode) {
+    recordUnitCompletion(currentBook().id, state.settings.unit);
+  }
   const roundUnknownIds = getRoundUnknownIds();
   const title = info.reviewEnd
     ? `${state.reviewMode?.label || "复盘"}总结`
@@ -1937,10 +2062,12 @@ function collectSyncPayload() {
   const progress = {};
   const marks = {};
   const activity = {};
+  const unitStats = {};
   BOOKS.forEach((book) => {
     progress[book.id] = loadProgress(book.id);
     marks[book.id] = loadMarks(book.id);
     activity[book.id] = loadActivity(book.id);
+    unitStats[book.id] = loadUnitStats(book.id);
   });
   return {
     version: 1,
@@ -1949,7 +2076,8 @@ function collectSyncPayload() {
     settings: { ...state.settings },
     progress,
     marks,
-    activity
+    activity,
+    unitStats
   };
 }
 
@@ -2064,6 +2192,21 @@ function sanitizeActivityPayload(activity) {
   return {
     days
   };
+}
+
+function sanitizeUnitStatsPayload(stats) {
+  const sourceUnits = isPlainObject(stats?.units) ? stats.units : {};
+  const units = {};
+  Object.entries(sourceUnits).forEach(([key, value]) => {
+    const unit = Number(key);
+    if (!Number.isFinite(unit) || unit <= 0) return;
+    const source = isPlainObject(value) ? value : { completed: value };
+    const completed = Math.max(0, Math.floor(Number(source.completed) || 0));
+    const item = { completed };
+    if (typeof source.updatedAt === "string" && source.updatedAt) item.updatedAt = source.updatedAt;
+    units[String(Math.floor(unit))] = item;
+  });
+  return { units };
 }
 
 function parseSyncPayloadContent(content) {
@@ -2197,6 +2340,9 @@ function applySyncPayload(payload) {
   }
   if (isPlainObject(payload.activity)) {
     Object.entries(payload.activity).forEach(([bookId, activity]) => saveActivity(bookId, sanitizeActivityPayload(activity), { touch: false }));
+  }
+  if (isPlainObject(payload.unitStats)) {
+    Object.entries(payload.unitStats).forEach(([bookId, stats]) => saveUnitStats(bookId, sanitizeUnitStatsPayload(stats), { touch: false }));
   }
   state.syncMeta.localUpdatedAt = payload.updatedAt || new Date().toISOString();
   persistSyncMeta();
