@@ -8,6 +8,8 @@ const SYNC_META_KEY = "vocab_machine_sync_meta_v1";
 const AUTO_SYNC_DEBOUNCE_MS = 700;
 const AUTO_SYNC_PUSH_GAP_MS = 1500;
 const SYNC_OK_VISIBLE_MS = 2000;
+const PLAYBACK_RATE_MIN = 0.7;
+const PLAYBACK_RATE_MAX = 2.4;
 const SYNC_STATUS_LABELS = {
   idle: "云同步空闲",
   syncing: "云同步中",
@@ -19,8 +21,6 @@ const STUDY_MODES = new Set(["restart", "resume"]);
 const PER_BOOK_SETTING_KEYS = [
   "unit",
   "mode",
-  "duration",
-  "zhDelay",
   "summaryMode",
   "summaryCount",
   "speakEn",
@@ -53,8 +53,6 @@ const DEFAULT_SETTINGS = {
   bookId: BOOKS[0].id,
   unit: 1,
   mode: "restart",
-  duration: 5,
-  zhDelay: 1.2,
   summaryMode: "count",
   summaryCount: 20,
   speakEn: true,
@@ -219,13 +217,11 @@ function normalizeBookSettingValues(book, values) {
   return {
     unit: clamp(Number(source.unit) || 1, 1, book.totalUnits),
     mode: STUDY_MODES.has(source.mode) ? source.mode : DEFAULT_SETTINGS.mode,
-    duration: clamp(Number(source.duration) || DEFAULT_SETTINGS.duration, 1, 10),
-    zhDelay: clamp(Number(source.zhDelay) || 0, 0, 5),
     summaryMode: SUMMARY_MODES.has(source.summaryMode) ? source.summaryMode : DEFAULT_SETTINGS.summaryMode,
     summaryCount: clamp(Number(source.summaryCount) || DEFAULT_SETTINGS.summaryCount, 5, 200),
     speakEn: typeof source.speakEn === "boolean" ? source.speakEn : DEFAULT_SETTINGS.speakEn,
     speakZh: typeof source.speakZh === "boolean" ? source.speakZh : DEFAULT_SETTINGS.speakZh,
-    rate: clamp(Number(source.rate) || DEFAULT_SETTINGS.rate, 0.8, 2),
+    rate: clamp(Number(source.rate) || DEFAULT_SETTINGS.rate, PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX),
     highOnly: typeof source.highOnly === "boolean" ? source.highOnly : DEFAULT_SETTINGS.highOnly
   };
 }
@@ -377,13 +373,47 @@ function formatDefinition(word) {
   return String(source || "").replace(/\s+/g, " ").trim();
 }
 
+const POS_TAG_PATTERN = "(?:interj|prep|conj|pron|adj|adv|aux|num|art|vi|vt|nm|ad|int|n|v|a)";
+const POS_SPLIT_RE = new RegExp(`\\s+(?=${POS_TAG_PATTERN}\\.?\\s*[\\u4e00-\\u9fff（(])`, "gi");
+const POS_ADJOINED_RE = new RegExp(`([\\u4e00-\\u9fff）)])(?=${POS_TAG_PATTERN}\\.?\\s*[\\u4e00-\\u9fff（(])`, "gi");
+const POS_PREFIX_RE = new RegExp(`^${POS_TAG_PATTERN}\\.?\\s*`, "i");
+
 function splitDefinitionLines(text) {
   const normalized = String(text || "")
     .replace(/\s+/g, " ")
-    .replace(/\s+(?=(?:interj|prep|conj|pron|adj|adv|aux|num|art|vi|vt|ad|int|n|v|a)\.)/gi, "\n")
+    .replace(POS_SPLIT_RE, "\n")
+    .replace(POS_ADJOINED_RE, "$1\n")
     .trim();
   if (!normalized) return [];
   return normalized.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+function formatSpokenDefinition(word) {
+  if (!word) return "";
+  if (word.zh_high) return normalizeSpokenMeaning(word.zh_high);
+  const lines = splitDefinitionLines(word.zh_full);
+  const brief = lines.map(pickBroadMeaning).filter(Boolean);
+  return normalizeSpokenMeaning(brief.join("；") || word.zh_full);
+}
+
+function pickBroadMeaning(line) {
+  const withoutPos = String(line || "")
+    .replace(POS_PREFIX_RE, "")
+    .replace(/[()（）]/g, "")
+    .replace(/\s+/g, "")
+    .trim();
+  if (!withoutPos) return "";
+  return withoutPos.split(/[；;，,、/]/).map((item) => item.trim()).find(Boolean) || withoutPos;
+}
+
+function normalizeSpokenMeaning(text) {
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .replace(/[；;、/]+/g, "；")
+    .replace(/[，,]+/g, "，")
+    .replace(/；{2,}/g, "；")
+    .replace(/^；|；$/g, "")
+    .trim();
 }
 
 function highlightTerms(highlight) {
@@ -595,6 +625,7 @@ function init() {
   });
   window.addEventListener("blur", pausePlaybackForBackground);
   window.addEventListener("resize", fitActiveWord);
+  preloadSpeechVoices();
   if (isAuthenticated()) {
     renderSetup();
     queueAutoPull("init");
@@ -624,6 +655,16 @@ function registerServiceWorker() {
     });
     registration.update().catch(() => {});
   }).catch(() => {});
+}
+
+function preloadSpeechVoices() {
+  if (!("speechSynthesis" in window)) return;
+  window.speechSynthesis.getVoices();
+  if (typeof window.speechSynthesis.addEventListener === "function") {
+    window.speechSynthesis.addEventListener("voiceschanged", () => {
+      window.speechSynthesis.getVoices();
+    });
+  }
 }
 
 function normalizeSettings() {
@@ -731,8 +772,8 @@ function renderSetup() {
         <div class="settings-panel settings-panel--span2">
           <h2 class="panel-title">节奏控制</h2>
           <div class="control-list">
-            ${rangeControl("durationInput", "单词停留总时长", state.settings.duration, "秒", 1, 10, 0.1)}
-            ${rangeControl("delayInput", "中文释义延迟", state.settings.zhDelay, "秒", 0, 5, 0.1)}
+            ${rangeControl("rateInput", "播放倍速", state.settings.rate, "x", PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX, 0.1)}
+            <div class="status">自动节奏由英文朗读、中文简读和播放倍速共同决定。</div>
             <label class="field-label">
               总结节点
               <select class="select" id="summaryMode">
@@ -752,7 +793,7 @@ function renderSetup() {
               ${toggle("speakEn", "英文朗读", state.settings.speakEn)}
               ${toggle("speakZh", "中文朗读", state.settings.speakZh)}
             </div>
-            ${rangeControl("rateInput", "朗读语速", state.settings.rate, "x", 0.8, 2, 0.1)}
+            <div class="status">中文朗读只读简要义项，卡片仍显示完整释义。</div>
           </div>
         </div>
 
@@ -855,8 +896,6 @@ function bindSetupEvents() {
     });
   });
 
-  bindRange("durationInput", "duration", "秒", Number);
-  bindRange("delayInput", "zhDelay", "秒", Number);
   if (document.getElementById("summaryCount")) bindRange("summaryCount", "summaryCount", "个", Number);
   bindRange("rateInput", "rate", "x", Number);
   bindCheckbox("speakEn", "speakEn");
@@ -1115,52 +1154,35 @@ async function scheduleWordTimers() {
   if (!word || state.archiveOpen || state.statsOpen || state.playbackPaused) return;
   const token = ++state.playbackToken;
   const startedAt = Date.now();
-  const totalMs = Math.max(1000, Number(state.settings.duration) * 1000);
-  const requestedRevealMs = clamp(Number(state.settings.zhDelay) * 1000, 0, totalMs);
   const definition = formatDefinition(word);
+  const spokenDefinition = formatSpokenDefinition(word);
   const hasEnSpeech = Boolean(state.settings.speakEn);
-  const hasZhSpeech = Boolean(state.settings.speakZh && definition);
-  const minZhBudget = hasZhSpeech ? Math.min(1400, Math.max(700, estimateSpeechMs(definition, "zh-CN") / 2.8)) : 0;
-  const latestZhStartMs = hasZhSpeech ? Math.max(0, totalMs - minZhBudget) : totalMs;
-  const revealMs = hasZhSpeech ? Math.min(requestedRevealMs, latestZhStartMs) : requestedRevealMs;
-  const enBudget = revealMs > 0
-    ? Math.max(450, revealMs)
-    : hasEnSpeech && hasZhSpeech
-      ? Math.min(Math.max(450, totalMs * 0.38), latestZhStartMs)
-      : Math.max(450, totalMs);
-  const zhStartMs = hasZhSpeech
-    ? clamp(revealMs > 0 ? revealMs : hasEnSpeech ? enBudget : 0, 0, latestZhStartMs)
-    : totalMs;
-
-  if (revealMs === 0) {
-    state.showZh = true;
-    const definitionNode = document.getElementById("definition");
-    if (definitionNode) definitionNode.classList.remove("is-hidden");
-  }
+  const hasZhSpeech = Boolean(state.settings.speakZh && spokenDefinition);
+  const enBudget = hasEnSpeech ? speechBudgetMs(word.en, "en-US", 560) : quietBudgetMs(word.en, "en-US", 420);
+  const revealAt = startedAt + enBudget + phaseGapMs(160);
+  const zhBudget = spokenDefinition
+    ? hasZhSpeech
+      ? speechBudgetMs(spokenDefinition, "zh-CN", 620)
+      : quietBudgetMs(spokenDefinition, "zh-CN", 720)
+    : phaseGapMs(320);
+  const finishAt = revealAt + zhBudget + phaseGapMs(420);
 
   if (hasEnSpeech) {
     speakWithHighlight(word.en, "en-US", enBudget, "en", token);
   }
 
-  await sleepUntil(startedAt + revealMs);
-  if (!isPlaybackToken(token)) return;
-
-  if (revealMs > 0) {
-    cancelSpeechOnly();
-    state.showZh = true;
-    const definitionNode = document.getElementById("definition");
-    if (definitionNode) definitionNode.classList.remove("is-hidden");
-  }
-
-  await sleepUntil(startedAt + zhStartMs);
+  await sleepUntil(revealAt);
   if (!isPlaybackToken(token)) return;
 
   cancelSpeechOnly();
+  state.showZh = true;
+  const definitionNode = document.getElementById("definition");
+  if (definitionNode) definitionNode.classList.remove("is-hidden");
   if (hasZhSpeech) {
-    speakWithHighlight(definition, "zh-CN", Math.max(450, totalMs - zhStartMs), "zh", token);
+    speakWithHighlight(spokenDefinition, "zh-CN", zhBudget, "zh", token, { followBoundaries: false });
   }
 
-  await sleepUntil(startedAt + totalMs);
+  await sleepUntil(finishAt);
   if (isPlaybackToken(token)) advanceWord("auto");
 }
 
@@ -1211,31 +1233,45 @@ function estimateSpeechMs(text, lang) {
     return Math.max(650, (chars / 5.2) * 1000);
   }
   const words = normalized.split(/\s+/).filter(Boolean).length;
-  return Math.max(620, (words / 2.7) * 1000);
+  const chars = normalized.replace(/\s+/g, "").length;
+  return Math.max(680, (words / 2.45) * 1000, (chars / 11) * 1000);
 }
 
-function adaptiveSpeechRate(text, lang, budgetMs) {
-  const base = Number(state.settings.rate) || 1;
-  const estimate = estimateSpeechMs(text, lang);
-  if (!estimate || !budgetMs) return clamp(base, 0.8, 2);
-  const neededRate = base * (estimate / Math.max(420, budgetMs));
-  return clamp(Math.max(base, neededRate), 0.8, 2.8);
+function playbackRate() {
+  return clamp(Number(state.settings.rate) || DEFAULT_SETTINGS.rate, PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX);
 }
 
-function speakWithHighlight(text, lang, budgetMs, phase, token) {
+function speechBudgetMs(text, lang, minMs = 520) {
+  return Math.max(minMs, estimateSpeechMs(text, lang) / playbackRate());
+}
+
+function quietBudgetMs(text, lang, minMs = 420) {
+  return Math.max(minMs, (estimateSpeechMs(text, lang) * 0.55) / playbackRate());
+}
+
+function phaseGapMs(baseMs) {
+  return Math.max(120, baseMs / playbackRate());
+}
+
+function speakWithHighlight(text, lang, budgetMs, phase, token, { followBoundaries = true } = {}) {
   if (!("speechSynthesis" in window) || !text || !isPlaybackToken(token)) {
     return;
   }
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = lang;
-  utterance.rate = adaptiveSpeechRate(text, lang, budgetMs);
+  const voice = selectSpeechVoice(lang);
+  if (voice) {
+    utterance.voice = voice;
+    utterance.lang = voice.lang || lang;
+  }
+  utterance.rate = playbackRate();
   utterance.onstart = () => {
     if (!isPlaybackToken(token)) return;
     setSpeechPhase(phase, utterance.rate);
     if (phase === "zh") simulateZhHighlight(text, budgetMs, token);
   };
   utterance.onboundary = (event) => {
-    if (!isPlaybackToken(token) || phase !== "zh") return;
+    if (!followBoundaries || !isPlaybackToken(token) || phase !== "zh") return;
     highlightZhByCharIndex(event.charIndex || 0);
   };
   utterance.onend = () => {
@@ -1247,7 +1283,24 @@ function speakWithHighlight(text, lang, budgetMs, phase, token) {
   window.speechSynthesis.speak(utterance);
   addTimer(() => {
     if (isPlaybackToken(token)) cancelSpeechOnly();
-  }, Math.max(250, budgetMs));
+  }, Math.max(350, budgetMs * 1.18 + 140));
+}
+
+function selectSpeechVoice(lang) {
+  if (!("speechSynthesis" in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices.length) return null;
+  const lowerLang = lang.toLowerCase();
+  const family = lowerLang.slice(0, 2);
+  const candidates = voices.filter((voice) => String(voice.lang || "").toLowerCase().startsWith(family));
+  const preferred = lowerLang.startsWith("en")
+    ? [/google us english/i, /microsoft (aria|jenny|guy|david|mark).*english/i, /samantha/i, /alex/i, /daniel/i, /karen/i, /en-us/i, /english.*united states/i]
+    : [/xiaoxiao/i, /tingting/i, /mei-jia/i, /google.*(普通话|mandarin|chinese)/i, /zh-cn/i, /chinese/i];
+  const text = (voice) => `${voice.name || ""} ${voice.lang || ""}`;
+  return preferred.map((pattern) => candidates.find((voice) => pattern.test(text(voice)))).find(Boolean) ||
+    candidates.find((voice) => String(voice.lang || "").toLowerCase() === lowerLang) ||
+    candidates[0] ||
+    null;
 }
 
 function cancelSpeechOnly() {
@@ -1261,7 +1314,7 @@ function setSpeechPhase(phase, rate) {
   const en = document.getElementById("wordEn");
   const status = document.getElementById("speechStatus");
   if (en) en.classList.toggle("is-speaking", phase === "en");
-  if (status) status.textContent = `${phase === "en" ? "朗读英文" : "朗读中文"} · ${rate.toFixed(1)}x`;
+  if (status) status.textContent = `${phase === "en" ? "朗读英文" : "朗读义项"} · ${rate.toFixed(1)}x`;
   if (phase === "zh") highlightZhByCharIndex(0);
 }
 
@@ -1936,6 +1989,38 @@ function localSyncMs() {
   return Math.max(dateMs(state.syncMeta.localUpdatedAt), latestLocalProgressMs());
 }
 
+function collectLocalProgressMap() {
+  return BOOKS.reduce((progress, book) => {
+    progress[book.id] = loadProgress(book.id);
+    return progress;
+  }, {});
+}
+
+function progressDepth(progress) {
+  const sanitized = sanitizeProgressPayload(progress);
+  const unit = Number(sanitized.unit) || 0;
+  const lastWordId = Number(sanitized.lastWordId) || 0;
+  return unit * 100000 + lastWordId;
+}
+
+function progressMapScore(progressMap) {
+  if (!isPlainObject(progressMap)) return 0;
+  return BOOKS.reduce((score, book) => score + progressDepth(progressMap[book.id]), 0);
+}
+
+function chooseSyncSource(remotePayload) {
+  const remoteScore = progressMapScore(remotePayload?.progress);
+  const localProgress = collectLocalProgressMap();
+  const localScore = progressMapScore(localProgress);
+  if (remoteScore > localScore) return { source: "remote", reason: "progress" };
+  if (localScore > remoteScore) return { source: "local", reason: "progress" };
+  const remoteMs = dateMs(remotePayload?.updatedAt);
+  const localMs = localSyncMs();
+  if (remoteMs > localMs) return { source: "remote", reason: "updatedAt" };
+  if (localMs > remoteMs) return { source: "local", reason: "updatedAt" };
+  return { source: "equal", reason: "same" };
+}
+
 function normalizeIdList(ids) {
   return Array.from(new Set((Array.isArray(ids) ? ids : [])
     .map(Number)
@@ -2038,13 +2123,12 @@ async function autoPullFromGist() {
         return false;
       }
       const payload = result.payload;
-      const remoteMs = dateMs(payload.updatedAt);
-      const localMs = localSyncMs();
-      if (remoteMs > localMs) {
+      const decision = chooseSyncSource(payload);
+      if (decision.source === "remote") {
         applySyncPayload(payload);
         renderCurrentView({ touchProgress: false });
         setSyncStatus("ok");
-      } else if (localMs > remoteMs) {
+      } else if (decision.source === "local") {
         await autoPushToGist({ force: true });
       } else {
         setSyncStatus("ok");
