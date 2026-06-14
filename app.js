@@ -12,7 +12,7 @@ const PLAYBACK_RATE_MIN = 0.5;
 const PLAYBACK_RATE_MAX = 10;
 const PLAYBACK_RATE_STEP = 0.05;
 const SPEECH_RATE_MIN = 0.5;
-const SPEECH_RATE_MAX = 6;
+const SPEECH_RATE_MAX = PLAYBACK_RATE_MAX;
 const SPEECH_START_TIMEOUT_MS = 900;
 const SPEECH_POLL_MS = 120;
 const ZH_DELAY_MIN = 0;
@@ -1406,6 +1406,7 @@ function speakWithHighlight(text, lang, phase, token, { followBoundaries = true 
       const highlightBudget = speechBudgetMs(text, lang, phase === "zh" ? 620 : 560);
       let settled = false;
       let started = false;
+      const queuedAt = Date.now();
       const settle = (completed = true) => {
         if (settled) return;
         settled = true;
@@ -1423,6 +1424,10 @@ function speakWithHighlight(text, lang, phase, token, { followBoundaries = true 
           settleCanceled();
           return;
         }
+        if (!started && !window.speechSynthesis.speaking && !window.speechSynthesis.pending && Date.now() - queuedAt < SPEECH_START_TIMEOUT_MS) {
+          addTimer(pollDone, SPEECH_POLL_MS, settleCanceled);
+          return;
+        }
         if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
           settle(started);
           return;
@@ -1430,13 +1435,13 @@ function speakWithHighlight(text, lang, phase, token, { followBoundaries = true 
         addTimer(pollDone, SPEECH_POLL_MS, settleCanceled);
       };
       utterance.onstart = () => {
-        if (!isPlaybackToken(token)) return;
+        if (settled || !isPlaybackToken(token)) return;
         started = true;
         setSpeechPhase(phase, utterance.rate);
         if (phase === "zh") simulateZhHighlight(text, highlightBudget, token);
       };
       utterance.onboundary = (event) => {
-        if (!followBoundaries || !isPlaybackToken(token) || phase !== "zh") return;
+        if (settled || !followBoundaries || !isPlaybackToken(token) || phase !== "zh") return;
         highlightZhByCharIndex(event.charIndex || 0);
       };
       utterance.onend = () => settle(true);
@@ -1764,7 +1769,13 @@ function finishCurrentGroup() {
   const wasRecorded = state.currentWordRecorded;
   commitCurrentCardActivity({ counted: true });
   if (!wasRecorded) state.groupStats.seen += 1;
-  renderBreak({ manual: true, reviewEnd: Boolean(state.reviewMode) });
+  if (state.currentIndex < state.unitWords.length) state.currentIndex += 1;
+  state.showZh = false;
+  renderBreak({
+    manual: true,
+    unitEnd: state.currentIndex >= state.unitWords.length,
+    reviewEnd: Boolean(state.reviewMode)
+  });
 }
 
 function goPrevious() {
