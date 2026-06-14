@@ -10,6 +10,9 @@ const AUTO_SYNC_PUSH_GAP_MS = 1500;
 const SYNC_OK_VISIBLE_MS = 2000;
 const PLAYBACK_RATE_MIN = 0.5;
 const PLAYBACK_RATE_MAX = 5;
+const PLAYBACK_RATE_OPTIONS = [0.5, 0.7, 0.85, 1, 1.15, 1.3, 1.5, 1.75, 2, 2.4, 2.8, 3.2, 3.6, 4.2, 5];
+const ZH_DELAY_MIN = 0;
+const ZH_DELAY_MAX = 4000;
 const SYNC_STATUS_LABELS = {
   idle: "云同步空闲",
   syncing: "云同步中",
@@ -26,6 +29,7 @@ const PER_BOOK_SETTING_KEYS = [
   "speakEn",
   "speakZh",
   "rate",
+  "zhDelay",
   "highOnly"
 ];
 const BOOKS = [
@@ -58,6 +62,7 @@ const DEFAULT_SETTINGS = {
   speakEn: true,
   speakZh: false,
   rate: 1,
+  zhDelay: 1200,
   highOnly: false,
   bookSettings: {}
 };
@@ -97,6 +102,7 @@ const state = {
   cardStartedAt: 0,
   currentWordRecorded: false,
   pointer: null,
+  suppressNextCardClickPause: false,
   syncStatus: "idle",
   syncConfigTimer: null,
   syncHideTimer: null,
@@ -236,6 +242,7 @@ function normalizeBookSettingValues(book, values) {
     speakEn: typeof source.speakEn === "boolean" ? source.speakEn : DEFAULT_SETTINGS.speakEn,
     speakZh: typeof source.speakZh === "boolean" ? source.speakZh : DEFAULT_SETTINGS.speakZh,
     rate: clamp(Number(source.rate) || DEFAULT_SETTINGS.rate, PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX),
+    zhDelay: clampFinite(source.zhDelay, DEFAULT_SETTINGS.zhDelay, ZH_DELAY_MIN, ZH_DELAY_MAX),
     highOnly: typeof source.highOnly === "boolean" ? source.highOnly : DEFAULT_SETTINGS.highOnly
   };
 }
@@ -255,6 +262,11 @@ function touchLocalSync() {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function clampFinite(value, fallback, min, max) {
+  const number = Number(value);
+  return clamp(Number.isFinite(number) ? number : fallback, min, max);
 }
 
 function escapeHtml(value) {
@@ -790,8 +802,9 @@ function renderSetup() {
         <div class="settings-panel settings-panel--span2">
           <h2 class="panel-title">节奏控制</h2>
           <div class="control-list">
-            ${rangeControl("rateInput", "播放倍速", state.settings.rate, "x", PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX, 0.1)}
-            <div class="status">自动节奏由英文朗读、中文简读和播放倍速共同决定。</div>
+            ${rateButtonControl()}
+            ${rangeControl("zhDelayInput", "中文出现延迟", state.settings.zhDelay, "ms", ZH_DELAY_MIN, ZH_DELAY_MAX, 100)}
+            <div class="status">自动节奏由英文朗读、中文出现延迟、中文简读和播放倍速共同决定。</div>
             <label class="field-label">
               总结节点
               <select class="select" id="summaryMode">
@@ -913,6 +926,21 @@ function toggle(key, label, checked) {
   `;
 }
 
+function rateButtonControl() {
+  const rate = playbackRate();
+  return `
+    <div class="control-row">
+      <div class="control-head">
+        <span>播放倍速</span>
+        <span class="control-value" id="rateButtonValue">${escapeHtml(formatRate(rate))}x</span>
+      </div>
+      <button class="rate-cycle-button" id="rateButton" type="button" aria-label="播放倍速 ${escapeHtml(formatRate(rate))}x">
+        ${escapeHtml(formatRate(rate))}x
+      </button>
+    </div>
+  `;
+}
+
 function rangeControl(id, label, value, unit, min, max, step) {
   return `
     <div class="control-row">
@@ -934,6 +962,7 @@ function bindSetupEvents() {
   const logoutBtn = document.getElementById("logoutBtn");
   const tokenInput = document.getElementById("tokenInput");
   const gistInput = document.getElementById("gistInput");
+  const rateButton = document.getElementById("rateButton");
 
   bookSelect.addEventListener("change", () => {
     rememberCurrentBookSettings();
@@ -957,7 +986,14 @@ function bindSetupEvents() {
   });
 
   if (document.getElementById("summaryCount")) bindRange("summaryCount", "summaryCount", "个", Number);
-  bindRange("rateInput", "rate", "x", Number);
+  bindRange("zhDelayInput", "zhDelay", "ms", Number);
+  if (rateButton) {
+    rateButton.addEventListener("click", () => {
+      state.settings.rate = nextPlaybackRate();
+      persistSettings();
+      renderSetup();
+    });
+  }
   bindCheckbox("speakEn", "speakEn");
   bindCheckbox("speakZh", "speakZh");
   bindCheckbox("highOnly", "highOnly");
@@ -1132,8 +1168,8 @@ function renderFlashcard({ touchProgress = true } = {}) {
         <div class="gesture-list">
           ${gesture("↑", "斩")}
           ${gesture("↓", "生词")}
-          ${gesture("←", "下一个")}
-          ${gesture("→", "上一个")}
+          ${gesture("←", "上一个")}
+          ${gesture("→", "下一个")}
         </div>
       </aside>
     </section>
@@ -1196,8 +1232,8 @@ function renderCardSwipeControls() {
       <span class="card-swipe-edge card-swipe-edge--up"></span>
       <span class="card-swipe-edge card-swipe-edge--down"></span>
     </div>
-    <button class="card-tap-zone card-tap-zone--left" data-card-tap="left" type="button" aria-label="下一个"></button>
-    <button class="card-tap-zone card-tap-zone--right" data-card-tap="right" type="button" aria-label="上一个"></button>
+    <button class="card-tap-zone card-tap-zone--left" data-card-tap="left" type="button" aria-label="上一个"></button>
+    <button class="card-tap-zone card-tap-zone--right" data-card-tap="right" type="button" aria-label="下一个"></button>
     <button class="card-tap-zone card-tap-zone--up" data-card-tap="up" type="button" aria-label="标记为已斩"></button>
     <button class="card-tap-zone card-tap-zone--down" data-card-tap="down" type="button" aria-label="标记为重难点"></button>
   `;
@@ -1229,6 +1265,7 @@ async function scheduleWordTimers() {
   const hasEnSpeech = Boolean(state.settings.speakEn && speechAvailable);
   const hasZhSpeech = Boolean(state.settings.speakZh && spokenDefinition && speechAvailable);
 
+  const revealDelay = sleepFor(zhRevealDelayMs());
   if (hasEnSpeech) {
     await speakWithHighlight(word.en, "en-US", "en", token);
   } else {
@@ -1236,7 +1273,7 @@ async function scheduleWordTimers() {
   }
 
   if (!isPlaybackToken(token)) return;
-  await sleepFor(phaseGapMs(160));
+  await revealDelay;
   if (!isPlaybackToken(token)) return;
 
   state.showZh = true;
@@ -1264,6 +1301,15 @@ function pausePlaybackForBackground() {
   releaseWakeLock();
   state.playbackPaused = true;
   renderFlashcard();
+}
+
+function pausePlaybackFromCard() {
+  if (state.view !== "flash" || state.playbackPaused) return;
+  commitCurrentCardActivity();
+  clearTimers();
+  releaseWakeLock();
+  state.playbackPaused = true;
+  renderFlashcard({ touchProgress: false });
 }
 
 async function resumePlayback() {
@@ -1309,6 +1355,20 @@ function estimateSpeechMs(text, lang) {
 
 function playbackRate() {
   return clamp(Number(state.settings.rate) || DEFAULT_SETTINGS.rate, PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX);
+}
+
+function formatRate(rate) {
+  return String(Number(rate).toFixed(2)).replace(/\.00$/, "").replace(/0$/, "");
+}
+
+function nextPlaybackRate() {
+  const current = playbackRate();
+  const next = PLAYBACK_RATE_OPTIONS.find((rate) => rate > current + 0.001);
+  return next || PLAYBACK_RATE_OPTIONS[0];
+}
+
+function zhRevealDelayMs() {
+  return clampFinite(state.settings.zhDelay, DEFAULT_SETTINGS.zhDelay, ZH_DELAY_MIN, ZH_DELAY_MAX) / playbackRate();
 }
 
 function speechBudgetMs(text, lang, minMs = 520) {
@@ -1499,8 +1559,18 @@ function bindCardGesture() {
     });
   });
 
+  card.addEventListener("click", (event) => {
+    if (event.target.closest("button, a, input, select, textarea")) return;
+    if (state.suppressNextCardClickPause) {
+      state.suppressNextCardClickPause = false;
+      return;
+    }
+    pausePlaybackFromCard();
+  });
+
   stack.addEventListener("pointerdown", (event) => {
     if (state.playbackPaused) return;
+    if (event.target.closest("button, a, input, select, textarea")) return;
     clearTimers();
     stack.setPointerCapture(event.pointerId);
     state.pointer = {
@@ -1537,8 +1607,10 @@ function finishPointer(event, card, cancelled = false) {
   const distance = Math.max(Math.abs(dx), Math.abs(dy));
   const velocity = distance / elapsed;
   const flick = distance > 24 && velocity > 0.42;
+  const didSwipe = !cancelled && (distance >= threshold || flick);
+  state.suppressNextCardClickPause = cancelled || didSwipe;
 
-  if (cancelled || (distance < threshold && !flick)) {
+  if (!didSwipe) {
     snapBack(card);
     return;
   }
@@ -1580,13 +1652,13 @@ function triggerCardDirection(direction, card = document.getElementById("activeC
   const dx = Number(offset.dx) || 0;
   const dy = Number(offset.dy) || 0;
   if (direction === "left") {
-    animateOut(card, -window.innerWidth, dy, () => advanceWord("manual"));
-  } else if (direction === "right") {
     if (state.currentIndex <= 0) {
       snapBack(card);
     } else {
-      animateOut(card, window.innerWidth, dy, goPrevious);
+      animateOut(card, -window.innerWidth, dy, goPrevious);
     }
+  } else if (direction === "right") {
+    animateOut(card, window.innerWidth, dy, () => advanceWord("manual"));
   } else if (direction === "up") {
     markCurrent("known");
     animateOut(card, dx, -window.innerHeight, () => advanceWord("known"));

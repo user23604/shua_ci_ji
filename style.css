@@ -316,6 +316,24 @@ button:not(:disabled) {
   accent-color: var(--accent);
 }
 
+.rate-cycle-button {
+  width: 100%;
+  min-height: var(--tap);
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  background: var(--surface-strong);
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.rate-cycle-button:focus-visible,
+.rate-cycle-button:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+}
+
 .radio-group,
 .toggle-grid {
   display: grid;
