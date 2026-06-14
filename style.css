@@ -316,24 +316,6 @@ button:not(:disabled) {
   accent-color: var(--accent);
 }
 
-.rate-cycle-button {
-  width: 100%;
-  min-height: var(--tap);
-  border: 1px solid var(--line);
-  border-radius: var(--card-radius);
-  background: var(--surface-strong);
-  color: var(--text);
-  font-size: 20px;
-  font-weight: 900;
-  font-variant-numeric: tabular-nums;
-}
-
-.rate-cycle-button:focus-visible,
-.rate-cycle-button:hover {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
-}
-
 .radio-group,
 .toggle-grid {
   display: grid;
@@ -594,13 +576,12 @@ button:not(:disabled) {
 
 .card-tap-zone {
   position: absolute;
-  z-index: 3;
+  z-index: 6;
   display: block;
   padding: 0;
   border: 0;
   border-radius: var(--card-radius);
   background: transparent;
-  opacity: 0;
   outline: none;
 }
 
@@ -615,9 +596,9 @@ button:not(:disabled) {
 
 .card-tap-zone--left,
 .card-tap-zone--right {
-  top: 20%;
-  bottom: 20%;
-  width: 24%;
+  top: 0;
+  bottom: 0;
+  width: 28%;
 }
 
 .card-tap-zone--left {
@@ -630,9 +611,9 @@ button:not(:disabled) {
 
 .card-tap-zone--up,
 .card-tap-zone--down {
-  left: 26%;
-  right: 26%;
-  height: 22%;
+  left: 28%;
+  right: 28%;
+  height: 24%;
 }
 
 .card-tap-zone--up {
@@ -783,7 +764,7 @@ button:not(:disabled) {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 5;
+  z-index: 7;
 }
 
 .undo-btn {

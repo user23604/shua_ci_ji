@@ -9,8 +9,8 @@ const AUTO_SYNC_DEBOUNCE_MS = 700;
 const AUTO_SYNC_PUSH_GAP_MS = 1500;
 const SYNC_OK_VISIBLE_MS = 2000;
 const PLAYBACK_RATE_MIN = 0.5;
-const PLAYBACK_RATE_MAX = 5;
-const PLAYBACK_RATE_OPTIONS = [0.5, 0.7, 0.85, 1, 1.15, 1.3, 1.5, 1.75, 2, 2.4, 2.8, 3.2, 3.6, 4.2, 5];
+const PLAYBACK_RATE_MAX = 10;
+const PLAYBACK_RATE_STEP = 0.05;
 const ZH_DELAY_MIN = 0;
 const ZH_DELAY_MAX = 4000;
 const SYNC_STATUS_LABELS = {
@@ -802,7 +802,7 @@ function renderSetup() {
         <div class="settings-panel settings-panel--span2">
           <h2 class="panel-title">节奏控制</h2>
           <div class="control-list">
-            ${rateButtonControl()}
+            ${rateRangeControl()}
             ${rangeControl("zhDelayInput", "中文出现延迟", state.settings.zhDelay, "ms", ZH_DELAY_MIN, ZH_DELAY_MAX, 100)}
             <div class="status">自动节奏由英文朗读、中文出现延迟、中文简读和播放倍速共同决定。</div>
             <label class="field-label">
@@ -926,29 +926,19 @@ function toggle(key, label, checked) {
   `;
 }
 
-function rateButtonControl() {
+function rateRangeControl() {
   const rate = playbackRate();
-  return `
-    <div class="control-row">
-      <div class="control-head">
-        <span>播放倍速</span>
-        <span class="control-value" id="rateButtonValue">${escapeHtml(formatRate(rate))}x</span>
-      </div>
-      <button class="rate-cycle-button" id="rateButton" type="button" aria-label="播放倍速 ${escapeHtml(formatRate(rate))}x">
-        ${escapeHtml(formatRate(rate))}x
-      </button>
-    </div>
-  `;
+  return rangeControl("rateInput", "播放倍速", rate, "x", PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX, PLAYBACK_RATE_STEP, formatRate(rate));
 }
 
-function rangeControl(id, label, value, unit, min, max, step) {
+function rangeControl(id, label, value, unit, min, max, step, displayValue = value) {
   return `
     <div class="control-row">
       <div class="control-head">
         <span>${escapeHtml(label)}</span>
-        <span class="control-value" id="${id}Value">${escapeHtml(value)}${escapeHtml(unit)}</span>
+        <span class="control-value" id="${id}Value">${escapeHtml(displayValue)}${escapeHtml(unit)}</span>
       </div>
-      <input class="range" id="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${value}">
+      <input class="range" id="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${value}" aria-label="${escapeHtml(label)}">
     </div>
   `;
 }
@@ -962,7 +952,6 @@ function bindSetupEvents() {
   const logoutBtn = document.getElementById("logoutBtn");
   const tokenInput = document.getElementById("tokenInput");
   const gistInput = document.getElementById("gistInput");
-  const rateButton = document.getElementById("rateButton");
 
   bookSelect.addEventListener("change", () => {
     rememberCurrentBookSettings();
@@ -987,13 +976,7 @@ function bindSetupEvents() {
 
   if (document.getElementById("summaryCount")) bindRange("summaryCount", "summaryCount", "个", Number);
   bindRange("zhDelayInput", "zhDelay", "ms", Number);
-  if (rateButton) {
-    rateButton.addEventListener("click", () => {
-      state.settings.rate = nextPlaybackRate();
-      persistSettings();
-      renderSetup();
-    });
-  }
+  bindRange("rateInput", "rate", "x", Number, formatRate);
   bindCheckbox("speakEn", "speakEn");
   bindCheckbox("speakZh", "speakZh");
   bindCheckbox("highOnly", "highOnly");
@@ -1025,14 +1008,14 @@ function bindSetupEvents() {
   });
 }
 
-function bindRange(elementId, key, unit, parser) {
+function bindRange(elementId, key, unit, parser, formatter = String) {
   const input = document.getElementById(elementId);
   const output = document.getElementById(`${elementId}Value`);
   if (!input || !output) return;
   input.addEventListener("input", () => {
     const value = parser(input.value);
     state.settings[key] = value;
-    output.textContent = `${value}${unit}`;
+    output.textContent = `${formatter(value)}${unit}`;
     persistSettings();
   });
 }
@@ -1265,7 +1248,7 @@ async function scheduleWordTimers() {
   const hasEnSpeech = Boolean(state.settings.speakEn && speechAvailable);
   const hasZhSpeech = Boolean(state.settings.speakZh && spokenDefinition && speechAvailable);
 
-  const revealDelay = sleepFor(zhRevealDelayMs());
+  const revealTask = revealZhAfterDelay(token);
   if (hasEnSpeech) {
     await speakWithHighlight(word.en, "en-US", "en", token);
   } else {
@@ -1273,12 +1256,9 @@ async function scheduleWordTimers() {
   }
 
   if (!isPlaybackToken(token)) return;
-  await revealDelay;
+  await revealTask;
   if (!isPlaybackToken(token)) return;
 
-  state.showZh = true;
-  const definitionNode = document.getElementById("definition");
-  if (definitionNode) definitionNode.classList.remove("is-hidden");
   if (spokenDefinition) {
     if (hasZhSpeech) {
       await speakWithHighlight(spokenDefinition, "zh-CN", "zh", token, { followBoundaries: false });
@@ -1292,6 +1272,16 @@ async function scheduleWordTimers() {
   if (!isPlaybackToken(token)) return;
   await sleepFor(phaseGapMs(420));
   if (isPlaybackToken(token)) advanceWord("auto");
+}
+
+async function revealZhAfterDelay(token) {
+  const delay = zhRevealDelayMs();
+  if (delay > 0) await sleepFor(delay);
+  if (!isPlaybackToken(token)) return false;
+  state.showZh = true;
+  const definitionNode = document.getElementById("definition");
+  if (definitionNode) definitionNode.classList.remove("is-hidden");
+  return true;
 }
 
 function pausePlaybackForBackground() {
@@ -1358,13 +1348,7 @@ function playbackRate() {
 }
 
 function formatRate(rate) {
-  return String(Number(rate).toFixed(2)).replace(/\.00$/, "").replace(/0$/, "");
-}
-
-function nextPlaybackRate() {
-  const current = playbackRate();
-  const next = PLAYBACK_RATE_OPTIONS.find((rate) => rate > current + 0.001);
-  return next || PLAYBACK_RATE_OPTIONS[0];
+  return Number(rate).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function zhRevealDelayMs() {
@@ -1372,15 +1356,19 @@ function zhRevealDelayMs() {
 }
 
 function speechBudgetMs(text, lang, minMs = 520) {
-  return Math.max(minMs, estimateSpeechMs(text, lang) / playbackRate());
+  return Math.max(scaledMinimumMs(minMs), estimateSpeechMs(text, lang) / playbackRate());
 }
 
 function quietBudgetMs(text, lang, minMs = 420) {
-  return Math.max(minMs, (estimateSpeechMs(text, lang) * 0.55) / playbackRate());
+  return Math.max(scaledMinimumMs(minMs), (estimateSpeechMs(text, lang) * 0.55) / playbackRate());
 }
 
 function phaseGapMs(baseMs) {
-  return Math.max(120, baseMs / playbackRate());
+  return scaledMinimumMs(baseMs, 35);
+}
+
+function scaledMinimumMs(baseMs, floorMs = 40) {
+  return Math.max(floorMs, baseMs / playbackRate());
 }
 
 function speakWithHighlight(text, lang, phase, token, { followBoundaries = true } = {}) {
@@ -1496,7 +1484,7 @@ function setSpeechPhase(phase, rate) {
   const en = document.getElementById("wordEn");
   const status = document.getElementById("speechStatus");
   if (en) en.classList.toggle("is-speaking", phase === "en");
-  if (status) status.textContent = `${phase === "en" ? "朗读英文" : "朗读义项"} · ${rate.toFixed(1)}x`;
+  if (status) status.textContent = `${phase === "en" ? "朗读英文" : "朗读义项"} · ${formatRate(rate)}x`;
   if (phase === "zh") highlightZhByCharIndex(0);
 }
 
@@ -1527,10 +1515,10 @@ function highlightZhByCharIndex(charIndex) {
 function simulateZhHighlight(text, budgetMs, token) {
   const nodes = Array.from(document.querySelectorAll(".speech-token"));
   if (!nodes.length) return;
-  const step = Math.max(120, budgetMs / nodes.length);
+  const step = Math.max(scaledMinimumMs(120, 35), budgetMs / nodes.length);
   nodes.forEach((_, index) => {
     addTimer(() => {
-      if (!isPlaybackToken(token)) return;
+      if (!isPlaybackToken(token) || state.speechPhase !== "zh") return;
       state.activeZhIndex = index;
       nodes.forEach((node) => {
         node.classList.toggle("is-speaking", Number(node.dataset.tokenIndex) === index);
@@ -1608,7 +1596,7 @@ function finishPointer(event, card, cancelled = false) {
   const velocity = distance / elapsed;
   const flick = distance > 24 && velocity > 0.42;
   const didSwipe = !cancelled && (distance >= threshold || flick);
-  state.suppressNextCardClickPause = cancelled || didSwipe;
+  state.suppressNextCardClickPause = cancelled || didSwipe || distance > 6;
 
   if (!didSwipe) {
     snapBack(card);
