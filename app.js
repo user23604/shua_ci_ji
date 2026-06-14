@@ -12,10 +12,9 @@ const PLAYBACK_RATE_MIN = 0.5;
 const PLAYBACK_RATE_MAX = 10;
 const PLAYBACK_RATE_STEP = 0.05;
 const SPEECH_RATE_MIN = 0.5;
-const SPEECH_RATE_MAX = 3;
+const SPEECH_RATE_MAX = 6;
 const SPEECH_START_TIMEOUT_MS = 900;
-const SPEECH_WATCHDOG_EXTRA_MS = 1200;
-const SPEECH_HARD_TIMEOUT_FACTOR = 2.8;
+const SPEECH_POLL_MS = 120;
 const ZH_DELAY_MIN = 0;
 const ZH_DELAY_MAX = 4000;
 const SYNC_STATUS_LABELS = {
@@ -1428,16 +1427,7 @@ function speakWithHighlight(text, lang, phase, token, { followBoundaries = true 
           settle(started);
           return;
         }
-        addTimer(pollDone, 240, settleCanceled);
-      };
-      const forceFinish = () => {
-        if (settled) return;
-        if (!isPlaybackToken(token)) {
-          settleCanceled();
-          return;
-        }
-        window.speechSynthesis.cancel();
-        settle(started);
+        addTimer(pollDone, SPEECH_POLL_MS, settleCanceled);
       };
       utterance.onstart = () => {
         if (!isPlaybackToken(token)) return;
@@ -1462,8 +1452,7 @@ function speakWithHighlight(text, lang, phase, token, { followBoundaries = true 
         window.speechSynthesis.cancel();
         settle(false);
       }, SPEECH_START_TIMEOUT_MS, settleCanceled);
-      addTimer(pollDone, Math.max(SPEECH_START_TIMEOUT_MS + 100, highlightBudget + SPEECH_WATCHDOG_EXTRA_MS), settleCanceled);
-      addTimer(forceFinish, Math.max(SPEECH_START_TIMEOUT_MS + 300, highlightBudget * SPEECH_HARD_TIMEOUT_FACTOR), settleCanceled);
+      addTimer(pollDone, SPEECH_POLL_MS, settleCanceled);
     });
   });
 }
