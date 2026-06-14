@@ -11,6 +11,11 @@ const SYNC_OK_VISIBLE_MS = 2000;
 const PLAYBACK_RATE_MIN = 0.5;
 const PLAYBACK_RATE_MAX = 10;
 const PLAYBACK_RATE_STEP = 0.05;
+const SPEECH_RATE_MIN = 0.5;
+const SPEECH_RATE_MAX = 3;
+const SPEECH_START_TIMEOUT_MS = 900;
+const SPEECH_WATCHDOG_EXTRA_MS = 1200;
+const SPEECH_HARD_TIMEOUT_FACTOR = 2.8;
 const ZH_DELAY_MIN = 0;
 const ZH_DELAY_MAX = 4000;
 const SYNC_STATUS_LABELS = {
@@ -1250,7 +1255,9 @@ async function scheduleWordTimers() {
 
   const revealTask = revealZhAfterDelay(token);
   if (hasEnSpeech) {
-    await speakWithHighlight(word.en, "en-US", "en", token);
+    const spoken = await speakWithHighlight(word.en, "en-US", "en", token);
+    if (!isPlaybackToken(token)) return;
+    if (!spoken) await sleepFor(quietBudgetMs(word.en, "en-US", 420));
   } else {
     await sleepFor(quietBudgetMs(word.en, "en-US", 420));
   }
@@ -1261,7 +1268,9 @@ async function scheduleWordTimers() {
 
   if (spokenDefinition) {
     if (hasZhSpeech) {
-      await speakWithHighlight(spokenDefinition, "zh-CN", "zh", token, { followBoundaries: false });
+      const spoken = await speakWithHighlight(spokenDefinition, "zh-CN", "zh", token, { followBoundaries: false });
+      if (!isPlaybackToken(token)) return;
+      if (!spoken) await sleepFor(quietBudgetMs(spokenDefinition, "zh-CN", 720));
     } else {
       await sleepFor(quietBudgetMs(spokenDefinition, "zh-CN", 720));
     }
@@ -1347,6 +1356,10 @@ function playbackRate() {
   return clamp(Number(state.settings.rate) || DEFAULT_SETTINGS.rate, PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX);
 }
 
+function speechRate() {
+  return clamp(playbackRate(), SPEECH_RATE_MIN, SPEECH_RATE_MAX);
+}
+
 function formatRate(rate) {
   return Number(rate).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
@@ -1356,7 +1369,7 @@ function zhRevealDelayMs() {
 }
 
 function speechBudgetMs(text, lang, minMs = 520) {
-  return Math.max(scaledMinimumMs(minMs), estimateSpeechMs(text, lang) / playbackRate());
+  return Math.max(Math.max(120, minMs / speechRate()), estimateSpeechMs(text, lang) / speechRate());
 }
 
 function quietBudgetMs(text, lang, minMs = 420) {
@@ -1382,6 +1395,7 @@ function speakWithHighlight(text, lang, phase, token, { followBoundaries = true 
         resolve(false);
         return;
       }
+      window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = lang;
       const voice = selectSpeechVoice(lang);
@@ -1389,9 +1403,10 @@ function speakWithHighlight(text, lang, phase, token, { followBoundaries = true 
         utterance.voice = voice;
         utterance.lang = voice.lang || lang;
       }
-      utterance.rate = playbackRate();
+      utterance.rate = speechRate();
       const highlightBudget = speechBudgetMs(text, lang, phase === "zh" ? 620 : 560);
       let settled = false;
+      let started = false;
       const settle = (completed = true) => {
         if (settled) return;
         settled = true;
@@ -1410,13 +1425,23 @@ function speakWithHighlight(text, lang, phase, token, { followBoundaries = true 
           return;
         }
         if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
-          settle(true);
+          settle(started);
           return;
         }
         addTimer(pollDone, 240, settleCanceled);
       };
+      const forceFinish = () => {
+        if (settled) return;
+        if (!isPlaybackToken(token)) {
+          settleCanceled();
+          return;
+        }
+        window.speechSynthesis.cancel();
+        settle(started);
+      };
       utterance.onstart = () => {
         if (!isPlaybackToken(token)) return;
+        started = true;
         setSpeechPhase(phase, utterance.rate);
         if (phase === "zh") simulateZhHighlight(text, highlightBudget, token);
       };
@@ -1425,9 +1450,20 @@ function speakWithHighlight(text, lang, phase, token, { followBoundaries = true 
         highlightZhByCharIndex(event.charIndex || 0);
       };
       utterance.onend = () => settle(true);
-      utterance.onerror = () => settle(true);
-      window.speechSynthesis.speak(utterance);
-      addTimer(pollDone, Math.max(1200, highlightBudget + 800), settleCanceled);
+      utterance.onerror = () => settle(false);
+      try {
+        window.speechSynthesis.speak(utterance);
+      } catch {
+        settle(false);
+        return;
+      }
+      addTimer(() => {
+        if (settled || started) return;
+        window.speechSynthesis.cancel();
+        settle(false);
+      }, SPEECH_START_TIMEOUT_MS, settleCanceled);
+      addTimer(pollDone, Math.max(SPEECH_START_TIMEOUT_MS + 100, highlightBudget + SPEECH_WATCHDOG_EXTRA_MS), settleCanceled);
+      addTimer(forceFinish, Math.max(SPEECH_START_TIMEOUT_MS + 300, highlightBudget * SPEECH_HARD_TIMEOUT_FACTOR), settleCanceled);
     });
   });
 }
@@ -1543,6 +1579,10 @@ function bindCardGesture() {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (state.suppressNextCardClickPause) {
+        state.suppressNextCardClickPause = false;
+        return;
+      }
       triggerCardDirection(button.dataset.cardTap, card);
     });
   });
@@ -1558,7 +1598,8 @@ function bindCardGesture() {
 
   stack.addEventListener("pointerdown", (event) => {
     if (state.playbackPaused) return;
-    if (event.target.closest("button, a, input, select, textarea")) return;
+    const interactiveTarget = event.target.closest("button, a, input, select, textarea");
+    if (interactiveTarget && !interactiveTarget.matches("[data-card-tap]")) return;
     clearTimers();
     stack.setPointerCapture(event.pointerId);
     state.pointer = {
