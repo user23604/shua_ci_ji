@@ -104,6 +104,7 @@ const state = {
   wakeLock: null,
   playbackPaused: false,
   cardStartedAt: 0,
+  cardEnterDirection: "",
   currentWordRecorded: false,
   pointer: null,
   suppressNextCardClickPause: false,
@@ -1123,6 +1124,8 @@ function renderFlashcard({ touchProgress = true } = {}) {
   const marks = loadMarks(book.id);
   const marked = marks.known.includes(word.id) || marks.unknown.includes(word.id);
   const undo = state.undoWordId === word.id && marked;
+  const cardEnterDirection = state.cardEnterDirection;
+  state.cardEnterDirection = "";
 
   app.innerHTML = `
     <section class="view flash-view">
@@ -1146,7 +1149,7 @@ function renderFlashcard({ touchProgress = true } = {}) {
       <section class="stage">
         <div class="card-stack" id="cardStack">
           ${next ? renderWordCard(next, true) : ""}
-          ${renderWordCard(word, false, undo)}
+          ${renderWordCard(word, false, undo, cardEnterDirection)}
         </div>
       </section>
 
@@ -1184,7 +1187,7 @@ function renderFlashcard({ touchProgress = true } = {}) {
   scheduleWordTimers();
 }
 
-function renderWordCard(word, isNext = false, undo = false) {
+function renderWordCard(word, isNext = false, undo = false, enterDirection = "") {
   const definition = formatDefinition(word);
   const definitionId = isNext ? "" : ' id="definition"';
   const speechStatusId = isNext ? "" : ' id="speechStatus"';
@@ -1193,8 +1196,9 @@ function renderWordCard(word, isNext = false, undo = false) {
   const zhHtml = isNext ? escapeHtml(definition) : renderDefinitionHtml(word);
   const freqLabel = word.freq ? `${word.freq} 次` : "0 次";
   const alpha = Number(freqAlpha(word.freq));
+  const enterClass = !isNext && ["from-left", "from-right"].includes(enterDirection) ? ` word-card--enter-${enterDirection}` : "";
   return `
-    <article class="word-card ${isNext ? "word-card--next" : ""}" id="${isNext ? "nextCard" : "activeCard"}" style="--freq-alpha: ${alpha.toFixed(3)}; --freq-alpha-soft: ${(alpha * 0.35).toFixed(3)}">
+    <article class="word-card ${isNext ? "word-card--next" : ""}${enterClass}" id="${isNext ? "nextCard" : "activeCard"}" style="--freq-alpha: ${alpha.toFixed(3)}; --freq-alpha-soft: ${(alpha * 0.35).toFixed(3)}">
       ${isNext ? "" : renderCardSwipeControls()}
       <div class="freq-watermark">${escapeHtml(freqLabel)}</div>
       <div class="word-card__meta">
@@ -1750,13 +1754,16 @@ function advanceWord(reason) {
   state.undoWordId = null;
   state.currentIndex += 1;
   state.showZh = false;
+  if (reason === "manual") state.cardEnterDirection = "from-right";
 
   if (state.currentIndex >= state.unitWords.length) {
+    state.cardEnterDirection = "";
     renderBreak({ unitEnd: true, reviewEnd: Boolean(state.reviewMode) });
     return;
   }
 
   if (state.settings.summaryMode === "count" && state.groupStats.seen >= state.settings.summaryCount) {
+    state.cardEnterDirection = "";
     renderBreak({ unitEnd: false });
     return;
   }
@@ -1790,6 +1797,7 @@ function goPrevious() {
   const marks = loadMarks(currentBook().id);
   state.undoWordId = marks.known.includes(word.id) || marks.unknown.includes(word.id) ? word.id : null;
   state.showZh = true;
+  state.cardEnterDirection = "from-left";
   renderFlashcard();
 }
 
