@@ -1216,8 +1216,8 @@ function renderCardSwipeControls() {
       <span class="card-swipe-edge card-swipe-edge--up"></span>
       <span class="card-swipe-edge card-swipe-edge--down"></span>
     </div>
-    <button class="card-tap-zone card-tap-zone--left" data-card-tap="left" type="button" aria-label="下一个"></button>
-    <button class="card-tap-zone card-tap-zone--right" data-card-tap="right" type="button" aria-label="上一个"></button>
+    <button class="card-tap-zone card-tap-zone--left" data-card-tap="tap-left" type="button" aria-label="上一个"></button>
+    <button class="card-tap-zone card-tap-zone--right" data-card-tap="tap-right" type="button" aria-label="下一个"></button>
     <button class="card-tap-zone card-tap-zone--up" data-card-tap="up" type="button" aria-label="标记为已斩"></button>
     <button class="card-tap-zone card-tap-zone--down" data-card-tap="down" type="button" aria-label="标记为重难点"></button>
   `;
@@ -1668,16 +1668,19 @@ function triggerCardDirection(direction, card = document.getElementById("activeC
   if (!card || state.playbackPaused) return;
   clearTimers();
   card.classList.remove("is-animated");
-  setCardSwipeFeedback(card, direction);
+  const feedbackDirection = direction === "tap-left" ? "left" : direction === "tap-right" ? "right" : direction;
+  setCardSwipeFeedback(card, feedbackDirection);
   const dx = Number(offset.dx) || 0;
   const dy = Number(offset.dy) || 0;
-  if (direction === "left") {
-    animateOut(card, -window.innerWidth, dy, () => advanceWord("manual"));
-  } else if (direction === "right") {
+  if (direction === "left" || direction === "tap-right") {
+    const x = direction === "left" ? -window.innerWidth : window.innerWidth;
+    animateOut(card, x, dy, () => advanceWord("manual"));
+  } else if (direction === "right" || direction === "tap-left") {
     if (state.currentIndex <= 0) {
       snapBack(card);
     } else {
-      animateOut(card, window.innerWidth, dy, goPrevious);
+      const x = direction === "right" ? window.innerWidth : -window.innerWidth;
+      animateOut(card, x, dy, goPrevious);
     }
   } else if (direction === "up") {
     markCurrent("known");
