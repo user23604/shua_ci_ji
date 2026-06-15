@@ -473,25 +473,6 @@ button:not(:disabled) {
   position: relative;
 }
 
-.resume-overlay {
-  position: absolute;
-  left: 50%;
-  bottom: clamp(14px, 4vh, 32px);
-  z-index: 8;
-  transform: translate3d(-50%, 0, 0);
-  pointer-events: none;
-}
-
-.resume-overlay .btn {
-  width: auto;
-  min-width: 168px;
-  min-height: 46px;
-  padding: 0 22px;
-  background: rgba(15, 118, 110, 0.92);
-  box-shadow: 0 12px 34px rgba(15, 118, 110, 0.22);
-  pointer-events: auto;
-}
-
 .card-stack {
   position: relative;
   width: min(760px, 100%);

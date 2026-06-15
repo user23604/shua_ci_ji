@@ -1148,15 +1148,14 @@ function renderFlashcard({ touchProgress = true } = {}) {
           ${next ? renderWordCard(next, true) : ""}
           ${renderWordCard(word, false, undo)}
         </div>
-        ${state.playbackPaused ? renderResumeOverlay() : ""}
       </section>
 
       <aside class="side-panel gesture-panel">
         <div class="gesture-list">
           ${gesture("↑", "斩")}
           ${gesture("↓", "生词")}
-          ${gesture("←", "上一个")}
-          ${gesture("→", "下一个")}
+          ${gesture("←", "下一个")}
+          ${gesture("→", "上一个")}
         </div>
       </aside>
     </section>
@@ -1176,8 +1175,6 @@ function renderFlashcard({ touchProgress = true } = {}) {
   document.getElementById("finishBtn").addEventListener("click", finishCurrentGroup);
   const undoBtn = document.getElementById("undoMarkBtn");
   if (undoBtn) undoBtn.addEventListener("click", () => undoMark(word.id));
-  const resumeBtn = document.getElementById("resumePlaybackBtn");
-  if (resumeBtn) resumeBtn.addEventListener("click", resumePlayback);
   bindCardGesture();
   bindArchiveEvents();
   bindStatsEvents();
@@ -1219,18 +1216,10 @@ function renderCardSwipeControls() {
       <span class="card-swipe-edge card-swipe-edge--up"></span>
       <span class="card-swipe-edge card-swipe-edge--down"></span>
     </div>
-    <button class="card-tap-zone card-tap-zone--left" data-card-tap="left" type="button" aria-label="上一个"></button>
-    <button class="card-tap-zone card-tap-zone--right" data-card-tap="right" type="button" aria-label="下一个"></button>
+    <button class="card-tap-zone card-tap-zone--left" data-card-tap="left" type="button" aria-label="下一个"></button>
+    <button class="card-tap-zone card-tap-zone--right" data-card-tap="right" type="button" aria-label="上一个"></button>
     <button class="card-tap-zone card-tap-zone--up" data-card-tap="up" type="button" aria-label="标记为已斩"></button>
     <button class="card-tap-zone card-tap-zone--down" data-card-tap="down" type="button" aria-label="标记为重难点"></button>
-  `;
-}
-
-function renderResumeOverlay() {
-  return `
-    <div class="resume-overlay">
-      <button class="btn btn--primary btn--wide" id="resumePlaybackBtn" type="button">恢复播放</button>
-    </div>
   `;
 }
 
@@ -1577,6 +1566,10 @@ function bindCardGesture() {
         state.suppressNextCardClickPause = false;
         return;
       }
+      if (state.playbackPaused) {
+        resumePlayback();
+        return;
+      }
       triggerCardDirection(button.dataset.cardTap, card);
     });
   });
@@ -1585,6 +1578,10 @@ function bindCardGesture() {
     if (event.target.closest("button, a, input, select, textarea")) return;
     if (state.suppressNextCardClickPause) {
       state.suppressNextCardClickPause = false;
+      return;
+    }
+    if (state.playbackPaused) {
+      resumePlayback();
       return;
     }
     pausePlaybackFromCard();
@@ -1675,13 +1672,13 @@ function triggerCardDirection(direction, card = document.getElementById("activeC
   const dx = Number(offset.dx) || 0;
   const dy = Number(offset.dy) || 0;
   if (direction === "left") {
+    animateOut(card, -window.innerWidth, dy, () => advanceWord("manual"));
+  } else if (direction === "right") {
     if (state.currentIndex <= 0) {
       snapBack(card);
     } else {
-      animateOut(card, -window.innerWidth, dy, goPrevious);
+      animateOut(card, window.innerWidth, dy, goPrevious);
     }
-  } else if (direction === "right") {
-    animateOut(card, window.innerWidth, dy, () => advanceWord("manual"));
   } else if (direction === "up") {
     markCurrent("known");
     animateOut(card, dx, -window.innerHeight, () => advanceWord("known"));
