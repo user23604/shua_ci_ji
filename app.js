@@ -18,6 +18,11 @@ const SPEECH_START_TIMEOUT_MS = 900;
 const SPEECH_POLL_MS = 120;
 const ZH_DELAY_MIN = 0;
 const ZH_DELAY_MAX = 4000;
+const POST_EN_RECALL_MS = 850;
+const POST_EN_RECALL_FLOOR_MS = 320;
+const POST_ZH_REVIEW_MS = 650;
+const POST_ZH_REVIEW_FLOOR_MS = 260;
+const SHANGUO_BOOK_ID = "27ky-shanguo-gaopin";
 const SYNC_STATUS_LABELS = {
   idle: "云同步空闲",
   syncing: "云同步中",
@@ -39,8 +44,8 @@ const PER_BOOK_SETTING_KEYS = [
 ];
 const BOOKS = [
   {
-    id: "27ky-shanguo-gaopin",
-    name: "27考研英语闪过高频词",
+    id: SHANGUO_BOOK_ID,
+    name: "27考研英语闪过词典",
     csv: "27ky_shanguo_gaopin.csv",
     totalUnits: 30
   },
@@ -192,6 +197,25 @@ function saveUnitStats(bookId, stats, { touch = true } = {}) {
 
 function currentBook() {
   return BOOKS.find((book) => book.id === state.settings.bookId) || BOOKS[0];
+}
+
+function unitBandLabel(book, unit) {
+  if (book.id !== SHANGUO_BOOK_ID) return "";
+  const number = Number(unit);
+  if (number >= 1 && number <= 12) return "高频词";
+  if (number >= 13 && number <= 21) return "中频词";
+  if (number >= 22 && number <= 30) return "低频词";
+  return "";
+}
+
+function unitDisplayLabel(book, unit) {
+  const band = unitBandLabel(book, unit);
+  return band ? `Unit ${unit} · ${band}` : `Unit ${unit}`;
+}
+
+function bookContextLabel(book, unit = state.settings.unit) {
+  const band = unitBandLabel(book, unit);
+  return band ? `${book.name} · ${band}` : book.name;
 }
 
 function persistSettings({ touch = true } = {}) {
@@ -776,7 +800,7 @@ function renderSetup() {
       <header class="setup-topbar">
         <div class="setup-title">
           <h1>考研词汇自动刷词机</h1>
-          <p>${escapeHtml(book.name)}</p>
+          <p>${escapeHtml(bookContextLabel(book))}</p>
         </div>
         <div class="setup-actions">
           <button class="btn btn--ghost" id="statsBtn" type="button">统计复盘</button>
@@ -810,7 +834,7 @@ function renderSetup() {
           <div class="control-list">
             ${rateRangeControl()}
             ${rangeControl("zhDelayInput", "中文出现延迟", state.settings.zhDelay, "ms", ZH_DELAY_MIN, ZH_DELAY_MAX, 100)}
-            <div class="status">自动节奏由英文朗读、中文出现延迟、中文简读和播放倍速共同决定。</div>
+            <div class="status">自动节奏由英文朗读、读后记忆停留、中文出现延迟、中文简读和播放倍速共同决定。</div>
             <label class="field-label">
               总结节点
               <select class="select" id="summaryMode">
@@ -890,13 +914,13 @@ function primeSetupBookData(book) {
 function unitOptionLabel(book, unit, words) {
   const info = unitProgressInfo(book, unit, words);
   const progress = info.total ? `${info.seen}/${info.total}` : "加载中";
-  return `Unit ${unit} · 进度 ${progress} · 完整看完 ${info.completed} 次`;
+  return `${unitDisplayLabel(book, unit)} · 进度 ${progress} · 完整看完 ${info.completed} 次`;
 }
 
 function renderSelectedUnitStats(book, words) {
   const info = unitProgressInfo(book, state.settings.unit, words);
   const progress = info.total ? `${info.seen}/${info.total}` : "正在读取词表";
-  return `<div class="status">当前 Unit：进度 ${escapeHtml(progress)} · 完整看完 ${info.completed} 次</div>`;
+  return `<div class="status">当前 ${escapeHtml(unitDisplayLabel(book, state.settings.unit))}：进度 ${escapeHtml(progress)} · 完整看完 ${info.completed} 次</div>`;
 }
 
 function unitProgressInfo(book, unit, words = []) {
@@ -1046,7 +1070,7 @@ async function startStudy() {
     state.playbackPaused = false;
     state.words = await ensureWords(book);
     state.unitWords = buildStudyUnitWords(book.id, state.settings.unit);
-    if (!state.unitWords.length) throw new Error(`Unit ${state.settings.unit} 没有未斩词条`);
+    if (!state.unitWords.length) throw new Error(`${unitDisplayLabel(book, state.settings.unit)} 没有未斩词条`);
     state.currentIndex = getStartIndex(book.id);
     state.groupStats = createGroupStats();
     state.undoWordId = null;
@@ -1145,8 +1169,8 @@ function renderFlashcard({ touchProgress = true } = {}) {
         <button class="btn btn--ghost" id="archiveBtn" type="button">归档复盘</button>
         <button class="btn btn--primary" id="finishBtn" type="button">✓ 完成</button>
         <div class="progress-block">
-          <div class="progress-title">${escapeHtml(state.reviewMode?.label || book.name)}</div>
-          <div class="progress-main">Unit ${word.unit} [${state.currentIndex + 1}/${state.unitWords.length}]</div>
+          <div class="progress-title">${escapeHtml(state.reviewMode?.label || bookContextLabel(book, word.unit))}</div>
+          <div class="progress-main">${escapeHtml(unitDisplayLabel(book, word.unit))} [${state.currentIndex + 1}/${state.unitWords.length}]</div>
           <div class="progress-sub">词频 ${word.freq} · ID ${word.id}${state.reviewMode ? " · 复盘" : ""}</div>
           <div class="live-counter" aria-label="本轮实时计数">
             <span>扫过 <strong>${state.groupStats.seen}</strong></span>
@@ -1213,7 +1237,7 @@ function renderWordCard(word, isNext = false, undoLabel = "", enterDirection = "
       ${isNext ? "" : renderCardSwipeControls()}
       <div class="freq-watermark">${escapeHtml(freqLabel)}</div>
       <div class="word-card__meta">
-        <span>Unit ${word.unit}</span>
+        <span>${escapeHtml(unitDisplayLabel(currentBook(), word.unit))}</span>
         <span${speechStatusId}>${escapeHtml(freqLabel)}</span>
       </div>
       <div class="word-card__en-shell"><div class="word-card__en${enClass}"${wordEnId}>${escapeHtml(word.en)}</div></div>
@@ -1272,6 +1296,8 @@ async function scheduleWordTimers() {
   }
 
   if (!isPlaybackToken(token)) return;
+  await sleepFor(retentionPauseMs(POST_EN_RECALL_MS, POST_EN_RECALL_FLOOR_MS));
+  if (!isPlaybackToken(token)) return;
   await revealTask;
   if (!isPlaybackToken(token)) return;
 
@@ -1288,7 +1314,7 @@ async function scheduleWordTimers() {
   }
 
   if (!isPlaybackToken(token)) return;
-  await sleepFor(phaseGapMs(420));
+  await sleepFor(retentionPauseMs(POST_ZH_REVIEW_MS, POST_ZH_REVIEW_FLOOR_MS));
   if (isPlaybackToken(token)) advanceWord("auto");
 }
 
@@ -1388,6 +1414,10 @@ function quietBudgetMs(text, lang, minMs = 420) {
 
 function phaseGapMs(baseMs) {
   return scaledMinimumMs(baseMs, 35);
+}
+
+function retentionPauseMs(baseMs, floorMs) {
+  return Math.max(floorMs, baseMs / Math.sqrt(playbackRate()));
 }
 
 function scaledMinimumMs(baseMs, floorMs = 40) {
@@ -1848,8 +1878,9 @@ function renderBreak(info) {
   state.breakInfo = info;
   clearTimers();
   releaseWakeLock();
+  const book = currentBook();
   if (enteringBreak && info.unitEnd && !info.reviewEnd && !info.manual && !state.reviewMode) {
-    recordUnitCompletion(currentBook().id, state.settings.unit);
+    recordUnitCompletion(book.id, state.settings.unit);
   }
   const roundUnknownIds = getRoundUnknownIds();
   const title = info.reviewEnd
@@ -1857,7 +1888,7 @@ function renderBreak(info) {
     : info.manual
       ? "手动完成总结"
       : info.unitEnd
-        ? "Unit 阶段总结"
+        ? `${unitDisplayLabel(book, state.settings.unit)} 阶段总结`
         : "间歇总结";
   app.innerHTML = `
     <section class="view break-view">
@@ -1917,7 +1948,7 @@ async function continueAfterBreak() {
       state.unitWords = buildStudyUnitWords(book.id, state.settings.unit);
       state.currentIndex = 0;
       if (!state.unitWords.length) {
-        setSetupStatus(`Unit ${state.settings.unit} 的词条已全部已斩，请选择其他 Unit。`, "ok");
+        setSetupStatus(`${unitDisplayLabel(book, state.settings.unit)} 的词条已全部已斩，请选择其他 Unit。`, "ok");
         renderSetup();
         return;
       }
@@ -2037,6 +2068,7 @@ function groupMarkedWords(words, ids) {
 }
 
 function renderArchiveGroup([unit, words]) {
+  const book = currentBook();
   const list = words.map((word) => `
     <div class="archive-word">
       <strong>${escapeHtml(word.en)}</strong>
@@ -2045,7 +2077,7 @@ function renderArchiveGroup([unit, words]) {
   `).join("");
   return `
     <details class="unit-group" open>
-      <summary>Unit ${unit} · ${words.length} 个</summary>
+      <summary>${escapeHtml(unitDisplayLabel(book, unit))} · ${words.length} 个</summary>
       <div class="word-list">${list}</div>
     </details>
   `;
