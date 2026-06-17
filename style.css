@@ -713,7 +713,7 @@ button:not(:disabled) {
   text-align: center;
   font-size: clamp(48px, 10vw, 112px);
   line-height: 0.98;
-  font-weight: 950;
+  font-weight: 600;
   letter-spacing: 0;
   white-space: nowrap;
   overflow-wrap: normal;
@@ -796,11 +796,14 @@ button:not(:disabled) {
 
 .gesture-panel {
   justify-content: center;
+  padding: 0;
+  overflow: hidden;
 }
 
 .gesture-list {
   display: grid;
-  gap: 12px;
+  gap: 0;
+  width: 100%;
 }
 
 .gesture-item {
@@ -808,7 +811,29 @@ button:not(:disabled) {
   grid-template-columns: 34px 1fr;
   align-items: center;
   gap: 10px;
+  width: 100%;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
   color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  touch-action: manipulation;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.gesture-item:last-child {
+  border-bottom: 0;
+}
+
+.gesture-item:hover,
+.gesture-item:focus-visible {
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--text);
+  outline: none;
 }
 
 .gesture-symbol {
@@ -820,12 +845,14 @@ button:not(:disabled) {
   background: var(--surface-strong);
   color: var(--text);
   font-weight: 950;
+  pointer-events: none;
 }
 
 .gesture-text {
   font-size: 13px;
   line-height: 1.25;
   font-weight: 800;
+  pointer-events: none;
 }
 
 .break-view {
@@ -1277,18 +1304,27 @@ button:not(:disabled) {
 
   .gesture-panel {
     justify-content: stretch;
+    padding: 0;
   }
 
   .gesture-list {
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 8px;
+    gap: 0;
   }
 
   .gesture-item {
     grid-template-columns: 1fr;
     justify-items: center;
     gap: 6px;
+    min-height: 58px;
+    padding: 8px 6px;
+    border-bottom: 0;
+    border-right: 1px solid var(--line);
     text-align: center;
+  }
+
+  .gesture-item:last-child {
+    border-right: 0;
   }
 
   .gesture-symbol {

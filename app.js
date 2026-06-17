@@ -13,6 +13,7 @@ const PLAYBACK_RATE_MAX = 10;
 const PLAYBACK_RATE_STEP = 0.05;
 const SPEECH_RATE_MIN = 0.5;
 const SPEECH_RATE_MAX = PLAYBACK_RATE_MAX;
+// 播放倍速是“自动播放速度”，不是单独语速；它会同时影响朗读、中文出现延迟和自动跳词节奏。
 const SPEECH_START_TIMEOUT_MS = 900;
 const SPEECH_POLL_MS = 120;
 const ZH_DELAY_MIN = 0;
@@ -1044,8 +1045,8 @@ async function startStudy() {
     state.roundReturn = null;
     state.playbackPaused = false;
     state.words = await ensureWords(book);
-    state.unitWords = state.words.filter((word) => word.unit === state.settings.unit);
-    if (!state.unitWords.length) throw new Error(`Unit ${state.settings.unit} 没有词条`);
+    state.unitWords = buildStudyUnitWords(book.id, state.settings.unit);
+    if (!state.unitWords.length) throw new Error(`Unit ${state.settings.unit} 没有未斩词条`);
     state.currentIndex = getStartIndex(book.id);
     state.groupStats = createGroupStats();
     state.undoWordId = null;
@@ -1090,11 +1091,20 @@ async function startReview(mode) {
   }
 }
 
+function buildStudyUnitWords(bookId, unit) {
+  const knownIds = new Set(loadMarks(bookId).known.map(Number));
+  return state.words.filter((word) => word.unit === unit && !knownIds.has(Number(word.id)));
+}
+
 function getStartIndex(bookId) {
   if (state.settings.mode !== "resume") return 0;
   const progress = loadProgress(bookId);
-  const index = state.unitWords.findIndex((word) => word.id === Number(progress.lastWordId));
-  return index >= 0 ? index : 0;
+  const lastWordId = Number(progress.lastWordId);
+  if (!Number.isFinite(lastWordId)) return 0;
+  const index = state.unitWords.findIndex((word) => word.id === lastWordId);
+  if (index >= 0) return index;
+  const nextIndex = state.unitWords.findIndex((word) => Number(word.id) > lastWordId);
+  return nextIndex >= 0 ? nextIndex : state.unitWords.length;
 }
 
 function recordUnitCompletion(bookId, unit) {
@@ -1122,8 +1132,8 @@ function renderFlashcard({ touchProgress = true } = {}) {
     saveProgress(book.id, { lastWordId: word.id, unit: word.unit, updatedAt: new Date().toISOString() }, { touch: touchProgress });
   }
   const marks = loadMarks(book.id);
-  const marked = marks.known.includes(word.id) || marks.unknown.includes(word.id);
-  const undo = state.undoWordId === word.id && marked;
+  const markedKind = marks.known.includes(word.id) ? "known" : marks.unknown.includes(word.id) ? "unknown" : "";
+  const undoLabel = state.undoWordId === word.id && markedKind ? undoLabelForMark(markedKind) : "";
   const cardEnterDirection = state.cardEnterDirection;
   state.cardEnterDirection = "";
 
@@ -1149,7 +1159,7 @@ function renderFlashcard({ touchProgress = true } = {}) {
       <section class="stage">
         <div class="card-stack" id="cardStack">
           ${next ? renderWordCard(next, true) : ""}
-          ${renderWordCard(word, false, undo, cardEnterDirection)}
+          ${renderWordCard(word, false, undoLabel, cardEnterDirection)}
         </div>
       </section>
 
@@ -1178,6 +1188,7 @@ function renderFlashcard({ touchProgress = true } = {}) {
   document.getElementById("finishBtn").addEventListener("click", finishCurrentGroup);
   const undoBtn = document.getElementById("undoMarkBtn");
   if (undoBtn) undoBtn.addEventListener("click", () => undoMark(word.id));
+  bindGesturePanelControls();
   bindCardGesture();
   bindArchiveEvents();
   bindStatsEvents();
@@ -1187,7 +1198,7 @@ function renderFlashcard({ touchProgress = true } = {}) {
   scheduleWordTimers();
 }
 
-function renderWordCard(word, isNext = false, undo = false, enterDirection = "") {
+function renderWordCard(word, isNext = false, undoLabel = "", enterDirection = "") {
   const definition = formatDefinition(word);
   const definitionId = isNext ? "" : ' id="definition"';
   const speechStatusId = isNext ? "" : ' id="speechStatus"';
@@ -1207,12 +1218,13 @@ function renderWordCard(word, isNext = false, undo = false, enterDirection = "")
       </div>
       <div class="word-card__en-shell"><div class="word-card__en${enClass}"${wordEnId}>${escapeHtml(word.en)}</div></div>
       <div class="word-card__zh ${!isNext && !state.showZh ? "is-hidden" : ""}"${definitionId}>${zhHtml}</div>
-      ${undo ? `<div class="word-card__actions"><button class="undo-btn" id="undoMarkBtn" type="button">撤销标记</button></div>` : ""}
+      ${undoLabel ? `<div class="word-card__actions"><button class="undo-btn" id="undoMarkBtn" type="button">${escapeHtml(undoLabel)}</button></div>` : ""}
     </article>
   `;
 }
 
 function renderCardSwipeControls() {
+  // 交互契约：左侧点击=上一个，右侧点击=下一个。不要把点击热区和滑动方向直接等同。
   return `
     <div class="card-swipe-edges" aria-hidden="true">
       <span class="card-swipe-edge card-swipe-edge--left"></span>
@@ -1228,12 +1240,17 @@ function renderCardSwipeControls() {
 }
 
 function gesture(symbol, label) {
+  const actions = { "↑": "up", "↓": "down", "←": "left", "→": "right" };
   return `
-    <div class="gesture-item">
-      <div class="gesture-symbol">${escapeHtml(symbol)}</div>
-      <div class="gesture-text">${escapeHtml(label)}</div>
-    </div>
+    <button class="gesture-item" data-gesture-action="${actions[symbol] || ""}" type="button" aria-label="${escapeHtml(label)}">
+      <span class="gesture-symbol">${escapeHtml(symbol)}</span>
+      <span class="gesture-text">${escapeHtml(label)}</span>
+    </button>
   `;
+}
+
+function undoLabelForMark(kind) {
+  return kind === "known" ? "撤销上滑" : "撤销下滑";
 }
 
 async function scheduleWordTimers() {
@@ -1276,6 +1293,7 @@ async function scheduleWordTimers() {
 }
 
 async function revealZhAfterDelay(token) {
+  // zhDelay 为 0 时必须立即显示中文，且不等待英文朗读完成。
   const delay = zhRevealDelayMs();
   if (delay > 0) await sleepFor(delay);
   if (!isPlaybackToken(token)) return false;
@@ -1377,6 +1395,7 @@ function scaledMinimumMs(baseMs, floorMs = 40) {
 }
 
 function speakWithHighlight(text, lang, phase, token, { followBoundaries = true } = {}) {
+  // Web Speech 在不同浏览器上开始时间不稳定；朗读开始后不要再设置硬超时，否则会截断读音。
   return new Promise((resolve) => {
     if (!("speechSynthesis" in window) || !text || !isPlaybackToken(token)) {
       resolve(false);
@@ -1557,6 +1576,21 @@ function unlockSpeech() {
   window.speechSynthesis.speak(utterance);
 }
 
+function bindGesturePanelControls() {
+  document.querySelectorAll("[data-gesture-action]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const direction = button.dataset.gestureAction;
+      if (!direction) return;
+      if (state.playbackPaused) {
+        state.playbackPaused = false;
+        requestWakeLock();
+      }
+      triggerCardDirection(direction);
+    });
+  });
+}
+
 function bindCardGesture() {
   const stack = document.getElementById("cardStack");
   const card = document.getElementById("activeCard");
@@ -1571,6 +1605,7 @@ function bindCardGesture() {
         return;
       }
       if (state.playbackPaused) {
+        // 暂停态点击当前卡片只恢复播放，不触发左右切词或上下标记。
         resumePlayback();
         return;
       }
@@ -1594,6 +1629,7 @@ function bindCardGesture() {
   stack.addEventListener("pointerdown", (event) => {
     if (state.playbackPaused) return;
     const interactiveTarget = event.target.closest("button, a, input, select, textarea");
+    // 点击热区本身也允许作为滑动起点，否则从左右边缘起手的滑动会失效。
     if (interactiveTarget && !interactiveTarget.matches("[data-card-tap]")) return;
     clearTimers();
     stack.setPointerCapture(event.pointerId);
@@ -1672,18 +1708,21 @@ function triggerCardDirection(direction, card = document.getElementById("activeC
   if (!card || state.playbackPaused) return;
   clearTimers();
   card.classList.remove("is-animated");
-  const feedbackDirection = direction === "tap-left" ? "left" : direction === "tap-right" ? "right" : direction;
+  // 方向矩阵不要改反：
+  // left swipe -> next，旧卡向左飞出；right swipe -> previous，旧卡向右飞出。
+  // tap-left -> previous，旧卡向右飞出；tap-right -> next，旧卡向左飞出。
+  const feedbackDirection = direction === "tap-left" ? "right" : direction === "tap-right" ? "left" : direction;
   setCardSwipeFeedback(card, feedbackDirection);
   const dx = Number(offset.dx) || 0;
   const dy = Number(offset.dy) || 0;
   if (direction === "left" || direction === "tap-right") {
-    const x = direction === "left" ? -window.innerWidth : window.innerWidth;
+    const x = -window.innerWidth;
     animateOut(card, x, dy, () => advanceWord("manual"));
   } else if (direction === "right" || direction === "tap-left") {
     if (state.currentIndex <= 0) {
       snapBack(card);
     } else {
-      const x = direction === "right" ? window.innerWidth : -window.innerWidth;
+      const x = window.innerWidth;
       animateOut(card, x, dy, goPrevious);
     }
   } else if (direction === "up") {
@@ -1754,6 +1793,7 @@ function advanceWord(reason) {
   state.undoWordId = null;
   state.currentIndex += 1;
   state.showZh = false;
+  // 这里是“新卡片入场方向”：手动下一个从右侧轻进入，和旧卡飞出方向不是同一个概念。
   if (reason === "manual") state.cardEnterDirection = "from-right";
 
   if (state.currentIndex >= state.unitWords.length) {
@@ -1797,6 +1837,7 @@ function goPrevious() {
   const marks = loadMarks(currentBook().id);
   state.undoWordId = marks.known.includes(word.id) || marks.unknown.includes(word.id) ? word.id : null;
   state.showZh = true;
+  // 上一个词的新卡片从左侧轻进入；旧卡飞出方向在 triggerCardDirection() 中控制。
   state.cardEnterDirection = "from-left";
   renderFlashcard();
 }
@@ -1873,8 +1914,13 @@ async function continueAfterBreak() {
       state.settings.unit += 1;
       persistSettings();
       state.words = await ensureWords(book);
-      state.unitWords = state.words.filter((word) => word.unit === state.settings.unit);
+      state.unitWords = buildStudyUnitWords(book.id, state.settings.unit);
       state.currentIndex = 0;
+      if (!state.unitWords.length) {
+        setSetupStatus(`Unit ${state.settings.unit} 的词条已全部已斩，请选择其他 Unit。`, "ok");
+        renderSetup();
+        return;
+      }
     } else {
       setSetupStatus("全部 Unit 已完成。", "ok");
       renderSetup();
