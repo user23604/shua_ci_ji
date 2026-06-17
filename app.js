@@ -18,10 +18,13 @@ const SPEECH_START_TIMEOUT_MS = 900;
 const SPEECH_POLL_MS = 120;
 const ZH_DELAY_MIN = 0;
 const ZH_DELAY_MAX = 4000;
-const POST_EN_RECALL_MS = 850;
-const POST_EN_RECALL_FLOOR_MS = 320;
-const POST_ZH_REVIEW_MS = 650;
-const POST_ZH_REVIEW_FLOOR_MS = 260;
+const RETENTION_PAUSE_MIN = 200;
+const RETENTION_PAUSE_MAX = 2500;
+const RETENTION_PAUSE_STEP = 50;
+const RETENTION_PAUSE_DEFAULT = 850;
+const POST_ZH_REVIEW_RATIO = 0.76;
+const RETENTION_PAUSE_FLOOR_RATIO = 0.38;
+const RETENTION_PAUSE_FLOOR_MIN = 160;
 const SHANGUO_BOOK_ID = "27ky-shanguo-gaopin";
 const SYNC_STATUS_LABELS = {
   idle: "云同步空闲",
@@ -40,6 +43,7 @@ const PER_BOOK_SETTING_KEYS = [
   "speakZh",
   "rate",
   "zhDelay",
+  "retentionPause",
   "highOnly"
 ];
 const BOOKS = [
@@ -73,6 +77,7 @@ const DEFAULT_SETTINGS = {
   speakZh: false,
   rate: 1,
   zhDelay: 1200,
+  retentionPause: RETENTION_PAUSE_DEFAULT,
   highOnly: false,
   bookSettings: {}
 };
@@ -109,6 +114,7 @@ const state = {
   setupPrimeBookIds: new Set(),
   wakeLock: null,
   playbackPaused: false,
+  resumeFeedback: false,
   cardStartedAt: 0,
   cardEnterDirection: "",
   currentWordRecorded: false,
@@ -273,6 +279,7 @@ function normalizeBookSettingValues(book, values) {
     speakZh: typeof source.speakZh === "boolean" ? source.speakZh : DEFAULT_SETTINGS.speakZh,
     rate: clamp(Number(source.rate) || DEFAULT_SETTINGS.rate, PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX),
     zhDelay: clampFinite(source.zhDelay, DEFAULT_SETTINGS.zhDelay, ZH_DELAY_MIN, ZH_DELAY_MAX),
+    retentionPause: clampFinite(source.retentionPause, DEFAULT_SETTINGS.retentionPause, RETENTION_PAUSE_MIN, RETENTION_PAUSE_MAX),
     highOnly: typeof source.highOnly === "boolean" ? source.highOnly : DEFAULT_SETTINGS.highOnly
   };
 }
@@ -833,6 +840,7 @@ function renderSetup() {
           <h2 class="panel-title">节奏控制</h2>
           <div class="control-list">
             ${rateRangeControl()}
+            ${rangeControl("retentionPauseInput", "读后停留", state.settings.retentionPause, "ms", RETENTION_PAUSE_MIN, RETENTION_PAUSE_MAX, RETENTION_PAUSE_STEP)}
             ${rangeControl("zhDelayInput", "中文出现延迟", state.settings.zhDelay, "ms", ZH_DELAY_MIN, ZH_DELAY_MAX, 100)}
             <div class="status">自动节奏由英文朗读、读后记忆停留、中文出现延迟、中文简读和播放倍速共同决定。</div>
             <label class="field-label">
@@ -1006,6 +1014,7 @@ function bindSetupEvents() {
 
   if (document.getElementById("summaryCount")) bindRange("summaryCount", "summaryCount", "个", Number);
   bindRange("zhDelayInput", "zhDelay", "ms", Number);
+  bindRange("retentionPauseInput", "retentionPause", "ms", Number);
   bindRange("rateInput", "rate", "x", Number, formatRate);
   bindCheckbox("speakEn", "speakEn");
   bindCheckbox("speakZh", "speakZh");
@@ -1159,7 +1168,9 @@ function renderFlashcard({ touchProgress = true } = {}) {
   const markedKind = marks.known.includes(word.id) ? "known" : marks.unknown.includes(word.id) ? "unknown" : "";
   const undoLabel = state.undoWordId === word.id && markedKind ? undoLabelForMark(markedKind) : "";
   const cardEnterDirection = state.cardEnterDirection;
+  const resumeFeedback = state.resumeFeedback;
   state.cardEnterDirection = "";
+  state.resumeFeedback = false;
 
   app.innerHTML = `
     <section class="view flash-view">
@@ -1183,7 +1194,7 @@ function renderFlashcard({ touchProgress = true } = {}) {
       <section class="stage">
         <div class="card-stack" id="cardStack">
           ${next ? renderWordCard(next, true) : ""}
-          ${renderWordCard(word, false, undoLabel, cardEnterDirection)}
+          ${renderWordCard(word, false, undoLabel, cardEnterDirection, resumeFeedback)}
         </div>
       </section>
 
@@ -1222,7 +1233,7 @@ function renderFlashcard({ touchProgress = true } = {}) {
   scheduleWordTimers();
 }
 
-function renderWordCard(word, isNext = false, undoLabel = "", enterDirection = "") {
+function renderWordCard(word, isNext = false, undoLabel = "", enterDirection = "", resumeFeedback = false) {
   const definition = formatDefinition(word);
   const definitionId = isNext ? "" : ' id="definition"';
   const speechStatusId = isNext ? "" : ' id="speechStatus"';
@@ -1232,9 +1243,11 @@ function renderWordCard(word, isNext = false, undoLabel = "", enterDirection = "
   const freqLabel = word.freq ? `${word.freq} 次` : "0 次";
   const alpha = Number(freqAlpha(word.freq));
   const enterClass = !isNext && ["from-left", "from-right"].includes(enterDirection) ? ` word-card--enter-${enterDirection}` : "";
+  const resumeClass = !isNext && resumeFeedback ? " word-card--resume-feedback" : "";
   return `
-    <article class="word-card ${isNext ? "word-card--next" : ""}${enterClass}" id="${isNext ? "nextCard" : "activeCard"}" style="--freq-alpha: ${alpha.toFixed(3)}; --freq-alpha-soft: ${(alpha * 0.35).toFixed(3)}">
+    <article class="word-card ${isNext ? "word-card--next" : ""}${enterClass}${resumeClass}" id="${isNext ? "nextCard" : "activeCard"}" style="--freq-alpha: ${alpha.toFixed(3)}; --freq-alpha-soft: ${(alpha * 0.35).toFixed(3)}">
       ${isNext ? "" : renderCardSwipeControls()}
+      ${resumeFeedback ? '<div class="resume-feedback" aria-live="polite">继续播放</div>' : ""}
       <div class="freq-watermark">${escapeHtml(freqLabel)}</div>
       <div class="word-card__meta">
         <span>${escapeHtml(unitDisplayLabel(currentBook(), word.unit))}</span>
@@ -1296,7 +1309,7 @@ async function scheduleWordTimers() {
   }
 
   if (!isPlaybackToken(token)) return;
-  await sleepFor(retentionPauseMs(POST_EN_RECALL_MS, POST_EN_RECALL_FLOOR_MS));
+  await sleepFor(postEnRetentionPauseMs());
   if (!isPlaybackToken(token)) return;
   await revealTask;
   if (!isPlaybackToken(token)) return;
@@ -1314,7 +1327,7 @@ async function scheduleWordTimers() {
   }
 
   if (!isPlaybackToken(token)) return;
-  await sleepFor(retentionPauseMs(POST_ZH_REVIEW_MS, POST_ZH_REVIEW_FLOOR_MS));
+  await sleepFor(postZhRetentionPauseMs());
   if (isPlaybackToken(token)) advanceWord("auto");
 }
 
@@ -1350,6 +1363,7 @@ function pausePlaybackFromCard() {
 async function resumePlayback() {
   if (state.view !== "flash") return;
   state.playbackPaused = false;
+  state.resumeFeedback = true;
   await requestWakeLock();
   renderFlashcard();
 }
@@ -1404,6 +1418,10 @@ function zhRevealDelayMs() {
   return clampFinite(state.settings.zhDelay, DEFAULT_SETTINGS.zhDelay, ZH_DELAY_MIN, ZH_DELAY_MAX) / playbackRate();
 }
 
+function retentionPauseSettingMs() {
+  return clampFinite(state.settings.retentionPause, DEFAULT_SETTINGS.retentionPause, RETENTION_PAUSE_MIN, RETENTION_PAUSE_MAX);
+}
+
 function speechBudgetMs(text, lang, minMs = 520) {
   return Math.max(Math.max(120, minMs / speechRate()), estimateSpeechMs(text, lang) / speechRate());
 }
@@ -1416,8 +1434,22 @@ function phaseGapMs(baseMs) {
   return scaledMinimumMs(baseMs, 35);
 }
 
-function retentionPauseMs(baseMs, floorMs) {
-  return Math.max(floorMs, baseMs / Math.sqrt(playbackRate()));
+function postEnRetentionPauseMs() {
+  const baseMs = retentionPauseSettingMs();
+  return retentionPauseMs(baseMs, retentionPauseFloorMs(baseMs));
+}
+
+function postZhRetentionPauseMs() {
+  const baseMs = Math.max(RETENTION_PAUSE_MIN, retentionPauseSettingMs() * POST_ZH_REVIEW_RATIO);
+  return retentionPauseMs(baseMs, retentionPauseFloorMs(baseMs));
+}
+
+function retentionPauseFloorMs(baseMs) {
+  return Math.max(RETENTION_PAUSE_FLOOR_MIN, baseMs * RETENTION_PAUSE_FLOOR_RATIO);
+}
+
+function retentionPauseMs(baseMs, floorMs = retentionPauseFloorMs(baseMs)) {
+  return Math.round(Math.max(floorMs, baseMs / Math.sqrt(playbackRate())));
 }
 
 function scaledMinimumMs(baseMs, floorMs = 40) {
