@@ -5,8 +5,10 @@ const AUTH_KEY = "is_authenticated";
 const SETTINGS_KEY = "vocab_machine_settings_v1";
 const CLOUD_KEY = "vocab_machine_cloud_v1";
 const SYNC_META_KEY = "vocab_machine_sync_meta_v1";
+const PENDING_OPS_KEY = "vocab_machine_pending_ops_v1";
+const SYNC_FILE_NAME = "sync.json";
+const SYNC_BACKUP_FILE_NAME = "sync.prev.json";
 const AUTO_SYNC_DEBOUNCE_MS = 700;
-const AUTO_SYNC_PUSH_GAP_MS = 1500;
 const SYNC_OK_VISIBLE_MS = 2000;
 const PLAYBACK_RATE_MIN = 0.5;
 const PLAYBACK_RATE_MAX = 10;
@@ -93,12 +95,23 @@ const DEFAULT_SETTINGS = {
   bookSettings: {}
 };
 
+const DEFAULT_SYNC_META = {
+  initialized: false,
+  gistId: "",
+  fileName: SYNC_FILE_NAME,
+  lastRemoteVersion: "",
+  lastRemoteUpdatedAt: "",
+  lastSyncedLocalUpdatedAt: "",
+  localUpdatedAt: "",
+  clientId: ""
+};
+
 const app = document.getElementById("app");
 
 const state = {
   settings: loadJson(SETTINGS_KEY, DEFAULT_SETTINGS),
   cloud: loadJson(CLOUD_KEY, { token: "", gistId: "" }),
-  syncMeta: loadJson(SYNC_META_KEY, { localUpdatedAt: "" }),
+  syncMeta: loadJson(SYNC_META_KEY, DEFAULT_SYNC_META),
   wordsByBook: new Map(),
   maxFreqByBook: new Map(),
   view: "auth",
@@ -138,9 +151,8 @@ const state = {
   syncStatus: "idle",
   syncConfigTimer: null,
   syncHideTimer: null,
-  syncPullPromise: null,
-  syncPushPromise: null,
-  lastPushStartedAt: 0
+  syncInFlight: null,
+  applyingRemotePayload: false
 };
 
 function createGroupStats() {
@@ -188,8 +200,12 @@ function loadProgress(bookId) {
 }
 
 function saveProgress(bookId, progress, { touch = true } = {}) {
-  saveJson(progressKey(bookId), sanitizeProgressPayload(progress));
-  if (touch) touchLocalSync();
+  const sanitized = sanitizeProgressPayload(progress);
+  saveJson(progressKey(bookId), sanitized);
+  if (touch) {
+    touchLocalSync();
+    appendPendingOp({ type: "progress.set", bookId, progress: sanitized });
+  }
 }
 
 function loadUnknownProgress(bookId, scope = currentUnknownScope()) {
@@ -197,8 +213,18 @@ function loadUnknownProgress(bookId, scope = currentUnknownScope()) {
 }
 
 function saveUnknownProgress(bookId, scope, progress, { touch = true } = {}) {
-  saveJson(unknownProgressKey(bookId, scope), sanitizeProgressPayload(progress));
-  if (touch) touchLocalSync();
+  const sanitized = sanitizeProgressPayload(progress);
+  saveJson(unknownProgressKey(bookId, scope), sanitized);
+  if (touch) {
+    touchLocalSync();
+    appendPendingOp({
+      type: "unknownProgress.set",
+      bookId,
+      scope: scope.scope === "book" ? "book" : "unit",
+      unit: scope.scope === "book" ? null : Number(scope.unit),
+      progress: sanitized
+    });
+  }
 }
 
 function loadMarks(bookId) {
@@ -217,7 +243,8 @@ function loadActivity(bookId) {
 }
 
 function saveActivity(bookId, activity, { touch = true } = {}) {
-  saveJson(activityKey(bookId), sanitizeActivityPayload(activity));
+  const sanitized = sanitizeActivityPayload(activity);
+  saveJson(activityKey(bookId), sanitized);
   if (touch) touchLocalSync();
 }
 
@@ -226,7 +253,8 @@ function loadUnitStats(bookId) {
 }
 
 function saveUnitStats(bookId, stats, { touch = true } = {}) {
-  saveJson(unitStatsKey(bookId), sanitizeUnitStatsPayload(stats));
+  const sanitized = sanitizeUnitStatsPayload(stats);
+  saveJson(unitStatsKey(bookId), sanitized);
   if (touch) touchLocalSync();
 }
 
@@ -260,7 +288,10 @@ function persistSettings({ touch = true } = {}) {
   state.settings.unknownScope = UNKNOWN_SCOPES.has(state.settings.unknownScope) ? state.settings.unknownScope : DEFAULT_SETTINGS.unknownScope;
   rememberCurrentBookSettings(book.id);
   saveJson(SETTINGS_KEY, state.settings);
-  if (touch) touchLocalSync();
+  if (touch) {
+    touchLocalSync();
+    appendPendingOp({ type: "settings.set", patch: { ...state.settings } });
+  }
 }
 
 function rememberCurrentBookSettings(bookId = state.settings.bookId) {
@@ -324,12 +355,126 @@ function persistCloud() {
 }
 
 function persistSyncMeta() {
+  state.syncMeta = ensureSyncMeta(state.syncMeta);
   saveJson(SYNC_META_KEY, state.syncMeta);
 }
 
 function touchLocalSync() {
+  state.syncMeta = ensureSyncMeta(state.syncMeta);
   state.syncMeta.localUpdatedAt = new Date().toISOString();
   persistSyncMeta();
+}
+
+function ensureSyncMeta(meta = state.syncMeta) {
+  const source = isPlainObject(meta) ? meta : {};
+  const cloudGistId = String(state.cloud?.gistId || "").trim();
+  const clientId = typeof source.clientId === "string" && source.clientId ? source.clientId : createClientId();
+  const normalized = {
+    ...DEFAULT_SYNC_META,
+    ...source,
+    fileName: SYNC_FILE_NAME,
+    clientId
+  };
+  if (cloudGistId && normalized.gistId && normalized.gistId !== cloudGistId) {
+    return {
+      ...DEFAULT_SYNC_META,
+      gistId: cloudGistId,
+      fileName: SYNC_FILE_NAME,
+      clientId,
+      localUpdatedAt: typeof normalized.localUpdatedAt === "string" ? normalized.localUpdatedAt : ""
+    };
+  }
+  normalized.initialized = normalized.initialized === true;
+  normalized.gistId = cloudGistId || String(normalized.gistId || "");
+  [
+    "lastRemoteVersion",
+    "lastRemoteUpdatedAt",
+    "lastSyncedLocalUpdatedAt",
+    "localUpdatedAt"
+  ].forEach((key) => {
+    normalized[key] = typeof normalized[key] === "string" ? normalized[key] : "";
+  });
+  return normalized;
+}
+
+function resetSyncMetaForGist(gistId = state.cloud.gistId) {
+  state.syncMeta = {
+    ...DEFAULT_SYNC_META,
+    gistId: String(gistId || "").trim(),
+    fileName: SYNC_FILE_NAME,
+    clientId: ensureSyncMeta().clientId,
+    localUpdatedAt: ensureSyncMeta().localUpdatedAt
+  };
+  persistSyncMeta();
+}
+
+function createClientId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function createOpId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `op-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function loadPendingOpsStore() {
+  const store = loadJson(PENDING_OPS_KEY, { ops: [] });
+  return {
+    ops: Array.isArray(store.ops) ? store.ops.filter(isPlainObject) : []
+  };
+}
+
+function savePendingOpsStore(store) {
+  saveJson(PENDING_OPS_KEY, { ops: Array.isArray(store?.ops) ? store.ops : [] });
+}
+
+function getPendingOps() {
+  return compactPendingOps(loadPendingOpsStore().ops);
+}
+
+function clearPendingOps() {
+  savePendingOpsStore({ ops: [] });
+}
+
+function appendPendingOp(op) {
+  if (!isPlainObject(op) || state.applyingRemotePayload) return;
+  state.syncMeta = ensureSyncMeta(state.syncMeta);
+  const createdAt = op.createdAt || new Date().toISOString();
+  const next = {
+    ...op,
+    opId: op.opId || createOpId(),
+    baseRemoteVersion: op.baseRemoteVersion ?? state.syncMeta.lastRemoteVersion ?? "",
+    createdAt
+  };
+  const ops = compactPendingOps([...loadPendingOpsStore().ops, next]);
+  savePendingOpsStore({ ops });
+}
+
+function compactPendingOps(ops) {
+  const latest = new Map();
+  const passthrough = [];
+  (Array.isArray(ops) ? ops : []).filter(isPlainObject).forEach((op) => {
+    const key = pendingOpKey(op);
+    if (!key) {
+      passthrough.push(op);
+      return;
+    }
+    const existing = latest.get(key);
+    if (!existing || dateMs(op.createdAt) >= dateMs(existing.createdAt)) latest.set(key, op);
+  });
+  return [...passthrough, ...latest.values()].sort((a, b) => dateMs(a.createdAt) - dateMs(b.createdAt));
+}
+
+function pendingOpKey(op) {
+  if (!isPlainObject(op) || !op.type) return "";
+  if (op.type === "word.mark.set") return `${op.type}:${op.bookId}:${Number(op.wordId) || 0}`;
+  if (op.type === "progress.set") return `${op.type}:${op.bookId}`;
+  if (op.type === "unknownProgress.set") return `${op.type}:${op.bookId}:${op.scope}:${Number(op.unit) || 0}`;
+  if (op.type === "unitStats.completed.set") return `${op.type}:${op.bookId}:${Number(op.unit) || 0}`;
+  if (op.type === "activity.day.set") return `${op.type}:${op.bookId}:${op.date}`;
+  if (op.type === "settings.set") return `${op.type}`;
+  return "";
 }
 
 function clamp(value, min, max) {
@@ -415,6 +560,7 @@ function recordStudyActivity({ seconds = 0, wordId = null, counted = false, resu
   if (result === "unknown") day.unknown += 1;
   if (wordId) day.wordIds = Array.from(new Set([...day.wordIds, Number(wordId)])).sort((a, b) => a - b);
   saveActivity(book.id, activity);
+  appendPendingOp({ type: "activity.day.set", bookId: book.id, date: localDateKey(), day: { ...day, wordIds: [...day.wordIds] } });
 }
 
 function commitCurrentCardActivity({ counted = false, result = "" } = {}) {
@@ -710,6 +856,8 @@ function isAuthenticated() {
 }
 
 function init() {
+  state.syncMeta = ensureSyncMeta(state.syncMeta);
+  persistSyncMeta();
   normalizeSettings();
   registerServiceWorker();
   document.addEventListener("visibilitychange", () => {
@@ -1280,11 +1428,11 @@ function recordUnitCompletion(bookId, unit) {
   const stats = loadUnitStats(bookId);
   const key = String(unit);
   const item = stats.units[key] || { completed: 0 };
-  stats.units[key] = {
-    completed: Math.max(0, Number(item.completed) || 0) + 1,
-    updatedAt: new Date().toISOString()
-  };
+  const updatedAt = new Date().toISOString();
+  const completed = Math.max(0, Number(item.completed) || 0) + 1;
+  stats.units[key] = { completed, updatedAt };
   saveUnitStats(bookId, stats);
+  appendPendingOp({ type: "unitStats.completed.set", bookId, unit: Number(unit), completed, createdAt: updatedAt });
 }
 
 function renderFlashcard({ touchProgress = true } = {}) {
@@ -2094,6 +2242,7 @@ function markCurrent(kind) {
   marks.unknown = marks.unknown.filter((id) => id !== word.id);
   marks[kind].push(word.id);
   saveMarks(book.id, marks);
+  appendPendingOp({ type: "word.mark.set", bookId: book.id, wordId: word.id, value: kind });
 }
 
 function undoMark(wordId) {
@@ -2102,6 +2251,7 @@ function undoMark(wordId) {
   marks.known = marks.known.filter((id) => id !== wordId);
   marks.unknown = marks.unknown.filter((id) => id !== wordId);
   saveMarks(book.id, marks);
+  appendPendingOp({ type: "word.mark.set", bookId: book.id, wordId, value: null });
   state.undoWordId = null;
   renderFlashcard();
 }
@@ -2602,10 +2752,278 @@ function collectUnknownProgressForBook(book) {
   };
 }
 
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value ?? null));
+}
+
+function normalizeSettingsPayload(settings) {
+  const source = isPlainObject(settings) ? settings : {};
+  const book = BOOKS.find((item) => item.id === source.bookId) || BOOKS[0];
+  const bookValues = normalizeBookSettingValues(book, source);
+  return {
+    ...DEFAULT_SETTINGS,
+    ...source,
+    ...bookValues,
+    bookId: book.id,
+    bookSettings: normalizeBookSettingsStore(source.bookSettings)
+  };
+}
+
+function normalizeUnknownProgressPayload(book, progressMap) {
+  const source = isPlainObject(progressMap) ? progressMap : {};
+  const sourceUnits = isPlainObject(source.units) ? source.units : {};
+  const units = {};
+  Array.from({ length: book.totalUnits }, (_, index) => index + 1).forEach((unit) => {
+    units[String(unit)] = sanitizeProgressPayload(sourceUnits[String(unit)] || { lastWordId: null });
+  });
+  return {
+    book: sanitizeProgressPayload(source.book || { lastWordId: null }),
+    units
+  };
+}
+
+function normalizeSyncPayload(payload) {
+  const source = isPlainObject(payload) ? payload : {};
+  const progress = {};
+  const unknownProgress = {};
+  const marks = {};
+  const activity = {};
+  const unitStats = {};
+  BOOKS.forEach((book) => {
+    progress[book.id] = sanitizeProgressPayload(source.progress?.[book.id] || { lastWordId: null });
+    unknownProgress[book.id] = normalizeUnknownProgressPayload(book, source.unknownProgress?.[book.id]);
+    marks[book.id] = sanitizeMarksPayload(source.marks?.[book.id]);
+    activity[book.id] = sanitizeActivityPayload(source.activity?.[book.id]);
+    unitStats[book.id] = sanitizeUnitStatsPayload(source.unitStats?.[book.id]);
+  });
+  return {
+    version: 1,
+    updatedAt: typeof source.updatedAt === "string" && source.updatedAt ? source.updatedAt : new Date().toISOString(),
+    activeBookId: BOOKS.some((book) => book.id === source.activeBookId) ? source.activeBookId : normalizeSettingsPayload(source.settings).bookId,
+    settings: normalizeSettingsPayload(source.settings),
+    progress,
+    unknownProgress,
+    marks,
+    activity,
+    unitStats
+  };
+}
+
+function validateSyncPayload(payload) {
+  if (!isPlainObject(payload) || payload.version !== 1) return false;
+  if (!isPlainObject(payload.settings) || !isPlainObject(payload.progress)) return false;
+  const knownBookIds = new Set(BOOKS.map((book) => book.id));
+  if (payload.activeBookId && !knownBookIds.has(payload.activeBookId)) return false;
+  return BOOKS.every((book) => (
+    validateProgressPayload(payload.progress?.[book.id], book) &&
+    validateUnknownProgressPayload(payload.unknownProgress?.[book.id], book) &&
+    validateMarksForBook(payload.marks?.[book.id]) &&
+    validateActivityForBook(payload.activity?.[book.id]) &&
+    validateUnitStatsForBook(payload.unitStats?.[book.id], book)
+  ));
+}
+
+function validateProgressPayload(progress, book) {
+  if (!isPlainObject(progress)) return false;
+  const lastWordId = progress.lastWordId;
+  if (lastWordId !== null && (!Number.isFinite(Number(lastWordId)) || Number(lastWordId) <= 0)) return false;
+  if (progress.unit !== undefined) {
+    const unit = Number(progress.unit);
+    if (!Number.isFinite(unit) || unit < 1 || unit > book.totalUnits) return false;
+  }
+  return true;
+}
+
+function validateUnknownProgressPayload(progressMap, book) {
+  if (!isPlainObject(progressMap) || !isPlainObject(progressMap.units)) return false;
+  if (!validateProgressPayload(progressMap.book, book)) return false;
+  return Object.entries(progressMap.units).every(([unit, progress]) => {
+    const unitNumber = Number(unit);
+    return Number.isFinite(unitNumber) && unitNumber >= 1 && unitNumber <= book.totalUnits && validateProgressPayload(progress, book);
+  });
+}
+
+function validateMarksForBook(marks) {
+  if (!isPlainObject(marks)) return false;
+  const known = normalizeIdList(marks.known);
+  const unknown = normalizeIdList(marks.unknown);
+  if (known.length !== (Array.isArray(marks.known) ? marks.known.length : 0)) return false;
+  if (unknown.length !== (Array.isArray(marks.unknown) ? marks.unknown.length : 0)) return false;
+  const unknownSet = new Set(unknown);
+  return known.every((id) => !unknownSet.has(id));
+}
+
+function validateActivityForBook(activity) {
+  if (!isPlainObject(activity) || !isPlainObject(activity.days)) return false;
+  return Object.entries(activity.days).every(([date, day]) => (
+    /^\d{4}-\d{2}-\d{2}$/.test(date) &&
+    isPlainObject(day) &&
+    Number(day.seconds) >= 0 &&
+    Number(day.words) >= 0 &&
+    Number(day.known) >= 0 &&
+    Number(day.unknown) >= 0 &&
+    Array.isArray(day.wordIds) &&
+    normalizeIdList(day.wordIds).length === day.wordIds.length
+  ));
+}
+
+function validateUnitStatsForBook(stats, book) {
+  if (!isPlainObject(stats) || !isPlainObject(stats.units)) return false;
+  return Object.entries(stats.units).every(([unit, item]) => {
+    const unitNumber = Number(unit);
+    return Number.isFinite(unitNumber) &&
+      unitNumber >= 1 &&
+      unitNumber <= book.totalUnits &&
+      isPlainObject(item) &&
+      Number(item.completed) >= 0;
+  });
+}
+
+function isEffectivelyEmptyLocalPayload(payload) {
+  const normalized = normalizeSyncPayload(payload);
+  return noMarks(normalized) &&
+    noProgress(normalized) &&
+    noUnknownProgress(normalized) &&
+    noActivity(normalized) &&
+    noUnitStats(normalized);
+}
+
+function noMarks(payload) {
+  return BOOKS.every((book) => {
+    const marks = payload.marks?.[book.id] || {};
+    return !normalizeIdList(marks.known).length && !normalizeIdList(marks.unknown).length;
+  });
+}
+
+function noProgress(payload) {
+  return BOOKS.every((book) => !Number(payload.progress?.[book.id]?.lastWordId));
+}
+
+function noUnknownProgress(payload) {
+  return BOOKS.every((book) => {
+    const item = payload.unknownProgress?.[book.id] || {};
+    const units = isPlainObject(item.units) ? Object.values(item.units) : [];
+    return !Number(item.book?.lastWordId) && units.every((progress) => !Number(progress?.lastWordId));
+  });
+}
+
+function noActivity(payload) {
+  return BOOKS.every((book) => {
+    const days = payload.activity?.[book.id]?.days || {};
+    return !Object.values(days).some((day) => (
+      Number(day.seconds) > 0 ||
+      Number(day.words) > 0 ||
+      Number(day.known) > 0 ||
+      Number(day.unknown) > 0 ||
+      normalizeIdList(day.wordIds).length > 0
+    ));
+  });
+}
+
+function noUnitStats(payload) {
+  return BOOKS.every((book) => {
+    const units = payload.unitStats?.[book.id]?.units || {};
+    return !Object.values(units).some((unit) => Number(unit.completed) > 0);
+  });
+}
+
+function applyPendingOps(payload, ops) {
+  const merged = normalizeSyncPayload(cloneJson(payload));
+  compactPendingOps(ops).forEach((op) => {
+    if (op.type === "word.mark.set") applyWordMarkSet(merged, op);
+    else if (op.type === "progress.set") applyProgressSet(merged, op);
+    else if (op.type === "unknownProgress.set") applyUnknownProgressSet(merged, op);
+    else if (op.type === "unitStats.completed.set") applyUnitStatsCompletedSet(merged, op);
+    else if (op.type === "activity.day.set") applyActivityDaySet(merged, op);
+    else if (op.type === "settings.set") applySettingsSet(merged, op);
+  });
+  const latestOpTime = compactPendingOps(ops).reduce((latest, op) => Math.max(latest, dateMs(op.createdAt)), dateMs(merged.updatedAt));
+  merged.updatedAt = new Date(latestOpTime || Date.now()).toISOString();
+  return normalizeSyncPayload(merged);
+}
+
+function applyWordMarkSet(payload, op) {
+  const book = BOOKS.find((item) => item.id === op.bookId);
+  const wordId = Number(op.wordId);
+  if (!book || !Number.isFinite(wordId) || wordId <= 0) return;
+  const marks = payload.marks[book.id] || { known: [], unknown: [] };
+  // 本地 pendingOp 表示用户在本设备上未同步的最后意图；rebase 时它覆盖云端同一词的互斥状态。
+  marks.known = normalizeIdList(marks.known).filter((id) => id !== wordId);
+  marks.unknown = normalizeIdList(marks.unknown).filter((id) => id !== wordId);
+  if (op.value === "known") marks.known.push(wordId);
+  if (op.value === "unknown") marks.unknown.push(wordId);
+  payload.marks[book.id] = sanitizeMarksPayload(marks);
+}
+
+function applyProgressSet(payload, op) {
+  const book = BOOKS.find((item) => item.id === op.bookId);
+  if (!book) return;
+  const next = sanitizeProgressPayload({ ...(op.progress || {}), updatedAt: op.progress?.updatedAt || op.createdAt });
+  const current = payload.progress[book.id] || { lastWordId: null };
+  if (dateMs(next.updatedAt) >= dateMs(current.updatedAt)) payload.progress[book.id] = next;
+}
+
+function applyUnknownProgressSet(payload, op) {
+  const book = BOOKS.find((item) => item.id === op.bookId);
+  if (!book || (op.scope !== "book" && op.scope !== "unit")) return;
+  const progressMap = payload.unknownProgress[book.id] || normalizeUnknownProgressPayload(book);
+  const next = sanitizeProgressPayload({ ...(op.progress || {}), updatedAt: op.progress?.updatedAt || op.createdAt });
+  if (op.scope === "book") {
+    if (dateMs(next.updatedAt) >= dateMs(progressMap.book?.updatedAt)) progressMap.book = next;
+  } else {
+    const unit = Number(op.unit);
+    if (!Number.isFinite(unit) || unit < 1 || unit > book.totalUnits) return;
+    const key = String(unit);
+    if (dateMs(next.updatedAt) >= dateMs(progressMap.units?.[key]?.updatedAt)) progressMap.units[key] = next;
+  }
+  payload.unknownProgress[book.id] = progressMap;
+}
+
+function applyUnitStatsCompletedSet(payload, op) {
+  const book = BOOKS.find((item) => item.id === op.bookId);
+  const unit = Number(op.unit);
+  if (!book || !Number.isFinite(unit) || unit < 1 || unit > book.totalUnits) return;
+  const stats = payload.unitStats[book.id] || { units: {} };
+  const key = String(unit);
+  const current = stats.units[key] || { completed: 0 };
+  if (dateMs(op.createdAt) >= dateMs(current.updatedAt)) {
+    stats.units[key] = {
+      completed: Math.max(0, Number(op.completed) || 0),
+      updatedAt: op.createdAt
+    };
+  }
+  payload.unitStats[book.id] = sanitizeUnitStatsPayload(stats);
+}
+
+function applyActivityDaySet(payload, op) {
+  const book = BOOKS.find((item) => item.id === op.bookId);
+  if (!book || !/^\d{4}-\d{2}-\d{2}$/.test(op.date || "")) return;
+  const activity = payload.activity[book.id] || { days: {} };
+  const current = activity.days[op.date] || { seconds: 0, words: 0, known: 0, unknown: 0, wordIds: [] };
+  const next = sanitizeActivityPayload({ days: { [op.date]: op.day || {} } }).days[op.date] || current;
+  activity.days[op.date] = {
+    seconds: Math.max(Number(current.seconds) || 0, Number(next.seconds) || 0),
+    words: Math.max(Number(current.words) || 0, Number(next.words) || 0),
+    known: Math.max(Number(current.known) || 0, Number(next.known) || 0),
+    unknown: Math.max(Number(current.unknown) || 0, Number(next.unknown) || 0),
+    wordIds: normalizeIdList([...(current.wordIds || []), ...(next.wordIds || [])])
+  };
+  payload.activity[book.id] = sanitizeActivityPayload(activity);
+}
+
+function applySettingsSet(payload, op) {
+  if (!isPlainObject(op.patch)) return;
+  const currentUpdatedAt = dateMs(payload.settings?.updatedAt);
+  if (currentUpdatedAt && currentUpdatedAt > dateMs(op.createdAt)) return;
+  payload.settings = normalizeSettingsPayload({ ...(payload.settings || {}), ...op.patch });
+}
+
 function normalizeCloudConfig() {
   state.cloud.token = (state.cloud.token || "").trim();
   state.cloud.gistId = (state.cloud.gistId || "").trim();
   persistCloud();
+  state.syncMeta = ensureSyncMeta(state.syncMeta);
+  persistSyncMeta();
   return Boolean(state.cloud.token && state.cloud.gistId);
 }
 
@@ -2625,48 +3043,6 @@ function isPlainObject(value) {
 function dateMs(value) {
   const time = Date.parse(value || "");
   return Number.isFinite(time) ? time : 0;
-}
-
-function latestLocalProgressMs() {
-  return BOOKS.reduce((latest, book) => {
-    const progress = loadProgress(book.id);
-    return Math.max(latest, dateMs(progress.updatedAt), latestUnknownProgressMs(book));
-  }, 0);
-}
-
-function latestUnknownProgressMs(book) {
-  const map = collectUnknownProgressForBook(book);
-  return [
-    dateMs(map.book.updatedAt),
-    ...Object.values(map.units).map((progress) => dateMs(progress.updatedAt))
-  ].reduce((latest, value) => Math.max(latest, value), 0);
-}
-
-function localSyncMs() {
-  return Math.max(dateMs(state.syncMeta.localUpdatedAt), latestLocalProgressMs());
-}
-
-function collectLocalProgressMap() {
-  return BOOKS.reduce((progress, book) => {
-    progress[book.id] = loadProgress(book.id);
-    return progress;
-  }, {});
-}
-
-function collectLocalSyncDecisionPayload() {
-  const progress = {};
-  const unknownProgress = {};
-  const marks = {};
-  const activity = {};
-  const unitStats = {};
-  BOOKS.forEach((book) => {
-    progress[book.id] = loadProgress(book.id);
-    unknownProgress[book.id] = collectUnknownProgressForBook(book);
-    marks[book.id] = loadMarks(book.id);
-    activity[book.id] = loadActivity(book.id);
-    unitStats[book.id] = loadUnitStats(book.id);
-  });
-  return { progress, unknownProgress, marks, activity, unitStats };
 }
 
 function progressDepth(progress) {
@@ -2727,23 +3103,6 @@ function syncContentScore(payload) {
     activityMapScore(payload.activity) * 100000 +
     unitStatsMapScore(payload.unitStats) * 100000
   );
-}
-
-function chooseSyncSource(remotePayload) {
-  const remoteContentScore = syncContentScore(remotePayload);
-  const localPayload = collectLocalSyncDecisionPayload();
-  const localContentScore = syncContentScore(localPayload);
-  if (remoteContentScore > localContentScore) return { source: "remote", reason: "content" };
-  if (localContentScore > remoteContentScore) return { source: "local", reason: "content" };
-  const remoteScore = progressMapScore(remotePayload?.progress);
-  const localScore = progressMapScore(localPayload.progress);
-  if (remoteScore > localScore) return { source: "remote", reason: "progress" };
-  if (localScore > remoteScore) return { source: "local", reason: "progress" };
-  const remoteMs = dateMs(remotePayload?.updatedAt);
-  const localMs = localSyncMs();
-  if (remoteMs > localMs) return { source: "remote", reason: "updatedAt" };
-  if (localMs > remoteMs) return { source: "local", reason: "updatedAt" };
-  return { source: "equal", reason: "same" };
 }
 
 function normalizeIdList(ids) {
@@ -2813,7 +3172,9 @@ function parseSyncPayloadContent(content) {
     if (!isPlainObject(payload) || !Object.keys(payload).length) return { kind: "empty" };
     if (payload.version !== undefined && payload.version !== 1) return { kind: "invalid" };
     if (!isPlainObject(payload.settings) || !isPlainObject(payload.progress)) return { kind: "empty" };
-    return { kind: "valid", payload };
+    const normalized = normalizeSyncPayload(payload);
+    if (!validateSyncPayload(normalized)) return { kind: "invalid" };
+    return { kind: "valid", payload: normalized };
   } catch {
     return { kind: "invalid" };
   }
@@ -2828,14 +3189,21 @@ async function fetchGistSyncPayload() {
   });
   if (!response.ok) throw new Error(`云端拉取失败：${response.status}`);
   const gist = await response.json();
-  const file = gist.files?.["sync.json"];
-  if (!file) return { kind: "empty" };
+  const remoteVersion = gist.history?.[0]?.version || gist.updated_at || "";
+  const remoteUpdatedAt = gist.updated_at || "";
+  const file = gist.files?.[SYNC_FILE_NAME];
+  if (!file) return { kind: "empty", rawContent: "", remoteVersion, remoteUpdatedAt };
   const content = await readGistFileContent(file);
-  return parseSyncPayloadContent(content);
+  return {
+    ...parseSyncPayloadContent(content),
+    rawContent: content,
+    remoteVersion,
+    remoteUpdatedAt
+  };
 }
 
 async function readGistFileContent(file) {
-  if (typeof file.content === "string") return file.content;
+  if (!file.truncated && typeof file.content === "string") return file.content;
   if (!file.raw_url) return "";
   const response = await fetch(file.raw_url, {
     headers: {
@@ -2848,105 +3216,215 @@ async function readGistFileContent(file) {
 }
 
 async function autoPullFromGist() {
-  if (!normalizeCloudConfig()) return false;
-  if (state.syncPullPromise) return state.syncPullPromise;
-  state.syncPullPromise = (async () => {
-    setSyncStatus("syncing");
-    try {
-      const result = await fetchGistSyncPayload();
-      if (result.kind === "empty") {
-        await autoPushToGist({ force: true });
-        return true;
-      }
-      if (result.kind !== "valid") {
-        setSyncStatus("error");
-        return false;
-      }
-      const payload = result.payload;
-      const decision = chooseSyncSource(payload);
-      if (decision.source === "remote") {
-        applySyncPayload(payload);
-        renderCurrentView({ touchProgress: false });
-        setSyncStatus("ok");
-      } else if (decision.source === "local") {
-        await autoPushToGist({ force: true });
-      } else {
-        setSyncStatus("ok");
-      }
-      return true;
-    } catch {
-      setSyncStatus("error");
-      return false;
-    } finally {
-      state.syncPullPromise = null;
-    }
-  })();
-  return state.syncPullPromise;
+  return syncWithGist();
 }
 
-async function autoPushToGist({ keepalive = false, force = false } = {}) {
+async function autoPushToGist({ keepalive = false } = {}) {
+  return syncWithGist({ keepalive });
+}
+
+async function syncWithGist({ keepalive = false } = {}) {
   if (!normalizeCloudConfig()) return false;
-  if (state.syncPullPromise && !force) return state.syncPullPromise;
-  if (state.syncPushPromise) return state.syncPushPromise;
-  const now = Date.now();
-  if (!force && now - state.lastPushStartedAt < AUTO_SYNC_PUSH_GAP_MS) return false;
-  state.lastPushStartedAt = now;
-  state.syncPushPromise = (async () => {
+  if (state.syncInFlight) return state.syncInFlight;
+  state.syncInFlight = runGistSync({ keepalive }).finally(() => {
+    state.syncInFlight = null;
+  });
+  return state.syncInFlight;
+}
+
+async function runGistSync({ keepalive = false } = {}) {
+  try {
     setSyncStatus("syncing");
-    const payload = collectSyncPayload();
-    try {
-      const response = await fetch(`https://api.github.com/gists/${encodeURIComponent(state.cloud.gistId)}`, {
-        method: "PATCH",
-        keepalive,
-        headers: {
-          Authorization: `Bearer ${state.cloud.token}`,
-          Accept: "application/vnd.github+json",
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          files: {
-            "sync.json": {
-              content: JSON.stringify(payload, null, 2)
-            }
-          }
-        })
-      });
-      if (!response.ok) throw new Error(`云端推送失败：${response.status}`);
-      state.syncMeta.localUpdatedAt = payload.updatedAt;
-      persistSyncMeta();
+    state.syncMeta = ensureSyncMeta(state.syncMeta);
+    const remote = await fetchGistSyncPayload();
+    const localPayload = normalizeSyncPayload(collectSyncPayload());
+    const ops = getPendingOps();
+
+    if (remote.kind === "empty") {
+      return createRemoteSyncJson(localPayload, remote, { keepalive });
+    }
+
+    if (remote.kind !== "valid") {
+      enterSafeConflictMode("云端 sync.json 无法解析。为避免数据丢失，已暂停自动同步。");
+      return false;
+    }
+
+    if (!state.syncMeta.initialized || state.syncMeta.gistId !== state.cloud.gistId || !state.syncMeta.lastRemoteVersion) {
+      if (isEffectivelyEmptyLocalPayload(localPayload)) {
+        applySyncPayload(remote.payload);
+        markSyncedWithRemote(remote, remote.payload);
+        clearPendingOps();
+        renderCurrentView({ touchProgress: false });
+        setSyncStatus("ok");
+        return true;
+      }
+      enterSafeConflictMode("本地和云端都已有学习数据。为避免覆盖，已暂停自动同步，请先导出本地备份后手动处理。");
+      return false;
+    }
+
+    const remoteChanged = remote.remoteVersion !== state.syncMeta.lastRemoteVersion;
+    const localChanged = ops.length > 0 || state.syncMeta.localUpdatedAt !== state.syncMeta.lastSyncedLocalUpdatedAt;
+
+    if (!remoteChanged && !localChanged) {
       setSyncStatus("ok");
       return true;
-    } catch {
-      setSyncStatus("error");
-      return false;
-    } finally {
-      state.syncPushPromise = null;
     }
-  })();
-  return state.syncPushPromise;
+
+    if (!remoteChanged && localChanged) {
+      return pushPayloadWithBackup(remote, localPayload, { keepalive });
+    }
+
+    if (remoteChanged && !localChanged) {
+      applySyncPayload(remote.payload);
+      markSyncedWithRemote(remote, remote.payload);
+      clearPendingOps();
+      renderCurrentView({ touchProgress: false });
+      setSyncStatus("ok");
+      return true;
+    }
+
+    if (remoteChanged && localChanged) {
+      if (!ops.length) {
+        enterSafeConflictMode("云端和本地都有新改动，但本地没有可重放操作日志。为避免数据丢失，已暂停自动同步。");
+        return false;
+      }
+      const mergedPayload = normalizeSyncPayload(applyPendingOps(cloneJson(remote.payload), ops));
+      if (!validateSyncPayload(mergedPayload)) {
+        enterSafeConflictMode("本地操作重放后校验失败。为避免数据丢失，已暂停自动同步。");
+        return false;
+      }
+      return pushPayloadWithBackup(remote, mergedPayload, { keepalive, applyBackToLocal: true, acceptCurrentRemoteVersion: true });
+    }
+    setSyncStatus("ok");
+    return true;
+  } catch {
+    setSyncStatus("error");
+    return false;
+  }
+}
+
+async function createRemoteSyncJson(payload, remote, { keepalive = false } = {}) {
+  const normalized = normalizeSyncPayload(payload);
+  if (!validateSyncPayload(normalized)) {
+    enterSafeConflictMode("本地同步数据校验失败，已阻止创建云端 sync.json。");
+    return false;
+  }
+  return patchGistFiles({
+    payload: normalized,
+    remote,
+    keepalive,
+    includeBackup: false,
+    applyBackToLocal: false
+  });
+}
+
+async function pushPayloadWithBackup(remote, payload, { keepalive = false, applyBackToLocal = false, acceptCurrentRemoteVersion = false } = {}) {
+  if (!state.syncMeta.initialized || state.syncMeta.gistId !== state.cloud.gistId || !state.syncMeta.lastRemoteVersion) {
+    enterSafeConflictMode("本地尚未从云端初始化，请先拉取云端数据。");
+    return false;
+  }
+  if (!acceptCurrentRemoteVersion && remote.remoteVersion !== state.syncMeta.lastRemoteVersion) {
+    enterSafeConflictMode("云端版本已变化，已禁止覆盖。请先完成安全同步。");
+    return false;
+  }
+  if (acceptCurrentRemoteVersion && !remote.remoteVersion) {
+    enterSafeConflictMode("云端版本未知，已禁止覆盖。");
+    return false;
+  }
+  const normalized = normalizeSyncPayload(payload);
+  if (!validateSyncPayload(normalized)) {
+    enterSafeConflictMode("本地同步数据校验失败，已阻止上传。");
+    return false;
+  }
+  const remoteScore = syncContentScore(remote.payload);
+  const localScore = syncContentScore(normalized);
+  if (remoteScore >= 20 && localScore < remoteScore * 0.1) {
+    enterSafeConflictMode("本地数据量明显小于云端，疑似缓存清空或数据损坏，已阻止上传。");
+    return false;
+  }
+  return patchGistFiles({
+    payload: normalized,
+    remote,
+    keepalive,
+    includeBackup: true,
+    applyBackToLocal
+  });
+}
+
+async function patchGistFiles({ payload, remote, keepalive = false, includeBackup = true, applyBackToLocal = false }) {
+  const response = await fetch(`https://api.github.com/gists/${encodeURIComponent(state.cloud.gistId)}`, {
+    method: "PATCH",
+    keepalive,
+    headers: {
+      Authorization: `Bearer ${state.cloud.token}`,
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      files: {
+        ...(includeBackup ? {
+          [SYNC_BACKUP_FILE_NAME]: {
+            content: remote.rawContent || JSON.stringify(remote.payload || {}, null, 2)
+          }
+        } : {}),
+        [SYNC_FILE_NAME]: {
+          content: JSON.stringify(payload, null, 2)
+        }
+      }
+    })
+  });
+  if (!response.ok) throw new Error(`云端推送失败：${response.status}`);
+  const updatedGist = await response.json();
+  const updatedRemote = {
+    remoteVersion: updatedGist.history?.[0]?.version || updatedGist.updated_at || "",
+    remoteUpdatedAt: updatedGist.updated_at || ""
+  };
+  if (applyBackToLocal) applySyncPayload(payload);
+  markSyncedWithRemote(updatedRemote, payload);
+  clearPendingOps();
+  setSyncStatus("ok");
+  return true;
+}
+
+function markSyncedWithRemote(remote, payload) {
+  const syncedAt = payload?.updatedAt || new Date().toISOString();
+  state.syncMeta = {
+    ...ensureSyncMeta(state.syncMeta),
+    initialized: true,
+    gistId: state.cloud.gistId,
+    fileName: SYNC_FILE_NAME,
+    lastRemoteVersion: remote.remoteVersion || "",
+    lastRemoteUpdatedAt: remote.remoteUpdatedAt || "",
+    localUpdatedAt: syncedAt,
+    lastSyncedLocalUpdatedAt: syncedAt
+  };
+  persistSyncMeta();
+}
+
+function enterSafeConflictMode(message) {
+  if (state.view === "setup") state.setupStatus = { message, type: "error" };
+  setSyncStatus("error");
 }
 
 function applySyncPayload(payload) {
-  if (!isPlainObject(payload) || payload.version !== 1) return false;
-  if (!isPlainObject(payload.settings) || !isPlainObject(payload.progress)) return false;
-  state.settings = { ...DEFAULT_SETTINGS, ...payload.settings };
-  normalizeSettings();
-  Object.entries(payload.progress).forEach(([bookId, progress]) => saveProgress(bookId, sanitizeProgressPayload(progress), { touch: false }));
-  if (isPlainObject(payload.marks)) {
-    Object.entries(payload.marks).forEach(([bookId, marks]) => saveMarks(bookId, sanitizeMarksPayload(marks), { touch: false }));
+  const normalized = normalizeSyncPayload(payload);
+  if (!validateSyncPayload(normalized)) return false;
+  state.applyingRemotePayload = true;
+  try {
+    state.settings = { ...DEFAULT_SETTINGS, ...normalized.settings };
+    normalizeSettings();
+    saveJson(SETTINGS_KEY, state.settings);
+    Object.entries(normalized.progress).forEach(([bookId, progress]) => saveProgress(bookId, progress, { touch: false }));
+    Object.entries(normalized.marks).forEach(([bookId, marks]) => saveMarks(bookId, marks, { touch: false }));
+    Object.entries(normalized.activity).forEach(([bookId, activity]) => saveActivity(bookId, activity, { touch: false }));
+    Object.entries(normalized.unitStats).forEach(([bookId, stats]) => saveUnitStats(bookId, stats, { touch: false }));
+    Object.entries(normalized.unknownProgress).forEach(([bookId, progressMap]) => applyUnknownProgressPayload(bookId, progressMap));
+    state.syncMeta.localUpdatedAt = normalized.updatedAt || new Date().toISOString();
+    persistSyncMeta();
+    return true;
+  } finally {
+    state.applyingRemotePayload = false;
   }
-  if (isPlainObject(payload.activity)) {
-    Object.entries(payload.activity).forEach(([bookId, activity]) => saveActivity(bookId, sanitizeActivityPayload(activity), { touch: false }));
-  }
-  if (isPlainObject(payload.unitStats)) {
-    Object.entries(payload.unitStats).forEach(([bookId, stats]) => saveUnitStats(bookId, sanitizeUnitStatsPayload(stats), { touch: false }));
-  }
-  if (isPlainObject(payload.unknownProgress)) {
-    Object.entries(payload.unknownProgress).forEach(([bookId, progressMap]) => applyUnknownProgressPayload(bookId, progressMap));
-  }
-  state.syncMeta.localUpdatedAt = payload.updatedAt || new Date().toISOString();
-  persistSyncMeta();
-  return true;
 }
 
 function applyUnknownProgressPayload(bookId, progressMap) {
