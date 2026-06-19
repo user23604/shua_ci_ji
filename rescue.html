@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>刷词机本地数据救援工具</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f6f8;
+      color: #141821;
+    }
+    body { margin: 0; padding: 20px; }
+    .wrap { max-width: 960px; margin: 0 auto; }
+    .card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      padding: 18px;
+      margin: 14px 0;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+    }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    h2 { font-size: 18px; margin: 0 0 10px; }
+    p { line-height: 1.65; margin: 8px 0; }
+    .danger { color: #b42318; font-weight: 700; }
+    .ok { color: #057a55; font-weight: 700; }
+    .warn { color: #b54708; font-weight: 700; }
+    .sanitized { color: #057a55; font-weight: 700; }
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 16px;
+      margin: 8px 8px 8px 0;
+      font-weight: 700;
+      cursor: pointer;
+      background: #0f766e;
+      color: #fff;
+      font-size: 15px;
+    }
+    button.secondary { background: #334155; }
+    button.danger-btn { background: #b42318; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    pre, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #d1d5db;
+      border-radius: 12px;
+      background: #0b1020;
+      color: #e5e7eb;
+      padding: 12px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    textarea { min-height: 260px; resize: vertical; }
+    .small { color: #64748b; font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+    .pill { background: #f1f5f9; border-radius: 999px; padding: 7px 10px; display: inline-block; margin: 3px; font-size: 13px; }
+    .big-status { font-size: 18px; padding: 10px 0; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>刷词机本地数据救援工具</h1>
+    <p class="danger">这个页面只读取本机浏览器数据，不连接 GitHub，不上传，不覆盖，不清理。不要点击浏览器"清理网站数据/垃圾桶"。</p>
+    <p>请用仍显示"已存储数据"的同一个浏览器打开本页面，地址应类似：<strong>https://user23604.github.io/shua_ci_ji/rescue.html</strong></p>
+    <p class="small">如果把这个文件直接从本地文件管理器打开，地址会是 file://，那就读不到网站数据。必须部署到同一个 GitHub Pages 域名下再打开。</p>
+    <p class="sanitized">🔒 本工具已自动脱敏：GitHub Token、密码等敏感字段在导出时已替换为 [已脱敏]。下载备份 JSON 前会再次执行全局脱敏。</p>
+  </div>
+
+  <div class="card">
+    <h2>操作</h2>
+    <button id="scanBtn">生成诊断并读取本机数据</button>
+    <button id="downloadBtn" class="secondary" disabled>下载完整备份 JSON</button>
+    <button id="copyBtn" class="secondary" disabled>复制诊断摘要</button>
+    <p id="status" class="big-status warn">尚未开始。</p>
+  </div>
+
+  <div class="card">
+    <h2>快速判断</h2>
+    <div id="quick" class="grid"></div>
+  </div>
+
+  <div class="card">
+    <h2>诊断摘要</h2>
+    <textarea id="summary" readonly placeholder="点击"生成诊断并读取本机数据"后，这里会显示摘要。"></textarea>
+  </div>
+
+  <div class="card">
+    <h2>发现的关键片段</h2>
+    <pre id="snippets">暂无。</pre>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const TARGET_DATES = ["2026-06-18", "2026-06-19", "2026-06-15", "2026-06-11", "2026-06-10"];
+
+  // ── P0: 业务 localStorage key 白名单 ────────────────────────────────────
+  const BUSINESS_KEY_PREFIXES = [
+    "vocab_machine_settings_v1",
+    "vocab_machine_sync_meta_v1",
+    "vocab_machine_hash_sync_state_v1",
+    "vocab_machine_backup:",
+    "vocab_machine_daily_backup_",
+    "vocab_machine_sync_audit_v1",
+    "progress:",
+    "unknown_progress:",
+    "marks:",
+    "activity:",
+    "unit_stats:",
+    "vocab_machine_local_snapshot_latest_v1"
+  ];
+
+  // ── P0: 全局敏感信息脱敏 ──────────────────────────────────────────────
+  const SENSITIVE_FIELD_PATTERNS = [
+    /^token$/i, /^authorization$/i, /^password$/i, /^secret$/i,
+    /^access_key$/i, /^api_key$/i, /^pat$/i, /^personal_access_token$/i,
+    /^bearer$/i, /^credential$/i, /^auth$/i
+  ];
+
+  const PAT_STRING_PATTERNS = [
+    { re: /ghp_[a-zA-Z0-9]{36,}/g, replacement: "ghp_[已脱敏]" },
+    { re: /github_pat_[a-zA-Z0-9_]{40,}/g, replacement: "github_pat_[已脱敏]" },
+    { re: /gho_[a-zA-Z0-9]{36,}/g, replacement: "gho_[已脱敏]" },
+    { re: /ghu_[a-zA-Z0-9]{36,}/g, replacement: "ghu_[已脱敏]" },
+    { re: /ghs_[a-zA-Z0-9]{36,}/g, replacement: "ghs_[已脱敏]" },
+    { re: /ghr_[a-zA-Z0-9]{36,}/g, replacement: "ghr_[已脱敏]" }
+  ];
+
+  function isSensitiveFieldName(key) {
+    return SENSITIVE_FIELD_PATTERNS.some(function(p) { return p.test(key); });
+  }
+
+  function sanitizeForExport(obj) {
+    if (obj === null || obj === undefined) return obj;
+    if (typeof obj === "string") {
+      var s = obj;
+      PAT_STRING_PATTERNS.forEach(function(p) {
+        s = s.replace(p.re, p.replacement);
+      });
+      return s;
+    }
+    if (Array.isArray(obj)) return obj.map(sanitizeForExport);
+    if (typeof obj !== "object") return obj;
+    var out = {};
+    Object.keys(obj).forEach(function(key) {
+      if (isSensitiveFieldName(key)) {
+        out[key] = "[已脱敏]";
+      } else {
+        out[key] = sanitizeForExport(obj[key]);
+      }
+    });
+    return out;
+  }
+
+  // ── 业务 key 分类 ──────────────────────────────────────────────────────
+  function classifyKey(key) {
+    if (/^progress:/.test(key)) return "progress";
+    if (/^unknown_progress:/.test(key)) return "unknownProgress";
+    if (/^marks:/.test(key)) return "marks";
+    if (/^activity:/.test(key)) return "activity";
+    if (/^unit_stats:/.test(key)) return "unitStats";
+    if (/^vocab_machine_backup:/.test(key)) return "backup";
+    if (/^vocab_machine_daily_backup_/.test(key)) return "backup";
+    if (/^vocab_machine_settings_v1$/.test(key)) return "settings";
+    if (/^vocab_machine_sync_meta_v1$/.test(key)) return "syncState";
+    if (/^vocab_machine_hash_sync_state_v1$/.test(key)) return "syncState";
+    if (/^vocab_machine_sync_audit_v1$/.test(key)) return "audit";
+    if (/^vocab_machine_local_snapshot_latest_v1$/.test(key)) return "snapshot";
+    return "other";
+  }
+
+  function isBusinessKey(key) {
+    return BUSINESS_KEY_PREFIXES.some(function(prefix) {
+      return key === prefix || key.indexOf(prefix) === 0;
+    });
+  }
+
+  // ── helpers ────────────────────────────────────────────────────────────
+  let lastBundle = null;
+  let lastSummaryText = "";
+
+  const $ = (id) => document.getElementById(id);
+
+  function safeJsonParse(value) {
+    if (typeof value !== "string") return null;
+    try { return JSON.parse(value); } catch (_) { return null; }
+  }
+
+  function byteSize(str) {
+    try { return new Blob([String(str)]).size; } catch (_) { return String(str || "").length; }
+  }
+
+  function isLikelySyncPayload(obj) {
+    return !!(
+      obj && typeof obj === "object" &&
+      (obj.version === 1 || obj.progress || obj.marks || obj.activity || obj.unitStats) &&
+      (obj.settings || obj.progress || obj.activity)
+    );
+  }
+
+  function summarizePayload(payload) {
+    if (!payload || typeof payload !== "object") return null;
+    const activityDates = [];
+    const progress = {};
+    const markCounts = {};
+
+    if (payload.progress && typeof payload.progress === "object") {
+      Object.entries(payload.progress).forEach(([bookId, p]) => {
+        progress[bookId] = {
+          unit: p && p.unit,
+          lastWordId: p && p.lastWordId,
+          updatedAt: p && p.updatedAt
+        };
+      });
+    }
+
+    if (payload.activity && typeof payload.activity === "object") {
+      Object.entries(payload.activity).forEach(([bookId, book]) => {
+        const days = book && book.days && typeof book.days === "object" ? book.days : {};
+        Object.keys(days).forEach((date) => activityDates.push(bookId + ":" + date));
+      });
+    }
+
+    if (payload.marks && typeof payload.marks === "object") {
+      Object.entries(payload.marks).forEach(([bookId, marks]) => {
+        markCounts[bookId] = {
+          known: Array.isArray(marks && marks.known) ? marks.known.length : 0,
+          unknown: Array.isArray(marks && marks.unknown) ? marks.unknown.length : 0
+        };
+      });
+    }
+
+    return {
+      version: payload.version,
+      updatedAt: payload.updatedAt,
+      activeBookId: payload.activeBookId,
+      settingsBookId: payload.settings && payload.settings.bookId,
+      settingsUnit: payload.settings && payload.settings.unit,
+      progress: progress,
+      activityDates: activityDates.sort(),
+      markCounts: markCounts
+    };
+  }
+
+  // ── P0: 日期命中标注来源 key ──────────────────────────────────────────
+  function findSnippets(text, sourceKey) {
+    const out = [];
+    const lower = text.toLowerCase();
+    const needles = ["2026-06-18", "vocab_machine", "pending_ops", "activity", "lastWordId", "wordIds"];
+    needles.forEach((needle) => {
+      const idx = lower.indexOf(String(needle).toLowerCase());
+      if (idx >= 0) {
+        const start = Math.max(0, idx - 200);
+        const end = Math.min(text.length, idx + String(needle).length + 300);
+        out.push("--- 命中：" + needle + " | 来源：localStorage:" + sourceKey + " ---\n" + text.slice(start, end));
+      }
+    });
+    return out;
+  }
+
+  // ── P0: 白名单扫描 localStorage ───────────────────────────────────────
+  function collectLocalStorage() {
+    const result = { supported: true, totalBytes: 0, keys: [], items: {}, parsed: {}, skippedCount: 0 };
+    try {
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const key = localStorage.key(i);
+        if (!isBusinessKey(key)) {
+          result.skippedCount += 1;
+          continue;
+        }
+        const value = localStorage.getItem(key);
+        result.keys.push(key);
+        result.items[key] = value;
+        result.totalBytes += byteSize(key) + byteSize(value || "");
+        const parsed = safeJsonParse(value);
+        if (parsed !== null) result.parsed[key] = parsed;
+      }
+      result.keys.sort();
+    } catch (error) {
+      result.supported = false;
+      result.error = error && error.message || String(error);
+    }
+    return result;
+  }
+
+  // ── sessionStorage：只取非敏感的少量 key ──────────────────────────────
+  function collectSessionStorage() {
+    const result = { supported: true, totalBytes: 0, keys: [], items: {} };
+    try {
+      for (let i = 0; i < sessionStorage.length; i += 1) {
+        const key = sessionStorage.key(i);
+        const value = sessionStorage.getItem(key);
+        result.keys.push(key);
+        result.items[key] = value;
+        result.totalBytes += byteSize(key) + byteSize(value || "");
+      }
+      result.keys.sort();
+    } catch (error) {
+      result.supported = false;
+      result.error = error && error.message || String(error);
+    }
+    return result;
+  }
+
+  // ── P0: Cache Storage 只报名称 + 条目数，不读 body ────────────────────
+  async function collectCaches() {
+    const result = { supported: "caches" in window, caches: [] };
+    if (!result.supported) return result;
+    try {
+      const names = await caches.keys();
+      for (const name of names) {
+        const cache = await caches.open(name);
+        const requests = await cache.keys();
+        result.caches.push({ name: name, entryCount: requests.length });
+      }
+    } catch (error) {
+      result.error = error && error.message || String(error);
+    }
+    return result;
+  }
+
+  // ── P0: IndexedDB 只报名称 + store 名称 + 记录数，不读记录值 ──────────
+  function idbRequest(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("IndexedDB request failed"));
+    });
+  }
+
+  function openIndexedDb(name) {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(name);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error("open " + name + " failed"));
+      req.onblocked = () => reject(new Error("open " + name + " blocked"));
+      req.onupgradeneeded = () => {
+        try { req.transaction.abort(); } catch (_) {}
+        reject(new Error("open " + name + " would create/upgrade database, aborted for safety"));
+      };
+    });
+  }
+
+  async function readObjectStoreMeta(db, storeName) {
+    const storeMeta = { name: storeName, count: null, error: null };
+    try {
+      const tx = db.transaction(storeName, "readonly");
+      const store = tx.objectStore(storeName);
+      try { storeMeta.count = await idbRequest(store.count()); } catch (_) {}
+    } catch (error) {
+      storeMeta.error = error && error.message || String(error);
+    }
+    return storeMeta;
+  }
+
+  async function collectIndexedDB() {
+    const result = { supported: "indexedDB" in window, hasDatabasesApi: false, databases: [] };
+    if (!result.supported) return result;
+    if (typeof indexedDB.databases !== "function") {
+      result.error = "当前浏览器不支持 indexedDB.databases()，无法自动枚举数据库名。";
+      return result;
+    }
+    result.hasDatabasesApi = true;
+    try {
+      const dbs = await indexedDB.databases();
+      for (const info of dbs) {
+        if (!info || !info.name) continue;
+        const dbDump = { name: info.name, version: info.version, objectStores: [], error: null };
+        let db = null;
+        try {
+          db = await openIndexedDb(info.name);
+          dbDump.version = db.version;
+          const storeNames = Array.from(db.objectStoreNames || []);
+          for (const storeName of storeNames) {
+            dbDump.objectStores.push(await readObjectStoreMeta(db, storeName));
+          }
+        } catch (error) {
+          dbDump.error = error && error.message || String(error);
+        } finally {
+          try { if (db) db.close(); } catch (_) {}
+        }
+        result.databases.push(dbDump);
+      }
+    } catch (error) {
+      result.error = error && error.message || String(error);
+    }
+    return result;
+  }
+
+  // ── analysis ───────────────────────────────────────────────────────────
+  function analyzeBundle(bundle) {
+    const jsonText = JSON.stringify(bundle);
+    const foundDates = TARGET_DATES.filter((date) => jsonText.includes(date));
+    const allDates = Array.from(new Set(jsonText.match(/20\d{2}-\d{2}-\d{2}/g) || [])).sort();
+
+    const keyCategories = {};
+    (bundle.localStorage.keys || []).forEach(function(key) {
+      var cat = classifyKey(key);
+      if (!keyCategories[cat]) keyCategories[cat] = [];
+      keyCategories[cat].push(key);
+    });
+
+    // P0: 日期命中标注来源 key
+    const dateSources = {};
+    Object.entries(bundle.localStorage.items || {}).forEach(function(_ref) {
+      var key = _ref[0], value = _ref[1];
+      TARGET_DATES.forEach(function(date) {
+        if (value && value.indexOf(date) !== -1) {
+          if (!dateSources[date]) dateSources[date] = [];
+          dateSources[date].push("localStorage:" + key);
+        }
+      });
+    });
+
+    const likelyPayloads = [];
+    Object.entries(bundle.localStorage.parsed || {}).forEach(function(_ref2) {
+      var key = _ref2[0], value = _ref2[1];
+      if (isLikelySyncPayload(value)) likelyPayloads.push({ source: "localStorage:" + key + " [" + classifyKey(key) + "]", summary: summarizePayload(value) });
+      if (value && typeof value === "object") {
+        Object.entries(value).forEach(function(_ref3) {
+          var subKey = _ref3[0], subValue = _ref3[1];
+          if (isLikelySyncPayload(subValue)) likelyPayloads.push({ source: "localStorage:" + key + "." + subKey + " [" + classifyKey(key) + "]", summary: summarizePayload(subValue) });
+        });
+      }
+    });
+
+    const snippets = [];
+    Object.entries(bundle.localStorage.items || {}).forEach(function(_ref4) {
+      var key = _ref4[0], value = _ref4[1];
+      snippets.push.apply(snippets, findSnippets(value, key));
+    });
+
+    return {
+      foundTargetDates: foundDates,
+      allDates: allDates,
+      dateSources: dateSources,
+      hasJune18: foundDates.includes("2026-06-18"),
+      localStorageKeyCount: bundle.localStorage.keys ? bundle.localStorage.keys.length : 0,
+      localStorageSkippedCount: bundle.localStorage.skippedCount || 0,
+      localStorageTotalBytes: bundle.localStorage.totalBytes || 0,
+      keyCategories: keyCategories,
+      indexedDbCount: bundle.indexedDB.databases ? bundle.indexedDB.databases.length : 0,
+      cacheCount: bundle.cacheStorage.caches ? bundle.cacheStorage.caches.length : 0,
+      likelyPayloads: likelyPayloads,
+      snippets: snippets
+    };
+  }
+
+  function renderQuick(analysis) {
+    const items = [];
+    items.push('<div class="pill ' + (analysis.hasJune18 ? "ok" : "danger") + '">2026-06-18：' + (analysis.hasJune18 ? "发现" : "未发现") + '</div>');
+    items.push('<div class="pill">业务 localStorage：' + analysis.localStorageKeyCount + ' 个 key（跳过 ' + analysis.localStorageSkippedCount + ' 个非业务 key），约 ' + analysis.localStorageTotalBytes + ' bytes</div>');
+    items.push('<div class="pill">IndexedDB：' + analysis.indexedDbCount + ' 个库（仅统计，不读记录）</div>');
+    items.push('<div class="pill">Cache Storage：' + analysis.cacheCount + ' 个缓存（仅统计，不读 body）</div>');
+    items.push('<div class="pill">发现日期：' + (analysis.allDates.slice(-8).join("、") || "无") + '</div>');
+    $("quick").innerHTML = items.join("\n");
+  }
+
+  function buildSummary(bundle, analysis) {
+    const lines = [];
+    lines.push("刷词机本地数据救援诊断摘要");
+    lines.push("================================");
+    lines.push("生成时间：" + bundle.meta.generatedAt);
+    lines.push("页面地址：" + bundle.meta.href);
+    lines.push("Origin：" + bundle.meta.origin);
+    lines.push("User Agent：" + bundle.meta.userAgent);
+    lines.push("🔒 敏感信息已自动脱敏（Token / 密码 / PAT）");
+    lines.push("");
+    lines.push("是否发现 2026-06-18：" + (analysis.hasJune18 ? "是" : "否"));
+    lines.push("命中的目标日期：");
+    Object.keys(analysis.dateSources || {}).forEach(function(date) {
+      lines.push("  " + date + " ← " + (analysis.dateSources[date] || []).join(", "));
+    });
+    if (Object.keys(analysis.dateSources || {}).length === 0) {
+      lines.push("  （无）");
+    }
+    lines.push("所有日期：" + (analysis.allDates.join(", ") || "无"));
+    lines.push("");
+
+    // ── P0: 按类别展示 key ──────────────────────────────────────────────
+    lines.push("localStorage 业务 key 分类统计：");
+    var catLabels = { progress: "[progress 进度]", unknownProgress: "[unknownProgress 重难点进度]", marks: "[marks 标记]", activity: "[activity 活动]", unitStats: "[unitStats 单元统计]", settings: "[settings 设置]", syncState: "[syncState 同步状态]", backup: "[backup 备份]", audit: "[audit 审计]", snapshot: "[snapshot 快照]", other: "[other 其他]" };
+    Object.keys(analysis.keyCategories || {}).sort().forEach(function(cat) {
+      lines.push("  " + (catLabels[cat] || cat) + "：" + analysis.keyCategories[cat].length + " 个 key");
+      analysis.keyCategories[cat].forEach(function(k) {
+        var parsed = bundle.localStorage.parsed[k];
+        var sizeHint = bundle.localStorage.items[k] ? byteSize(bundle.localStorage.items[k]) : 0;
+        var detail = "";
+        if (parsed && typeof parsed === "object") {
+          if (parsed.savedAt) detail += " savedAt=" + parsed.savedAt;
+          if (parsed.reason) detail += " reason=" + parsed.reason;
+        }
+        lines.push("    - " + k + " (" + sizeHint + " bytes" + detail + ")");
+      });
+    });
+    lines.push("跳过的非业务 key：" + (analysis.localStorageSkippedCount || 0) + " 个");
+    lines.push("localStorage 总大小估计：" + analysis.localStorageTotalBytes + " bytes");
+    lines.push("");
+
+    lines.push("IndexedDB 数据库数：" + analysis.indexedDbCount + "（仅统计，不读记录值）");
+    (bundle.indexedDB.databases || []).forEach(function(db) {
+      lines.push("- DB " + db.name + " v" + db.version + ": " + (db.objectStores ? db.objectStores.length : 0) + " stores" + (db.error ? " ERROR: " + db.error : ""));
+      (db.objectStores || []).forEach(function(store) {
+        lines.push("  · " + store.name + ": count=" + store.count + (store.error ? " ERROR: " + store.error : ""));
+      });
+    });
+    if (bundle.indexedDB.error) lines.push("IndexedDB 错误：" + bundle.indexedDB.error);
+    lines.push("");
+
+    lines.push("Cache Storage 缓存数：" + analysis.cacheCount + "（仅统计，不读 body）");
+    (bundle.cacheStorage.caches || []).forEach(function(cache) {
+      lines.push("- Cache " + cache.name + ": " + (cache.entryCount || 0) + " entries");
+    });
+    if (bundle.cacheStorage.error) lines.push("Cache 错误：" + bundle.cacheStorage.error);
+    lines.push("");
+
+    lines.push("疑似同步 payload：");
+    if (!analysis.likelyPayloads.length) {
+      lines.push("无");
+    } else {
+      analysis.likelyPayloads.forEach(function(item) {
+        lines.push("- " + item.source);
+        lines.push(JSON.stringify(item.summary, null, 2));
+      });
+    }
+    return lines.join("\n");
+  }
+
+  async function runScan() {
+    $("scanBtn").disabled = true;
+    $("downloadBtn").disabled = true;
+    $("copyBtn").disabled = true;
+    $("status").textContent = "正在读取本机存储，请不要关闭页面……";
+    $("status").className = "big-status warn";
+    $("summary").value = "读取中……";
+    $("snippets").textContent = "读取中……";
+
+    const rawBundle = {
+      meta: {
+        generatedAt: new Date().toISOString(),
+        href: location.href,
+        origin: location.origin,
+        pathname: location.pathname,
+        userAgent: navigator.userAgent,
+        language: navigator.language
+      },
+      localStorage: collectLocalStorage(),
+      sessionStorage: collectSessionStorage(),
+      indexedDB: await collectIndexedDB(),
+      cacheStorage: await collectCaches()
+    };
+
+    // ── P0: 先全局脱敏，再分析，确保 snippets/quick/summary 不含敏感信息 ──
+    var safeBundle = sanitizeForExport(rawBundle);
+    var analysis = analyzeBundle(safeBundle);
+    safeBundle.analysis = analysis;
+    lastBundle = safeBundle;
+    lastSummaryText = buildSummary(safeBundle, analysis);
+
+    renderQuick(analysis);
+    $("summary").value = lastSummaryText;
+    $("snippets").textContent = analysis.snippets.length ? analysis.snippets.join("\n\n") : "没有发现关键片段。";
+
+    if (analysis.hasJune18) {
+      $("status").textContent = "发现 2026-06-18 痕迹！请立刻下载完整备份 JSON。";
+      $("status").className = "big-status ok";
+    } else {
+      $("status").textContent = "未发现 2026-06-18 字样，但仍建议下载完整备份 JSON 保存。";
+      $("status").className = "big-status danger";
+    }
+
+    $("scanBtn").disabled = false;
+    $("downloadBtn").disabled = false;
+    $("copyBtn").disabled = false;
+  }
+
+  function downloadBackup() {
+    if (!lastBundle) return;
+    // P0: 再次脱敏后导出
+    const safe = sanitizeForExport(lastBundle);
+    const json = JSON.stringify(safe, null, 2);
+    const blob = new Blob([json], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "shua-ci-ji-local-rescue-" + stamp + ".json";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function() {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 1000);
+  }
+
+  async function copySummary() {
+    if (!lastSummaryText) return;
+    try {
+      await navigator.clipboard.writeText(lastSummaryText);
+      $("status").textContent = "诊断摘要已复制。完整数据请仍然下载 JSON 备份。";
+    } catch (error) {
+      $("status").textContent = "复制失败，请手动长按摘要文本复制。";
+    }
+  }
+
+  $("scanBtn").addEventListener("click", runScan);
+  $("downloadBtn").addEventListener("click", downloadBackup);
+  $("copyBtn").addEventListener("click", copySummary);
+})();
+</script>
+</body>
+</html>
