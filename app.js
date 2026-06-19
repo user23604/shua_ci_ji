@@ -1182,20 +1182,10 @@ function setSetupStatus(message, type = "") {
 }
 
 function renderSyncIndicator() {
-  const info = computeSyncStatus();
-  const label = SYNC_STATUS_LABELS[info.status] || "";
-  const color = SYNC_STATUS_COLORS[info.status] || "#94a3b8";
-  const timeText = info.status === "cloud_saved" && state.syncMeta.lastCloudSaveConfirmedAt
-    ? formatSyncTime(state.syncMeta.lastCloudSaveConfirmedAt)
-    : "";
-  return `
-    <div class="cloud-sync-indicator is-${info.status}" id="cloudSyncIndicator"
-         style="--sync-color:${color}" aria-label="${escapeHtml(info.detail || label)}" title="${escapeHtml(info.detail || label)}">
-      <span class="cloud-sync-indicator__dot"></span>
-      <span class="cloud-sync-indicator__label">${escapeHtml(label)}</span>
-      ${timeText ? `<span class="cloud-sync-indicator__time">${escapeHtml(timeText)}</span>` : ""}
-    </div>
-  `;
+  // 指示器由 updateSyncIndicatorDOM() 管理，挂载在 document.body 上
+  // 这里只触发一次 DOM 创建，后续 render 视图时指示器不受 #app overflow:hidden 影响
+  updateSyncIndicator();
+  return "";
 }
 
 function formatSyncTime(iso) {
@@ -1231,21 +1221,24 @@ function updateSyncIndicatorDOM(info) {
   const timeText = info.status === "cloud_saved" && state.syncMeta.lastCloudSaveConfirmedAt
     ? formatSyncTime(state.syncMeta.lastCloudSaveConfirmedAt)
     : "";
-  const indicator = document.getElementById("cloudSyncIndicator");
-  if (indicator) {
-    indicator.className = `cloud-sync-indicator is-${info.status}`;
-    indicator.style.setProperty("--sync-color", color);
-    indicator.setAttribute("aria-label", info.detail || label);
-    indicator.title = info.detail || label;
-    const dot = indicator.querySelector(".cloud-sync-indicator__dot");
-    if (dot) dot.style.backgroundColor = color;
-    const labelEl = indicator.querySelector(".cloud-sync-indicator__label");
-    if (labelEl) labelEl.textContent = label;
-    const timeEl = indicator.querySelector(".cloud-sync-indicator__time");
-    if (timeEl) {
-      if (timeText) { timeEl.textContent = timeText; timeEl.style.display = ""; }
-      else timeEl.style.display = "none";
-    }
+  var indicator = document.getElementById("cloudSyncIndicator");
+  // 确保指示器挂在 body 上，不被 #app 的 overflow:hidden 裁剪
+  if (!indicator) {
+    indicator = document.createElement("div");
+    indicator.id = "cloudSyncIndicator";
+    indicator.innerHTML = '<span class="cloud-sync-indicator__dot"></span><span class="cloud-sync-indicator__label"></span><span class="cloud-sync-indicator__time"></span>';
+    document.body.appendChild(indicator);
+  }
+  indicator.className = "cloud-sync-indicator is-" + info.status;
+  indicator.style.setProperty("--sync-color", color);
+  var dot = indicator.querySelector(".cloud-sync-indicator__dot");
+  if (dot) dot.style.backgroundColor = color;
+  var labelEl = indicator.querySelector(".cloud-sync-indicator__label");
+  if (labelEl) labelEl.textContent = label;
+  var timeEl = indicator.querySelector(".cloud-sync-indicator__time");
+  if (timeEl) {
+    if (timeText) { timeEl.textContent = timeText; timeEl.style.display = ""; }
+    else timeEl.style.display = "none";
   }
 }
 

@@ -8,25 +8,26 @@
   <link rel="manifest" href="manifest.json" />
   <style>
     .cloud-sync-indicator {
-      display: flex; align-items: center; gap: 6px;
-      position: fixed; top: 12px; right: 12px; z-index: 2000;
-      background: rgba(15,23,42,0.88); backdrop-filter: blur(12px);
-      border-radius: 24px; padding: 6px 12px;
+      display: flex; align-items: center; gap: 5px;
+      position: fixed; top: 10px; top: calc(10px + env(safe-area-inset-top, 0px));
+      right: 8px; right: calc(8px + env(safe-area-inset-right, 0px));
+      z-index: 9999;
+      background: rgba(15,23,42,0.85); backdrop-filter: blur(12px);
+      border-radius: 20px; padding: 5px 10px;
       font-size: 12px; font-weight: 600; color: #e2e8f0;
       cursor: pointer; user-select: none;
       box-shadow: 0 4px 16px rgba(0,0,0,0.28);
-      white-space: nowrap; max-width: 200px; overflow: hidden;
+      white-space: nowrap;
+      pointer-events: auto;
     }
     .cloud-sync-indicator__dot {
-      width: 8px; height: 8px; border-radius: 50%;
+      width: 7px; height: 7px; border-radius: 50%;
       background-color: var(--sync-color, #94a3b8);
       flex-shrink: 0;
     }
-    .cloud-sync-indicator__label {
-      overflow: hidden; text-overflow: ellipsis; flex-shrink: 1;
-    }
+    .cloud-sync-indicator__label { }
     .cloud-sync-indicator__time {
-      color: #94a3b8; font-weight: 400; flex-shrink: 0;
+      color: #94a3b8; font-weight: 400; font-size: 11px;
     }
     .cloud-sync-indicator.is-syncing .cloud-sync-indicator__dot {
       animation: sync-pulse 0.8s ease-in-out infinite;
