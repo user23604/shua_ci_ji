@@ -46,8 +46,14 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
   }
 }
 
+// ── P0.6: runId 过期保护 ──────────────────────────────────────────────
+function isStaleSyncRun(runId) {
+  return runId !== undefined && runId !== null && state.syncRunId !== runId;
+}
+
 // ── P0.6: 同步失败短横幅 ─────────────────────────────────────────────────
 function showSyncFailureBanner(title, detail, options) {
+  if (isStaleSyncRun(options && options.runId)) return;
   var now = Date.now();
   var key = (title || "") + "|" + (detail || "");
   // 相同错误 60s 内不重复
@@ -806,12 +812,16 @@ function backoffDelayForFailure(count) {
   return SYNC_BACKOFF_STEPS_MS[index];
 }
 
-function recordHashSyncFailure(message) {
+function recordHashSyncFailure(message, options) {
+  options = options || {};
+  // P0: 过期 run 不得写失败状态
+  if (isStaleSyncRun(options.runId)) return false;
   const now = new Date();
+  var text = message && message.message ? message.message : String(message || "同步失败");
   state.syncHashState = ensureHashSyncState(state.syncHashState);
   state.syncHashState.localDirty = true;
   state.syncHashState.lastSyncStatus = "error";
-  state.syncHashState.lastSyncError = message || "同步失败";
+  state.syncHashState.lastSyncError = text;
   state.syncHashState.consecutiveSyncFailures += 1;
   state.syncHashState.nextRetryAt = new Date(now.getTime() + backoffDelayForFailure(state.syncHashState.consecutiveSyncFailures - 1)).toISOString();
   state.syncMeta.lastSyncErrorAt = now.toISOString();
@@ -820,6 +830,9 @@ function recordHashSyncFailure(message) {
   persistHashSyncState();
   appendAuditEvent({ type: "sync:failed", message: state.syncHashState.lastSyncError });
   updateSyncIndicator();
+  // P0.6: 单一出口弹横幅
+  if (options.banner === true) showSyncFailureBanner("同步失败", text, { runId: options.runId });
+  return true;
 }
 
 function safeSetLocalStorage(key, value) {
@@ -1382,7 +1395,6 @@ function migrateHashSyncStateIfNeeded() {
 function tryRestoreFromBackupIfPayloadEmpty() {
   var payload = normalizeSyncPayload(collectSyncPayload());
   if (!isEffectivelyEmptyLocalPayload(payload)) return "payload_has_data";
-  if (!hasNonEmptyBackupData()) return "no_backup";
 
   var today = localDateKey();
   var yesterday = localDateKey(new Date(Date.now() - 86400000));
@@ -1391,16 +1403,24 @@ function tryRestoreFromBackupIfPayloadEmpty() {
   // P0: 兼容多种 backup 结构提取业务 payload
   function extractBusinessPayloadFromBackup(raw) {
     if (!raw) return null;
-    try {
-      var parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object") return null;
-      if (parsed.payload && typeof parsed.payload === "object") return parsed.payload;
-      if (parsed.snapshot && typeof parsed.snapshot === "object") return parsed.snapshot;
-      if (parsed.data && typeof parsed.data === "object") return parsed.data;
-      if (parsed.businessPayload && typeof parsed.businessPayload === "object") return parsed.businessPayload;
-      // Fallback: raw itself might be a pure business payload
-      if (parsed.progress || parsed.marks || parsed.activity || parsed.unitStats) return parsed;
-    } catch (_) { return null; }
+    var obj = raw;
+    if (typeof obj === "string") {
+      try { obj = JSON.parse(obj); } catch (_) { return null; }
+    }
+    if (!obj || typeof obj !== "object") return null;
+    var innerCandidates = [
+      obj.payload, obj.snapshot, obj.data, obj.businessPayload, obj.syncPayload,
+      obj.payload && obj.payload.payload,
+      obj.snapshot && obj.snapshot.payload,
+      obj
+    ].filter(Boolean);
+    for (var ci = 0; ci < innerCandidates.length; ci++) {
+      var item = innerCandidates[ci];
+      if (!item || typeof item !== "object") continue;
+      if (item.progress || item.marks || item.activity || item.unitStats || item.settings || item.unknownProgress) {
+        return { settings: item.settings || {}, progress: item.progress || {}, unknownProgress: item.unknownProgress || item.unknown_progress || {}, marks: item.marks || {}, activity: item.activity || {}, unitStats: item.unitStats || item.unit_stats || {} };
+      }
+    }
     return null;
   }
 
@@ -1453,7 +1473,9 @@ function tryRestoreFromBackupIfPayloadEmpty() {
       state.syncHashState.baseRemoteHash = "";
       state.syncHashState.dirtySince = new Date().toISOString();
       state.syncHashState.lastSyncStatus = "dirty";
-      state.syncHashState.lastSyncError = "已从本地备份 " + candidate.source + " 恢复业务数据";
+      state.syncHashState.lastSyncError = "";
+      state.syncHashState.consecutiveSyncFailures = 0;
+      state.syncHashState.nextRetryAt = "";
       state.syncHashState.localRecoveryRequired = false;
       persistHashSyncState();
       appendAuditEvent({ type: "backup:restored", message: "从 " + candidate.source + " 恢复" });
@@ -1778,7 +1800,7 @@ function renderSyncDiagnostics() {
   if (backups.length > 0) {
     var recentBackups = backups.slice(-5).reverse();
     lines.push('<div style="font-size:11px;color:#94a3b8;">最近备份：' + recentBackups.map(function(b) {
-      return escapeHtml((b.tag || "?") + " " + (b.savedAt || "").slice(0, 19));
+      return escapeHtml((b.kind || b.tag || "?") + " " + (b.savedAt || b.timestamp || b.createdAt || "").slice(0, 19));
     }).join("；") + '</div>');
   }
   lines.push('<div>今日备份：' + escapeHtml(getDailyBackupTime()) + '</div>');
@@ -4588,7 +4610,7 @@ async function initializeP0Sync({ reason = "init" } = {}) {
           enterSyncInfoMode("已从云端加载");
           return true;
         }
-        recordHashSyncFailure("云端数据应用失败");
+        recordHashSyncFailure("云端数据应用失败", { runId: runId });
         return false;
       }
       markHashCleanFromRemote(remote, local.hash, "local_only");
@@ -4700,9 +4722,8 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     if (age > 45000) {
       state.isSyncing = false;
       state.syncStartedAt = 0;
-      state.syncRunId = 0;
-      recordHashSyncFailure("同步超时：上一次同步超过 45 秒未结束，已自动释放同步锁");
-      showSyncFailureBanner("同步超时", "上一次同步超过 45 秒未结束，将自动重试。");
+      state.syncRunId = ++state.syncRunSeq; // 关键：旧 runId 立即失效
+      recordHashSyncFailure("同步超时：上一次同步超过 45 秒未结束，已自动释放同步锁", { banner: true });
       updateSyncIndicator();
     } else {
       return false;
@@ -4731,8 +4752,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   setSyncStatus("syncing");
   try {
     const remote = await fetchGistSyncPayload();
-    // P0.6: 过期 run 作废
-    if (state.syncRunId !== runId) return false;
+    if (isStaleSyncRun(runId)) return false;
     const remotePayload = currentRemotePayload(remote);
     const remoteHash = currentRemoteHash(remote);
     const local = refreshLocalPayloadHash({ persist: false });
@@ -4740,8 +4760,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     const effectiveDirty = syncState.localDirty === true || local.hash !== syncState.baseRemoteHash;
 
     if (remote.kind !== "valid" && remote.kind !== "empty") {
-      recordHashSyncFailure("云端 sync.json 无法解析，已停止同步");
-      showSyncFailureBanner("同步失败", "云端 sync.json 无法解析");
+      recordHashSyncFailure("云端 sync.json 无法解析，已停止同步", { banner: true, runId: runId });
       return false;
     }
 
@@ -4749,10 +4768,10 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
       const strictlyEmpty = isStrictlyEmptyLocalPayload(local.payload);
       if (strictlyEmpty && !effectiveDirty && remotePayload) {
         writeHashBackup("pre_pull", local.payload, reason);
-        // P0.6: 过期 run 不得覆盖本地
-        if (state.syncRunId === runId && applyRemotePayloadSafely(remotePayload)) {
+        // P0: 过期 run 不得覆盖本地、不得写 cloud_loaded
+        if (!isStaleSyncRun(runId) && applyRemotePayloadSafely(remotePayload)) {
           renderCurrentView({ touchProgress: false });
-          if (state.syncRunId === runId) markHashCleanFromRemote(remote, remoteHash, "cloud_loaded");
+          if (!isStaleSyncRun(runId)) markHashCleanFromRemote(remote, remoteHash, "cloud_loaded");
         }
       }
       setReadOnlySyncState("PAT 无效或无写权限，当前只读；不会上传或显示云端已保存。");
@@ -4768,7 +4787,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     }
 
     if (remoteHash === syncState.baseRemoteHash && effectiveDirty) {
-      return syncBranchPushLocal({ remote, local, keepalive, reason });
+      return syncBranchPushLocal({ remote, local, keepalive, reason, runId: runId });
     }
 
     if (remoteHash !== syncState.baseRemoteHash && !effectiveDirty) {
@@ -4777,29 +4796,29 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
         return false;
       }
       writeHashBackup("pre_pull", local.payload, reason);
-      // P0.6: 过期 run 不得覆盖本地
-      if (state.syncRunId !== runId) return false;
+      if (isStaleSyncRun(runId)) return false;
       const recheck = currentSyncFacts({ persistHash: true });
       if (!recheck.effectiveDirty) {
-        if (state.syncRunId === runId && applyRemotePayloadSafely(remotePayload)) {
+        if (!isStaleSyncRun(runId) && applyRemotePayloadSafely(remotePayload)) {
           renderCurrentView({ touchProgress: false });
-          if (state.syncRunId === runId) markHashCleanFromRemote(remote, remoteHash, "cloud_loaded");
+          if (!isStaleSyncRun(runId)) markHashCleanFromRemote(remote, remoteHash, "cloud_loaded");
           return true;
         }
-        recordHashSyncFailure("云端数据应用失败");
+        recordHashSyncFailure("云端数据应用失败", { runId: runId });
         return false;
       }
-      return syncBranchMerge({ remote, remotePayload, local: recheck, keepalive, reason });
+      return syncBranchMerge({ remote, remotePayload, local: recheck, keepalive, reason, runId: runId });
     }
 
-    return syncBranchMerge({ remote, remotePayload, local, keepalive, reason });
+    return syncBranchMerge({ remote, remotePayload, local, keepalive, reason, runId: runId });
   } catch (error) {
-    var message = syncErrorMessage(error);
-    recordHashSyncFailure(message);
-    showSyncFailureBanner("同步失败", message);
+    if (!isStaleSyncRun(runId)) {
+      var message = syncErrorMessage(error);
+      recordHashSyncFailure(message, { banner: true, runId: runId });
+    }
     return false;
   } finally {
-    if (state.syncRunId === runId) {
+    if (!isStaleSyncRun(runId)) {
       state.isSyncing = false;
       state.syncStartedAt = 0;
       updateSyncIndicator();
@@ -4807,22 +4826,26 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   }
 }
 
-async function syncBranchPushLocal({ remote, local, keepalive, reason }) {
+async function syncBranchPushLocal({ remote, local, keepalive, reason, runId }) {
+  if (isStaleSyncRun(runId)) return false;
   const payload = normalizeSyncPayload(local.payload);
   writeHashBackup("pre_push", payload, reason);
   const uploadedHash = businessPayloadHash(payload);
-  const result = await patchBusinessPayloadToGist(payload, { remote, keepalive });
+  const result = await patchBusinessPayloadToGist(payload, { remote, keepalive, runId: runId });
+  if (isStaleSyncRun(runId)) return false;
   if (!result.ok) return false;
   return finalizeVerifiedPatch({
     uploadedPayload: payload,
     uploadedHash,
     verifiedRemote: result.remote,
     localHashAtBuild: local.hash,
-    applyUploadedToLocal: false
+    applyUploadedToLocal: false,
+    runId: runId
   });
 }
 
-async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason }) {
+async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason, runId }) {
+  if (isStaleSyncRun(runId)) return false;
   if (!remotePayload) remotePayload = normalizeSyncPayload({});
   const currentLocal = local && local.payload ? local : refreshLocalPayloadHash({ persist: true });
   writeHashBackup("pre_merge", currentLocal.payload, reason);
@@ -4837,18 +4860,20 @@ async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason
     return false;
   }
   const uploadedHash = businessPayloadHash(normalized);
-  const result = await patchBusinessPayloadToGist(normalized, { remote, keepalive });
+  const result = await patchBusinessPayloadToGist(normalized, { remote, keepalive, runId: runId });
+  if (isStaleSyncRun(runId)) return false;
   if (!result.ok) return false;
   return finalizeVerifiedPatch({
     uploadedPayload: normalized,
     uploadedHash,
     verifiedRemote: result.remote,
     localHashAtBuild: currentLocal.localPayloadHash || currentLocal.hash,
-    applyUploadedToLocal: true
+    applyUploadedToLocal: true,
+    runId: runId
   });
 }
 
-async function patchBusinessPayloadToGist(payload, { remote, keepalive = false } = {}) {
+async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, runId } = {}) {
   const normalized = normalizeSyncPayload(payload);
   if (!validateSyncPayload(normalized)) {
     recordHashSyncFailure("准备上传的数据校验失败");
@@ -4875,12 +4900,12 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false }
       body: JSON.stringify({ files })
     }, 20000);
   } catch (error) {
-    recordHashSyncFailure("网络请求失败：" + (error && error.message || "unknown"));
+    recordHashSyncFailure("网络请求失败：" + (error && error.message || "unknown"), { banner: true, runId: runId });
     return { ok: false };
   }
 
   if (!response.ok) {
-    recordHashSyncFailure(syncErrorMessage({ message: "云端 PATCH 失败：" + response.status }));
+    recordHashSyncFailure(syncErrorMessage({ message: "云端 PATCH 失败：" + response.status }), { banner: true, runId: runId });
     return { ok: false };
   }
 
@@ -4889,38 +4914,39 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false }
   try {
     verified = await fetchGistSyncPayload();
   } catch (error) {
-    recordHashSyncFailure("PATCH 成功但 GET 校验失败：" + (error && error.message || "unknown"));
+    recordHashSyncFailure("PATCH 成功但 GET 校验失败：" + (error && error.message || "unknown"), { banner: true, runId: runId });
     return { ok: false };
   }
 
   if (verified.kind !== "valid") {
-    recordHashSyncFailure("PATCH 成功但云端 sync.json 无法通过校验");
+    recordHashSyncFailure("PATCH 成功但云端 sync.json 无法通过校验", { banner: true, runId: runId });
     return { ok: false };
   }
   const verifiedHash = currentRemoteHash(verified);
   if (verifiedHash !== uploadedHash) {
-    recordHashSyncFailure("PATCH 成功但云端内容 hash 不匹配");
+    recordHashSyncFailure("PATCH 成功但云端内容 hash 不匹配", { banner: true, runId: runId });
     return { ok: false };
   }
   // P0: PATCH 后 GET hash 匹配即确认成功。remoteVersion 仅 audit，不阻断。
   return { ok: true, remote: verified, uploadedHash };
 }
 
-function finalizeVerifiedPatch({ uploadedPayload, uploadedHash, verifiedRemote, localHashAtBuild, applyUploadedToLocal = false }) {
+function finalizeVerifiedPatch({ uploadedPayload, uploadedHash, verifiedRemote, localHashAtBuild, applyUploadedToLocal = false, runId }) {
   let current = refreshLocalPayloadHash({ persist: false });
   // P0.6: 过期 run 不得清 dirty、不得写 cloud_saved
-  const runId = state.syncRunId;
+  // P0: 参数 runId 来自 syncTick，过期 run 不得写 cloud_saved
+  if (isStaleSyncRun(runId)) return false;
   if (current.hash === uploadedHash) {
-    if (runId === state.syncRunId) markHashCleanFromRemote(verifiedRemote, uploadedHash, "cloud_saved");
+    if (!isStaleSyncRun(runId)) markHashCleanFromRemote(verifiedRemote, uploadedHash, "cloud_saved");
     return true;
   }
 
   if (applyUploadedToLocal && current.hash === localHashAtBuild) {
-    if (runId === state.syncRunId && applyRemotePayloadSafely(uploadedPayload)) {
+    if (!isStaleSyncRun(runId) && applyRemotePayloadSafely(uploadedPayload)) {
       renderCurrentView({ touchProgress: false });
       current = refreshLocalPayloadHash({ persist: false });
       if (current.hash === uploadedHash) {
-        if (runId === state.syncRunId) markHashCleanFromRemote(verifiedRemote, uploadedHash, "cloud_saved");
+        if (!isStaleSyncRun(runId)) markHashCleanFromRemote(verifiedRemote, uploadedHash, "cloud_saved");
         return true;
       }
     }
