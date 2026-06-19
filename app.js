@@ -2653,6 +2653,22 @@ function collectLocalProgressMap() {
   }, {});
 }
 
+function collectLocalSyncDecisionPayload() {
+  const progress = {};
+  const unknownProgress = {};
+  const marks = {};
+  const activity = {};
+  const unitStats = {};
+  BOOKS.forEach((book) => {
+    progress[book.id] = loadProgress(book.id);
+    unknownProgress[book.id] = collectUnknownProgressForBook(book);
+    marks[book.id] = loadMarks(book.id);
+    activity[book.id] = loadActivity(book.id);
+    unitStats[book.id] = loadUnitStats(book.id);
+  });
+  return { progress, unknownProgress, marks, activity, unitStats };
+}
+
 function progressDepth(progress) {
   const sanitized = sanitizeProgressPayload(progress);
   const unit = Number(sanitized.unit) || 0;
@@ -2665,10 +2681,62 @@ function progressMapScore(progressMap) {
   return BOOKS.reduce((score, book) => score + progressDepth(progressMap[book.id]), 0);
 }
 
+function unknownProgressMapScore(progressMap) {
+  if (!isPlainObject(progressMap)) return 0;
+  return BOOKS.reduce((score, book) => {
+    const item = isPlainObject(progressMap[book.id]) ? progressMap[book.id] : {};
+    const unitScore = isPlainObject(item.units)
+      ? Object.values(item.units).reduce((sum, progress) => sum + progressDepth(progress), 0)
+      : 0;
+    return score + progressDepth(item.book) + unitScore;
+  }, 0);
+}
+
+function marksMapScore(marksMap) {
+  if (!isPlainObject(marksMap)) return 0;
+  return BOOKS.reduce((score, book) => {
+    const marks = sanitizeMarksPayload(marksMap[book.id]);
+    return score + marks.known.length + marks.unknown.length;
+  }, 0);
+}
+
+function activityMapScore(activityMap) {
+  if (!isPlainObject(activityMap)) return 0;
+  return BOOKS.reduce((score, book) => {
+    const activity = sanitizeActivityPayload(activityMap[book.id]);
+    return score + Object.values(activity.days).reduce((sum, day) => (
+      sum + (Number(day.words) || 0) + (Number(day.known) || 0) + (Number(day.unknown) || 0) + normalizeIdList(day.wordIds).length
+    ), 0);
+  }, 0);
+}
+
+function unitStatsMapScore(unitStatsMap) {
+  if (!isPlainObject(unitStatsMap)) return 0;
+  return BOOKS.reduce((score, book) => {
+    const stats = sanitizeUnitStatsPayload(unitStatsMap[book.id]);
+    return score + Object.values(stats.units).reduce((sum, unit) => sum + (Number(unit.completed) || 0), 0);
+  }, 0);
+}
+
+function syncContentScore(payload) {
+  if (!isPlainObject(payload)) return 0;
+  return (
+    progressMapScore(payload.progress) +
+    unknownProgressMapScore(payload.unknownProgress) +
+    marksMapScore(payload.marks) * 1000000 +
+    activityMapScore(payload.activity) * 100000 +
+    unitStatsMapScore(payload.unitStats) * 100000
+  );
+}
+
 function chooseSyncSource(remotePayload) {
+  const remoteContentScore = syncContentScore(remotePayload);
+  const localPayload = collectLocalSyncDecisionPayload();
+  const localContentScore = syncContentScore(localPayload);
+  if (remoteContentScore > localContentScore) return { source: "remote", reason: "content" };
+  if (localContentScore > remoteContentScore) return { source: "local", reason: "content" };
   const remoteScore = progressMapScore(remotePayload?.progress);
-  const localProgress = collectLocalProgressMap();
-  const localScore = progressMapScore(localProgress);
+  const localScore = progressMapScore(localPayload.progress);
   if (remoteScore > localScore) return { source: "remote", reason: "progress" };
   if (localScore > remoteScore) return { source: "local", reason: "progress" };
   const remoteMs = dateMs(remotePayload?.updatedAt);
