@@ -3213,15 +3213,38 @@ async function fetchGistSyncPayload() {
   const gist = await response.json();
   const remoteVersion = gist.history?.[0]?.version || gist.updated_at || "";
   const remoteUpdatedAt = gist.updated_at || "";
-  const file = gist.files?.[SYNC_FILE_NAME];
-  if (!file) return { kind: "empty", rawContent: "", remoteVersion, remoteUpdatedAt };
-  const content = await readGistFileContent(file);
-  return {
-    ...parseSyncPayloadContent(content),
-    rawContent: content,
-    remoteVersion,
-    remoteUpdatedAt
-  };
+  const files = gist.files || {};
+  const primary = files[SYNC_FILE_NAME];
+  if (primary) {
+    const content = await readGistFileContent(primary);
+    return {
+      ...parseSyncPayloadContent(content),
+      rawContent: content,
+      remoteVersion,
+      remoteUpdatedAt,
+      fileName: SYNC_FILE_NAME
+    };
+  }
+
+  // Compatibility fallback: some older/manual Gists may store the same payload under
+  // another .json filename. Read a valid version:1 payload instead of treating the
+  // Gist as empty and creating a new blank sync.json.
+  const candidates = Object.values(files)
+    .filter((file) => file && file.filename !== SYNC_BACKUP_FILE_NAME && /\.json$/i.test(file.filename || ""));
+  for (const file of candidates) {
+    const content = await readGistFileContent(file);
+    const parsed = parseSyncPayloadContent(content);
+    if (parsed.kind === "valid") {
+      return {
+        ...parsed,
+        rawContent: content,
+        remoteVersion,
+        remoteUpdatedAt,
+        fileName: file.filename || ""
+      };
+    }
+  }
+  return { kind: "empty", rawContent: "", remoteVersion, remoteUpdatedAt, fileName: "" };
 }
 
 async function readGistFileContent(file) {
@@ -3281,6 +3304,7 @@ async function runGistSync({ keepalive = false } = {}) {
       markSyncedWithRemote(remote, remote.payload);
       clearPendingOps();
       renderCurrentView({ touchProgress: false });
+      enterSyncInfoMode("已同步云端最新学习数据。");
       setSyncStatus("ok");
       return true;
     }
@@ -3291,6 +3315,7 @@ async function runGistSync({ keepalive = false } = {}) {
         markSyncedWithRemote(remote, remote.payload);
         clearPendingOps();
         renderCurrentView({ touchProgress: false });
+        enterSyncInfoMode("已从云端恢复学习数据。");
         setSyncStatus("ok");
         return true;
       }
@@ -3315,6 +3340,7 @@ async function runGistSync({ keepalive = false } = {}) {
       markSyncedWithRemote(remote, remote.payload);
       clearPendingOps();
       renderCurrentView({ touchProgress: false });
+      enterSyncInfoMode("已同步云端最新学习数据。");
       setSyncStatus("ok");
       return true;
     }
@@ -3333,8 +3359,8 @@ async function runGistSync({ keepalive = false } = {}) {
     }
     setSyncStatus("ok");
     return true;
-  } catch {
-    setSyncStatus("error");
+  } catch (error) {
+    enterSafeConflictMode(syncErrorMessage(error));
     return false;
   }
 }
@@ -3438,8 +3464,26 @@ function markSyncedWithRemote(remote, payload) {
 }
 
 function enterSafeConflictMode(message) {
-  if (state.view === "setup") state.setupStatus = { message, type: "error" };
+  if (state.view === "setup") {
+    state.setupStatus = { message, type: "error" };
+    renderSetup();
+  }
   setSyncStatus("error");
+}
+
+function enterSyncInfoMode(message) {
+  if (state.view === "setup") {
+    state.setupStatus = { message, type: "success" };
+    renderSetup();
+  }
+}
+
+function syncErrorMessage(error) {
+  const raw = error?.message || "云同步失败";
+  if (/401/.test(raw)) return "云同步失败：GitHub Token 无效或没有 Gist 权限。请检查 PAT。";
+  if (/403/.test(raw)) return "云同步失败：GitHub API 拒绝访问，可能是 Token 权限或频率限制。";
+  if (/404/.test(raw)) return "云同步失败：没有找到这个 Gist。请检查 Gist ID 是否正确，以及 Token 是否能访问它。";
+  return raw;
 }
 
 function applySyncPayload(payload) {

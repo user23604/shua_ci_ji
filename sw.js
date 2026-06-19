@@ -1,7 +1,7 @@
 "use strict";
 
 const CACHE_PREFIX = "vocab-machine-";
-const CACHE_NAME = `${CACHE_PREFIX}v26`;
+const CACHE_NAME = `${CACHE_PREFIX}v27`;
 const CORE_ASSETS = [
   "./",
   "./index.html",
