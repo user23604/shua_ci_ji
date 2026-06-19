@@ -13,18 +13,19 @@ const PLAYBACK_RATE_MAX = 10;
 const PLAYBACK_RATE_STEP = 0.05;
 const SPEECH_RATE_MIN = 0.5;
 const SPEECH_RATE_MAX = PLAYBACK_RATE_MAX;
-// 播放倍速是“自动播放速度”，不是单独语速；它会同时影响朗读、中文出现延迟和自动跳词节奏。
+// 朗读倍速只控制 Web Speech 语速；所有停留和延迟都按用户设置的绝对毫秒值执行。
 const SPEECH_START_TIMEOUT_MS = 900;
 const SPEECH_POLL_MS = 120;
+const PRE_READ_DELAY_MIN = 0;
+const PRE_READ_DELAY_MAX = 3000;
+const PRE_READ_DELAY_STEP = 50;
+const PRE_READ_DELAY_DEFAULT = 500;
 const ZH_DELAY_MIN = 0;
-const ZH_DELAY_MAX = 4000;
-const RETENTION_PAUSE_MIN = 200;
-const RETENTION_PAUSE_MAX = 2500;
+const ZH_DELAY_MAX = 5000;
+const RETENTION_PAUSE_MIN = 0;
+const RETENTION_PAUSE_MAX = 5000;
 const RETENTION_PAUSE_STEP = 50;
 const RETENTION_PAUSE_DEFAULT = 850;
-const POST_ZH_REVIEW_RATIO = 0.76;
-const RETENTION_PAUSE_FLOOR_RATIO = 0.38;
-const RETENTION_PAUSE_FLOOR_MIN = 160;
 const SHANGUO_BOOK_ID = "27ky-shanguo-gaopin";
 const SYNC_STATUS_LABELS = {
   idle: "云同步空闲",
@@ -34,16 +35,22 @@ const SYNC_STATUS_LABELS = {
 };
 const SUMMARY_MODES = new Set(["count", "unit", "manual"]);
 const STUDY_MODES = new Set(["restart", "resume"]);
+const QUEUE_MODES = new Set(["main", "unknown"]);
+const UNKNOWN_SCOPES = new Set(["unit", "book"]);
 const PER_BOOK_SETTING_KEYS = [
   "unit",
+  "queueMode",
+  "unknownScope",
   "mode",
   "summaryMode",
   "summaryCount",
   "speakEn",
   "speakZh",
   "rate",
+  "preReadDelay",
   "zhDelay",
   "retentionPause",
+  "manualMode",
   "highOnly"
 ];
 const BOOKS = [
@@ -76,8 +83,12 @@ const DEFAULT_SETTINGS = {
   speakEn: true,
   speakZh: false,
   rate: 1,
+  preReadDelay: PRE_READ_DELAY_DEFAULT,
   zhDelay: 1200,
   retentionPause: RETENTION_PAUSE_DEFAULT,
+  manualMode: false,
+  queueMode: "main",
+  unknownScope: "unit",
   highOnly: false,
   bookSettings: {}
 };
@@ -115,9 +126,13 @@ const state = {
   wakeLock: null,
   playbackPaused: false,
   resumeFeedback: false,
+  markFeedback: "",
   cardStartedAt: 0,
   cardEnterDirection: "",
+  currentWordId: null,
   currentWordRecorded: false,
+  transitioning: false,
+  navQueue: [],
   pointer: null,
   suppressNextCardClickPause: false,
   syncStatus: "idle",
@@ -151,6 +166,11 @@ function progressKey(bookId) {
   return `progress:${bookId}`;
 }
 
+function unknownProgressKey(bookId, scope = currentUnknownScope()) {
+  if (scope.scope === "book") return `unknown_progress:${bookId}:book`;
+  return `unknown_progress:${bookId}:unit:${scope.unit}`;
+}
+
 function marksKey(bookId) {
   return `marks:${bookId}`;
 }
@@ -169,6 +189,15 @@ function loadProgress(bookId) {
 
 function saveProgress(bookId, progress, { touch = true } = {}) {
   saveJson(progressKey(bookId), sanitizeProgressPayload(progress));
+  if (touch) touchLocalSync();
+}
+
+function loadUnknownProgress(bookId, scope = currentUnknownScope()) {
+  return sanitizeProgressPayload(loadJson(unknownProgressKey(bookId, scope), { lastWordId: null }));
+}
+
+function saveUnknownProgress(bookId, scope, progress, { touch = true } = {}) {
+  saveJson(unknownProgressKey(bookId, scope), sanitizeProgressPayload(progress));
   if (touch) touchLocalSync();
 }
 
@@ -227,6 +256,8 @@ function bookContextLabel(book, unit = state.settings.unit) {
 function persistSettings({ touch = true } = {}) {
   const book = currentBook();
   state.settings.unit = clamp(Number(state.settings.unit) || 1, 1, book.totalUnits);
+  state.settings.queueMode = QUEUE_MODES.has(state.settings.queueMode) ? state.settings.queueMode : DEFAULT_SETTINGS.queueMode;
+  state.settings.unknownScope = UNKNOWN_SCOPES.has(state.settings.unknownScope) ? state.settings.unknownScope : DEFAULT_SETTINGS.unknownScope;
   rememberCurrentBookSettings(book.id);
   saveJson(SETTINGS_KEY, state.settings);
   if (touch) touchLocalSync();
@@ -272,14 +303,18 @@ function normalizeBookSettingValues(book, values) {
   const source = { ...DEFAULT_SETTINGS, ...(isPlainObject(values) ? values : {}) };
   return {
     unit: clamp(Number(source.unit) || 1, 1, book.totalUnits),
+    queueMode: QUEUE_MODES.has(source.queueMode) ? source.queueMode : DEFAULT_SETTINGS.queueMode,
+    unknownScope: UNKNOWN_SCOPES.has(source.unknownScope) ? source.unknownScope : DEFAULT_SETTINGS.unknownScope,
     mode: STUDY_MODES.has(source.mode) ? source.mode : DEFAULT_SETTINGS.mode,
     summaryMode: SUMMARY_MODES.has(source.summaryMode) ? source.summaryMode : DEFAULT_SETTINGS.summaryMode,
     summaryCount: clamp(Number(source.summaryCount) || DEFAULT_SETTINGS.summaryCount, 5, 200),
     speakEn: typeof source.speakEn === "boolean" ? source.speakEn : DEFAULT_SETTINGS.speakEn,
     speakZh: typeof source.speakZh === "boolean" ? source.speakZh : DEFAULT_SETTINGS.speakZh,
     rate: clamp(Number(source.rate) || DEFAULT_SETTINGS.rate, PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX),
+    preReadDelay: clampFinite(source.preReadDelay, DEFAULT_SETTINGS.preReadDelay, PRE_READ_DELAY_MIN, PRE_READ_DELAY_MAX),
     zhDelay: clampFinite(source.zhDelay, DEFAULT_SETTINGS.zhDelay, ZH_DELAY_MIN, ZH_DELAY_MAX),
     retentionPause: clampFinite(source.retentionPause, DEFAULT_SETTINGS.retentionPause, RETENTION_PAUSE_MIN, RETENTION_PAUSE_MAX),
+    manualMode: typeof source.manualMode === "boolean" ? source.manualMode : DEFAULT_SETTINGS.manualMode,
     highOnly: typeof source.highOnly === "boolean" ? source.highOnly : DEFAULT_SETTINGS.highOnly
   };
 }
@@ -787,11 +822,9 @@ function renderSetup() {
   normalizeSettings();
   const book = currentBook();
   const setupWords = state.wordsByBook.get(book.id) || [];
-  const unitOptions = Array.from({ length: book.totalUnits }, (_, index) => {
-    const unit = index + 1;
-    const label = unitOptionLabel(book, unit, setupWords);
-    return `<option value="${unit}" ${unit === state.settings.unit ? "selected" : ""}>${escapeHtml(label)}</option>`;
-  }).join("");
+  const unknownMode = state.settings.queueMode === "unknown";
+  const unitOptions = renderUnitSelectOptions(book, setupWords);
+  const unitSelectLabel = unknownMode ? "重难点范围" : "目标 Unit";
   const bookOptions = BOOKS.map((item) => `
     <option value="${escapeHtml(item.id)}" ${item.id === state.settings.bookId ? "selected" : ""}>${escapeHtml(item.name)}</option>
   `).join("");
@@ -825,9 +858,12 @@ function renderSetup() {
               <select class="select" id="bookSelect">${bookOptions}</select>
             </label>
             <label class="field-label">
-              目标 Unit
+              ${escapeHtml(unitSelectLabel)}
               <select class="select" id="unitSelect">${unitOptions}</select>
             </label>
+            <div class="toggle-grid">
+              ${toggle("unknownMode", "重难点词库", unknownMode)}
+            </div>
             ${renderSelectedUnitStats(book, setupWords)}
             <div class="radio-group">
               ${radio("mode", "restart", "从选定 Unit 开头重新开始")}
@@ -840,9 +876,13 @@ function renderSetup() {
           <h2 class="panel-title">节奏控制</h2>
           <div class="control-list">
             ${rateRangeControl()}
+            ${rangeControl("preReadDelayInput", "读前停留", state.settings.preReadDelay, "ms", PRE_READ_DELAY_MIN, PRE_READ_DELAY_MAX, PRE_READ_DELAY_STEP)}
+            ${rangeControl("zhDelayInput", "中文出现延迟", state.settings.zhDelay, "ms", ZH_DELAY_MIN, ZH_DELAY_MAX, 50)}
             ${rangeControl("retentionPauseInput", "读后停留", state.settings.retentionPause, "ms", RETENTION_PAUSE_MIN, RETENTION_PAUSE_MAX, RETENTION_PAUSE_STEP)}
-            ${rangeControl("zhDelayInput", "中文出现延迟", state.settings.zhDelay, "ms", ZH_DELAY_MIN, ZH_DELAY_MAX, 100)}
-            <div class="status">自动节奏由英文朗读、读后记忆停留、中文出现延迟、中文简读和播放倍速共同决定。</div>
+            <div class="toggle-grid">
+              ${toggle("manualMode", "手动模式", state.settings.manualMode)}
+            </div>
+            <div class="status">朗读倍速只影响中英文读音；读前停留、中文出现延迟和读后停留均为绝对时间。</div>
             <label class="field-label">
               总结节点
               <select class="select" id="summaryMode">
@@ -919,16 +959,61 @@ function primeSetupBookData(book) {
     });
 }
 
+function renderUnitSelectOptions(book, words) {
+  const options = [];
+  if (state.settings.queueMode === "unknown") {
+    const allCount = unknownWordsForScope(book.id, words, { scope: "book" }).length;
+    options.push(`<option value="all" ${state.settings.unknownScope === "book" ? "selected" : ""}>整本词书 · 重难点 ${allCount} 个</option>`);
+  }
+  Array.from({ length: book.totalUnits }, (_, index) => index + 1).forEach((unit) => {
+    const label = state.settings.queueMode === "unknown"
+      ? unknownUnitOptionLabel(book, unit, words)
+      : unitOptionLabel(book, unit, words);
+    const selected = state.settings.unknownScope !== "book" && unit === state.settings.unit;
+    options.push(`<option value="${unit}" ${selected ? "selected" : ""}>${escapeHtml(label)}</option>`);
+  });
+  return options.join("");
+}
+
 function unitOptionLabel(book, unit, words) {
   const info = unitProgressInfo(book, unit, words);
   const progress = info.total ? `${info.seen}/${info.total}` : "加载中";
   return `${unitDisplayLabel(book, unit)} · 进度 ${progress} · 完整看完 ${info.completed} 次`;
 }
 
+function unknownUnitOptionLabel(book, unit, words) {
+  const count = unknownWordsForScope(book.id, words, { scope: "unit", unit }).length;
+  return `${unitDisplayLabel(book, unit)} · 重难点 ${count} 个`;
+}
+
 function renderSelectedUnitStats(book, words) {
+  if (state.settings.queueMode === "unknown") {
+    const scope = currentUnknownScope();
+    const items = unknownWordsForScope(book.id, words, scope);
+    const progress = loadUnknownProgress(book.id, scope);
+    const lastWordId = Number(progress.lastWordId);
+    const index = items.findIndex((word) => Number(word.id) === lastWordId);
+    const seen = index >= 0 ? index + 1 : 0;
+    const label = scope.scope === "book" ? "整本词书重难点" : `${unitDisplayLabel(book, scope.unit)} 重难点`;
+    return `<div class="status">当前 ${escapeHtml(label)}：${items.length} 个 · 恢复进度 ${seen}/${items.length || 0}</div>`;
+  }
   const info = unitProgressInfo(book, state.settings.unit, words);
   const progress = info.total ? `${info.seen}/${info.total}` : "正在读取词表";
   return `<div class="status">当前 ${escapeHtml(unitDisplayLabel(book, state.settings.unit))}：进度 ${escapeHtml(progress)} · 完整看完 ${info.completed} 次</div>`;
+}
+
+function currentUnknownScope() {
+  const book = currentBook();
+  if (state.settings.unknownScope === "book") return { scope: "book" };
+  return { scope: "unit", unit: clamp(Number(state.settings.unit) || 1, 1, book.totalUnits) };
+}
+
+function unknownWordsForScope(bookId, words = state.words, scope = currentUnknownScope()) {
+  const unknownIds = new Set(loadMarks(bookId).unknown.map(Number));
+  return words.filter((word) => {
+    if (!unknownIds.has(Number(word.id))) return false;
+    return scope.scope === "book" || Number(word.unit) === Number(scope.unit);
+  });
 }
 
 function unitProgressInfo(book, unit, words = []) {
@@ -966,7 +1051,7 @@ function toggle(key, label, checked) {
 
 function rateRangeControl() {
   const rate = playbackRate();
-  return rangeControl("rateInput", "播放倍速", rate, "x", PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX, PLAYBACK_RATE_STEP, formatRate(rate));
+  return rangeControl("rateInput", "朗读倍速", rate, "x", PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX, PLAYBACK_RATE_STEP, formatRate(rate));
 }
 
 function rangeControl(id, label, value, unit, min, max, step, displayValue = value) {
@@ -1000,10 +1085,25 @@ function bindSetupEvents() {
   });
 
   unitSelect.addEventListener("change", () => {
-    state.settings.unit = Number(unitSelect.value);
+    if (unitSelect.value === "all") {
+      state.settings.unknownScope = "book";
+    } else {
+      state.settings.unknownScope = "unit";
+      state.settings.unit = Number(unitSelect.value);
+    }
     persistSettings();
     renderSetup();
   });
+
+  const unknownMode = document.getElementById("unknownMode");
+  if (unknownMode) {
+    unknownMode.addEventListener("change", () => {
+      state.settings.queueMode = unknownMode.checked ? "unknown" : "main";
+      if (!unknownMode.checked) state.settings.unknownScope = "unit";
+      persistSettings();
+      renderSetup();
+    });
+  }
 
   document.querySelectorAll('input[name="mode"]').forEach((input) => {
     input.addEventListener("change", () => {
@@ -1013,11 +1113,13 @@ function bindSetupEvents() {
   });
 
   if (document.getElementById("summaryCount")) bindRange("summaryCount", "summaryCount", "个", Number);
+  bindRange("preReadDelayInput", "preReadDelay", "ms", Number);
   bindRange("zhDelayInput", "zhDelay", "ms", Number);
   bindRange("retentionPauseInput", "retentionPause", "ms", Number);
   bindRange("rateInput", "rate", "x", Number, formatRate);
   bindCheckbox("speakEn", "speakEn");
   bindCheckbox("speakZh", "speakZh");
+  bindCheckbox("manualMode", "manualMode");
   bindCheckbox("highOnly", "highOnly");
 
   document.getElementById("summaryMode").addEventListener("change", (event) => {
@@ -1074,15 +1176,32 @@ async function startStudy() {
   setSetupStatus("正在加载词库...");
   try {
     const book = currentBook();
-    state.reviewMode = null;
     state.roundReturn = null;
     state.playbackPaused = false;
     state.words = await ensureWords(book);
-    state.unitWords = buildStudyUnitWords(book.id, state.settings.unit);
-    if (!state.unitWords.length) throw new Error(`${unitDisplayLabel(book, state.settings.unit)} 没有未斩词条`);
-    state.currentIndex = getStartIndex(book.id);
+    const unknownMode = state.settings.queueMode === "unknown";
+    const scope = currentUnknownScope();
+    state.reviewMode = unknownMode
+      ? { mode: "unknown-archive", label: unknownScopeLabel(book, scope), scope }
+      : null;
+    state.unitWords = unknownMode
+      ? buildUnknownStudyWords(book.id, scope)
+      : buildStudyUnitWords(book.id, state.settings.unit);
+    if (!state.unitWords.length) {
+      throw new Error(unknownMode
+        ? `${unknownScopeLabel(book, scope)} 暂无重难点词条`
+        : `${unitDisplayLabel(book, state.settings.unit)} 没有未斩词条`);
+    }
+    state.currentIndex = unknownMode
+      ? getStartIndexFromProgress(loadUnknownProgress(book.id, scope))
+      : getStartIndex(book.id);
     state.groupStats = createGroupStats();
     state.undoWordId = null;
+    state.navQueue = [];
+    state.transitioning = false;
+    state.markFeedback = "";
+    state.currentWordId = null;
+    state.currentWordRecorded = false;
     state.showZh = false;
     state.playbackPaused = false;
     state.setupStatus = "";
@@ -1110,6 +1229,11 @@ async function startReview(mode) {
     state.currentIndex = 0;
     state.groupStats = createGroupStats();
     state.undoWordId = null;
+    state.navQueue = [];
+    state.transitioning = false;
+    state.markFeedback = "";
+    state.currentWordId = null;
+    state.currentWordRecorded = false;
     state.showZh = false;
     state.reviewMode = { mode, label: `${stats.label}复盘`, wordIds: stats.wordIds };
     state.roundReturn = null;
@@ -1129,9 +1253,21 @@ function buildStudyUnitWords(bookId, unit) {
   return state.words.filter((word) => word.unit === unit && !knownIds.has(Number(word.id)));
 }
 
+function buildUnknownStudyWords(bookId, scope = currentUnknownScope()) {
+  return unknownWordsForScope(bookId, state.words, scope);
+}
+
+function unknownScopeLabel(book, scope = currentUnknownScope()) {
+  return scope.scope === "book" ? `${book.name} · 整本重难点词库` : `${unitDisplayLabel(book, scope.unit)} · 重难点词库`;
+}
+
 function getStartIndex(bookId) {
   if (state.settings.mode !== "resume") return 0;
-  const progress = loadProgress(bookId);
+  return getStartIndexFromProgress(loadProgress(bookId));
+}
+
+function getStartIndexFromProgress(progress) {
+  if (state.settings.mode !== "resume") return 0;
   const lastWordId = Number(progress.lastWordId);
   if (!Number.isFinite(lastWordId)) return 0;
   const index = state.unitWords.findIndex((word) => word.id === lastWordId);
@@ -1161,16 +1297,21 @@ function renderFlashcard({ touchProgress = true } = {}) {
     renderBreak({ unitEnd: true, reviewEnd: Boolean(state.reviewMode) });
     return;
   }
-  if (!state.reviewMode) {
+  if (state.reviewMode?.mode === "unknown-archive") {
+    saveUnknownProgress(book.id, state.reviewMode.scope || currentUnknownScope(), { lastWordId: word.id, unit: word.unit, updatedAt: new Date().toISOString() }, { touch: touchProgress });
+  } else if (!state.reviewMode) {
     saveProgress(book.id, { lastWordId: word.id, unit: word.unit, updatedAt: new Date().toISOString() }, { touch: touchProgress });
   }
   const marks = loadMarks(book.id);
   const markedKind = marks.known.includes(word.id) ? "known" : marks.unknown.includes(word.id) ? "unknown" : "";
-  const undoLabel = state.undoWordId === word.id && markedKind ? undoLabelForMark(markedKind) : "";
+  const undoLabel = markedKind ? undoLabelForMark(markedKind) : "";
   const cardEnterDirection = state.cardEnterDirection;
   const resumeFeedback = state.resumeFeedback;
+  const markFeedback = state.markFeedback;
+  const modeSuffix = state.reviewMode?.mode === "unknown-archive" ? " · 重难点词库" : state.reviewMode ? " · 复盘" : "";
   state.cardEnterDirection = "";
   state.resumeFeedback = false;
+  state.markFeedback = "";
 
   app.innerHTML = `
     <section class="view flash-view">
@@ -1178,11 +1319,12 @@ function renderFlashcard({ touchProgress = true } = {}) {
         <button class="btn btn--ghost" id="backSetupBtn" type="button">返回设置页</button>
         <button class="btn btn--ghost" id="statsBtn" type="button">统计复盘</button>
         <button class="btn btn--ghost" id="archiveBtn" type="button">归档复盘</button>
+        <button class="btn btn--ghost" id="manualModeBtn" type="button">${state.settings.manualMode ? "手动模式" : "自动播放"}</button>
         <button class="btn btn--primary" id="finishBtn" type="button">✓ 完成</button>
         <div class="progress-block">
           <div class="progress-title">${escapeHtml(state.reviewMode?.label || bookContextLabel(book, word.unit))}</div>
           <div class="progress-main">${escapeHtml(unitDisplayLabel(book, word.unit))} [${state.currentIndex + 1}/${state.unitWords.length}]</div>
-          <div class="progress-sub">词频 ${word.freq} · ID ${word.id}${state.reviewMode ? " · 复盘" : ""}</div>
+          <div class="progress-sub">词频 ${word.freq} · ID ${word.id}${escapeHtml(modeSuffix)}</div>
           <div class="live-counter" aria-label="本轮实时计数">
             <span>扫过 <strong>${state.groupStats.seen}</strong></span>
             <span>已斩 <strong>${state.groupStats.known}</strong></span>
@@ -1194,7 +1336,7 @@ function renderFlashcard({ touchProgress = true } = {}) {
       <section class="stage">
         <div class="card-stack" id="cardStack">
           ${next ? renderWordCard(next, true) : ""}
-          ${renderWordCard(word, false, undoLabel, cardEnterDirection, resumeFeedback)}
+          ${renderWordCard(word, false, undoLabel, cardEnterDirection, resumeFeedback, markFeedback)}
         </div>
       </section>
 
@@ -1202,8 +1344,8 @@ function renderFlashcard({ touchProgress = true } = {}) {
         <div class="gesture-list">
           ${gesture("↑", "斩")}
           ${gesture("↓", "生词")}
-          ${gesture("←", "下一个")}
-          ${gesture("→", "上一个")}
+          ${gesture("←", "上一个")}
+          ${gesture("→", "下一个")}
         </div>
       </aside>
     </section>
@@ -1220,6 +1362,7 @@ function renderFlashcard({ touchProgress = true } = {}) {
   });
   document.getElementById("statsBtn").addEventListener("click", openStats);
   document.getElementById("archiveBtn").addEventListener("click", openArchive);
+  document.getElementById("manualModeBtn").addEventListener("click", toggleManualModeFromFlash);
   document.getElementById("finishBtn").addEventListener("click", finishCurrentGroup);
   const undoBtn = document.getElementById("undoMarkBtn");
   if (undoBtn) undoBtn.addEventListener("click", () => undoMark(word.id));
@@ -1227,34 +1370,41 @@ function renderFlashcard({ touchProgress = true } = {}) {
   bindCardGesture();
   bindArchiveEvents();
   bindStatsEvents();
+  if (state.currentWordId !== word.id) {
+    state.currentWordId = word.id;
+    state.currentWordRecorded = false;
+  }
   state.cardStartedAt = Date.now();
-  state.currentWordRecorded = false;
   requestAnimationFrame(fitActiveWord);
   scheduleWordTimers();
+  processNavigationQueueSoon();
 }
 
-function renderWordCard(word, isNext = false, undoLabel = "", enterDirection = "", resumeFeedback = false) {
+function renderWordCard(word, isNext = false, undoLabel = "", enterDirection = "", resumeFeedback = false, markFeedback = "") {
   const definition = formatDefinition(word);
   const definitionId = isNext ? "" : ' id="definition"';
   const speechStatusId = isNext ? "" : ' id="speechStatus"';
   const wordEnId = isNext ? "" : ' id="wordEn"';
   const enClass = !isNext && state.speechPhase === "en" ? " is-speaking" : "";
-  const zhHtml = isNext ? escapeHtml(definition) : renderDefinitionHtml(word);
+  const zhHtml = isNext ? "" : renderDefinitionHtml(word);
   const freqLabel = word.freq ? `${word.freq} 次` : "0 次";
   const alpha = Number(freqAlpha(word.freq));
   const enterClass = !isNext && ["from-left", "from-right"].includes(enterDirection) ? ` word-card--enter-${enterDirection}` : "";
   const resumeClass = !isNext && resumeFeedback ? " word-card--resume-feedback" : "";
+  const markClass = !isNext && markFeedback ? " word-card--mark-feedback" : "";
+  const zhHidden = isNext || !state.showZh ? " is-hidden" : "";
   return `
-    <article class="word-card ${isNext ? "word-card--next" : ""}${enterClass}${resumeClass}" id="${isNext ? "nextCard" : "activeCard"}" style="--freq-alpha: ${alpha.toFixed(3)}; --freq-alpha-soft: ${(alpha * 0.35).toFixed(3)}">
+    <article class="word-card ${isNext ? "word-card--next" : ""}${enterClass}${resumeClass}${markClass}" id="${isNext ? "nextCard" : "activeCard"}" style="--freq-alpha: ${alpha.toFixed(3)}; --freq-alpha-soft: ${(alpha * 0.35).toFixed(3)}">
       ${isNext ? "" : renderCardSwipeControls()}
       ${resumeFeedback ? '<div class="resume-feedback" aria-live="polite">继续播放</div>' : ""}
+      ${markFeedback === "unknown" ? '<div class="mark-feedback" aria-live="polite">已标记重难点</div>' : ""}
       <div class="freq-watermark">${escapeHtml(freqLabel)}</div>
       <div class="word-card__meta">
         <span>${escapeHtml(unitDisplayLabel(currentBook(), word.unit))}</span>
         <span${speechStatusId}>${escapeHtml(freqLabel)}</span>
       </div>
       <div class="word-card__en-shell"><div class="word-card__en${enClass}"${wordEnId}>${escapeHtml(word.en)}</div></div>
-      <div class="word-card__zh ${!isNext && !state.showZh ? "is-hidden" : ""}"${definitionId}>${zhHtml}</div>
+      <div class="word-card__zh${zhHidden}"${definitionId}>${zhHtml}</div>
       ${undoLabel ? `<div class="word-card__actions"><button class="undo-btn" id="undoMarkBtn" type="button">${escapeHtml(undoLabel)}</button></div>` : ""}
     </article>
   `;
@@ -1277,7 +1427,7 @@ function renderCardSwipeControls() {
 }
 
 function gesture(symbol, label) {
-  const actions = { "↑": "up", "↓": "down", "←": "left", "→": "right" };
+  const actions = { "↑": "up", "↓": "down", "←": "previous", "→": "next" };
   return `
     <button class="gesture-item" data-gesture-action="${actions[symbol] || ""}" type="button" aria-label="${escapeHtml(label)}">
       <span class="gesture-symbol">${escapeHtml(symbol)}</span>
@@ -1300,6 +1450,9 @@ async function scheduleWordTimers() {
   const hasZhSpeech = Boolean(state.settings.speakZh && spokenDefinition && speechAvailable);
 
   const revealTask = revealZhAfterDelay(token);
+  await sleepFor(preReadDelayMs());
+  if (!isPlaybackToken(token)) return;
+
   if (hasEnSpeech) {
     const spoken = await speakWithHighlight(word.en, "en-US", "en", token);
     if (!isPlaybackToken(token)) return;
@@ -1308,8 +1461,6 @@ async function scheduleWordTimers() {
     await sleepFor(quietBudgetMs(word.en, "en-US", 420));
   }
 
-  if (!isPlaybackToken(token)) return;
-  await sleepFor(postEnRetentionPauseMs());
   if (!isPlaybackToken(token)) return;
   await revealTask;
   if (!isPlaybackToken(token)) return;
@@ -1328,7 +1479,8 @@ async function scheduleWordTimers() {
 
   if (!isPlaybackToken(token)) return;
   await sleepFor(postZhRetentionPauseMs());
-  if (isPlaybackToken(token)) advanceWord("auto");
+  if (!isPlaybackToken(token) || state.settings.manualMode) return;
+  advanceWord("auto");
 }
 
 async function revealZhAfterDelay(token) {
@@ -1366,6 +1518,12 @@ async function resumePlayback() {
   state.resumeFeedback = true;
   await requestWakeLock();
   renderFlashcard();
+}
+
+function toggleManualModeFromFlash() {
+  state.settings.manualMode = !state.settings.manualMode;
+  persistSettings();
+  renderFlashcard({ touchProgress: false });
 }
 
 function fitActiveWord() {
@@ -1415,7 +1573,11 @@ function formatRate(rate) {
 }
 
 function zhRevealDelayMs() {
-  return clampFinite(state.settings.zhDelay, DEFAULT_SETTINGS.zhDelay, ZH_DELAY_MIN, ZH_DELAY_MAX) / playbackRate();
+  return clampFinite(state.settings.zhDelay, DEFAULT_SETTINGS.zhDelay, ZH_DELAY_MIN, ZH_DELAY_MAX);
+}
+
+function preReadDelayMs() {
+  return clampFinite(state.settings.preReadDelay, DEFAULT_SETTINGS.preReadDelay, PRE_READ_DELAY_MIN, PRE_READ_DELAY_MAX);
 }
 
 function retentionPauseSettingMs() {
@@ -1427,33 +1589,23 @@ function speechBudgetMs(text, lang, minMs = 520) {
 }
 
 function quietBudgetMs(text, lang, minMs = 420) {
-  return Math.max(scaledMinimumMs(minMs), (estimateSpeechMs(text, lang) * 0.55) / playbackRate());
+  return Math.max(minMs, estimateSpeechMs(text, lang) * 0.55);
 }
 
 function phaseGapMs(baseMs) {
-  return scaledMinimumMs(baseMs, 35);
+  return Math.max(35, baseMs);
 }
 
 function postEnRetentionPauseMs() {
-  const baseMs = retentionPauseSettingMs();
-  return retentionPauseMs(baseMs, retentionPauseFloorMs(baseMs));
+  return retentionPauseSettingMs();
 }
 
 function postZhRetentionPauseMs() {
-  const baseMs = Math.max(RETENTION_PAUSE_MIN, retentionPauseSettingMs() * POST_ZH_REVIEW_RATIO);
-  return retentionPauseMs(baseMs, retentionPauseFloorMs(baseMs));
-}
-
-function retentionPauseFloorMs(baseMs) {
-  return Math.max(RETENTION_PAUSE_FLOOR_MIN, baseMs * RETENTION_PAUSE_FLOOR_RATIO);
-}
-
-function retentionPauseMs(baseMs, floorMs = retentionPauseFloorMs(baseMs)) {
-  return Math.round(Math.max(floorMs, baseMs / Math.sqrt(playbackRate())));
+  return retentionPauseSettingMs();
 }
 
 function scaledMinimumMs(baseMs, floorMs = 40) {
-  return Math.max(floorMs, baseMs / playbackRate());
+  return Math.max(floorMs, baseMs);
 }
 
 function speakWithHighlight(text, lang, phase, token, { followBoundaries = true } = {}) {
@@ -1768,34 +1920,152 @@ function clearCardSwipeFeedback(card) {
 
 function triggerCardDirection(direction, card = document.getElementById("activeCard"), offset = {}) {
   if (!card || state.playbackPaused) return;
+  const action = cardActionFromDirection(direction);
+  if (!action) {
+    snapBack(card);
+    return;
+  }
+  if (state.transitioning) {
+    if (action === "next" || action === "previous") queueNavigationAction(action);
+    return;
+  }
+  if (action === "unknown") {
+    markUnknownInPlace(card);
+    return;
+  }
   clearTimers();
   card.classList.remove("is-animated");
   // 方向矩阵不要改反：
   // left swipe -> next，旧卡向左飞出；right swipe -> previous，旧卡向右飞出。
   // tap-left -> previous，旧卡向右飞出；tap-right -> next，旧卡向左飞出。
-  const feedbackDirection = direction === "tap-left" ? "right" : direction === "tap-right" ? "left" : direction;
+  const feedbackDirection = feedbackDirectionForAction(direction, action);
   setCardSwipeFeedback(card, feedbackDirection);
   const dx = Number(offset.dx) || 0;
   const dy = Number(offset.dy) || 0;
-  if (direction === "left" || direction === "tap-right") {
+  if (action === "next") {
     const x = -window.innerWidth;
-    animateOut(card, x, dy, () => advanceWord("manual"));
-  } else if (direction === "right" || direction === "tap-left") {
+    state.transitioning = true;
+    animateOut(card, x, dy, () => {
+      state.transitioning = false;
+      advanceWord("manual");
+    });
+  } else if (action === "previous") {
     if (state.currentIndex <= 0) {
       snapBack(card);
     } else {
       const x = window.innerWidth;
-      animateOut(card, x, dy, goPrevious);
+      state.transitioning = true;
+      animateOut(card, x, dy, () => {
+        state.transitioning = false;
+        goPrevious();
+      });
     }
-  } else if (direction === "up") {
+  } else if (action === "known") {
     markCurrent("known");
-    animateOut(card, dx, -window.innerHeight, () => advanceWord("known"));
-  } else if (direction === "down") {
-    markCurrent("unknown");
-    animateOut(card, dx, window.innerHeight, () => advanceWord("unknown"));
+    state.transitioning = true;
+    animateOut(card, dx, -window.innerHeight, () => {
+      state.transitioning = false;
+      advanceWord("known");
+    });
   } else {
     snapBack(card);
   }
+}
+
+function cardActionFromDirection(direction) {
+  if (direction === "left" || direction === "tap-right" || direction === "next") return "next";
+  if (direction === "right" || direction === "tap-left" || direction === "previous") return "previous";
+  if (direction === "up") return "known";
+  if (direction === "down") return "unknown";
+  return "";
+}
+
+function feedbackDirectionForAction(direction, action) {
+  if (direction === "tap-left" || direction === "previous") return "right";
+  if (direction === "tap-right" || direction === "next") return "left";
+  if (action === "known") return "up";
+  if (action === "unknown") return "down";
+  return direction;
+}
+
+function queueNavigationAction(action) {
+  if (action !== "next" && action !== "previous") return;
+  state.navQueue.push(action);
+  if (state.navQueue.length > 30) state.navQueue = state.navQueue.slice(-30);
+}
+
+function processNavigationQueueSoon() {
+  if (!state.navQueue.length || state.transitioning || state.view !== "flash") return;
+  addTimer(() => {
+    if (!state.navQueue.length || state.transitioning || state.view !== "flash") return;
+    const action = state.navQueue.shift();
+    triggerCardDirection(action);
+  }, 0);
+}
+
+function markUnknownInPlace(card) {
+  const book = currentBook();
+  const word = state.unitWords[state.currentIndex];
+  if (!word) return;
+  const shouldRestartTimers = state.timers.length === 0 && !state.playbackPaused;
+  const wasUnknown = loadMarks(book.id).unknown.includes(word.id);
+  markCurrent("unknown");
+  if (!wasUnknown) {
+    state.groupStats.unknown += 1;
+    state.groupStats.unknownIds = Array.from(new Set([...(state.groupStats.unknownIds || []), word.id]));
+    recordStudyActivity({ wordId: word.id, seconds: 0, result: "unknown", counted: false });
+    updateLiveUnknownCount();
+  }
+  state.undoWordId = word.id;
+  showUnknownMarkFeedback(card, word.id);
+  if (shouldRestartTimers) scheduleWordTimers();
+}
+
+function updateLiveUnknownCount() {
+  const counters = document.querySelectorAll(".live-counter strong");
+  if (counters[2]) counters[2].textContent = String(state.groupStats.unknown);
+}
+
+function showUnknownMarkFeedback(card, wordId) {
+  if (!card) return;
+  card.classList.add("is-animated", "is-swipe-down", "word-card--mark-feedback");
+  card.style.transform = "translate3d(0, 0, 0) rotate(0deg)";
+  ensureUndoButton(card, wordId, undoLabelForMark("unknown"));
+  const oldFeedback = card.querySelector(".mark-feedback");
+  if (oldFeedback) oldFeedback.remove();
+  const feedback = document.createElement("div");
+  feedback.className = "mark-feedback";
+  feedback.setAttribute("aria-live", "polite");
+  feedback.textContent = "已标记重难点";
+  card.appendChild(feedback);
+  addTimer(() => {
+    clearCardSwipeFeedback(card);
+    card.classList.remove("is-animated", "word-card--mark-feedback");
+    feedback.remove();
+  }, 820);
+}
+
+function ensureUndoButton(card, wordId, label) {
+  let actions = card.querySelector(".word-card__actions");
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "word-card__actions";
+    card.appendChild(actions);
+  }
+  let button = actions.querySelector("#undoMarkBtn");
+  if (!button) {
+    button = document.createElement("button");
+    button.className = "undo-btn";
+    button.id = "undoMarkBtn";
+    button.type = "button";
+    actions.appendChild(button);
+  }
+  button.textContent = label;
+  button.onclick = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    undoMark(wordId);
+  };
 }
 
 function snapBack(card) {
@@ -1910,6 +2180,9 @@ function renderBreak(info) {
   state.breakInfo = info;
   clearTimers();
   releaseWakeLock();
+  state.navQueue = [];
+  state.transitioning = false;
+  state.currentWordId = null;
   const book = currentBook();
   if (enteringBreak && info.unitEnd && !info.reviewEnd && !info.manual && !state.reviewMode) {
     recordUnitCompletion(book.id, state.settings.unit);
@@ -1952,6 +2225,11 @@ async function continueAfterBreak() {
     state.unitWords = ret.unitWords;
     state.currentIndex = ret.currentIndex;
     state.groupStats = createGroupStats();
+    state.navQueue = [];
+    state.transitioning = false;
+    state.markFeedback = "";
+    state.currentWordId = null;
+    state.currentWordRecorded = false;
     state.showZh = false;
     if (state.currentIndex >= state.unitWords.length) {
       state.groupStats = ret.groupStats || createGroupStats();
@@ -1971,6 +2249,11 @@ async function continueAfterBreak() {
     return;
   }
   state.groupStats = createGroupStats();
+  state.navQueue = [];
+  state.transitioning = false;
+  state.markFeedback = "";
+  state.currentWordId = null;
+  state.currentWordRecorded = false;
   state.showZh = false;
   if (state.breakInfo?.unitEnd) {
     if (state.settings.unit < book.totalUnits) {
@@ -2011,6 +2294,11 @@ async function startRoundUnknownReview() {
   state.unitWords = state.unitWords.filter((word) => idSet.has(word.id));
   state.currentIndex = 0;
   state.groupStats = createGroupStats();
+  state.navQueue = [];
+  state.transitioning = false;
+  state.markFeedback = "";
+  state.currentWordId = null;
+  state.currentWordRecorded = false;
   state.showZh = false;
   state.playbackPaused = false;
   state.reviewMode = { mode: "round-unknown", label: "本轮重难点复习", wordIds: ids };
@@ -2279,11 +2567,13 @@ function bindStatsEvents() {
 
 function collectSyncPayload() {
   const progress = {};
+  const unknownProgress = {};
   const marks = {};
   const activity = {};
   const unitStats = {};
   BOOKS.forEach((book) => {
     progress[book.id] = loadProgress(book.id);
+    unknownProgress[book.id] = collectUnknownProgressForBook(book);
     marks[book.id] = loadMarks(book.id);
     activity[book.id] = loadActivity(book.id);
     unitStats[book.id] = loadUnitStats(book.id);
@@ -2294,9 +2584,21 @@ function collectSyncPayload() {
     activeBookId: state.settings.bookId,
     settings: { ...state.settings },
     progress,
+    unknownProgress,
     marks,
     activity,
     unitStats
+  };
+}
+
+function collectUnknownProgressForBook(book) {
+  const units = {};
+  Array.from({ length: book.totalUnits }, (_, index) => index + 1).forEach((unit) => {
+    units[String(unit)] = loadUnknownProgress(book.id, { scope: "unit", unit });
+  });
+  return {
+    book: loadUnknownProgress(book.id, { scope: "book" }),
+    units
   };
 }
 
@@ -2328,8 +2630,16 @@ function dateMs(value) {
 function latestLocalProgressMs() {
   return BOOKS.reduce((latest, book) => {
     const progress = loadProgress(book.id);
-    return Math.max(latest, dateMs(progress.updatedAt));
+    return Math.max(latest, dateMs(progress.updatedAt), latestUnknownProgressMs(book));
   }, 0);
+}
+
+function latestUnknownProgressMs(book) {
+  const map = collectUnknownProgressForBook(book);
+  return [
+    dateMs(map.book.updatedAt),
+    ...Object.values(map.units).map((progress) => dateMs(progress.updatedAt))
+  ].reduce((latest, value) => Math.max(latest, value), 0);
 }
 
 function localSyncMs() {
@@ -2563,9 +2873,26 @@ function applySyncPayload(payload) {
   if (isPlainObject(payload.unitStats)) {
     Object.entries(payload.unitStats).forEach(([bookId, stats]) => saveUnitStats(bookId, sanitizeUnitStatsPayload(stats), { touch: false }));
   }
+  if (isPlainObject(payload.unknownProgress)) {
+    Object.entries(payload.unknownProgress).forEach(([bookId, progressMap]) => applyUnknownProgressPayload(bookId, progressMap));
+  }
   state.syncMeta.localUpdatedAt = payload.updatedAt || new Date().toISOString();
   persistSyncMeta();
   return true;
+}
+
+function applyUnknownProgressPayload(bookId, progressMap) {
+  const book = BOOKS.find((item) => item.id === bookId);
+  if (!book || !isPlainObject(progressMap)) return;
+  if (isPlainObject(progressMap.book)) {
+    saveUnknownProgress(book.id, { scope: "book" }, sanitizeProgressPayload(progressMap.book), { touch: false });
+  }
+  const units = isPlainObject(progressMap.units) ? progressMap.units : {};
+  Object.entries(units).forEach(([unit, progress]) => {
+    const unitNumber = Number(unit);
+    if (!Number.isFinite(unitNumber) || unitNumber < 1 || unitNumber > book.totalUnits) return;
+    saveUnknownProgress(book.id, { scope: "unit", unit: unitNumber }, sanitizeProgressPayload(progress), { touch: false });
+  });
 }
 
 async function requestWakeLock() {
