@@ -1,15 +1,18 @@
 "use strict";
 
-const APP_VERSION = "2026-06-19-p0";
+const APP_VERSION = "2026-06-20-p0";
 
 const ACCESS_KEY = "ky2027";
 const AUTH_KEY = "is_authenticated";
 const SETTINGS_KEY = "vocab_machine_settings_v1";
 const CLOUD_KEY = "vocab_machine_cloud_v1";
 const SYNC_META_KEY = "vocab_machine_sync_meta_v1";
+const HASH_SYNC_STATE_KEY = "vocab_machine_hash_sync_state_v1";
 const PENDING_OPS_KEY = "vocab_machine_pending_ops_v1";
 const LOCAL_SNAPSHOT_KEY = "vocab_machine_local_snapshot_latest_v1";
 const DAILY_BACKUP_PREFIX = "vocab_machine_daily_backup_";
+const HASH_BACKUP_PREFIX = "vocab_machine_backup:";
+const HASH_BACKUP_INDEX_KEY = "vocab_machine_backup_index_v1";
 const SYNC_AUDIT_KEY = "vocab_machine_sync_audit_v1";
 const SYNC_FILE_NAME = "sync.json";
 const SYNC_BACKUP_FILE_NAME = "sync.prev.json";
@@ -19,6 +22,8 @@ const AUTO_PUSH_DEBOUNCE_MS = 3000;
 const AUTO_SYNC_DEBOUNCE_MS = 700;
 const AUTO_PUSH_BASE_INTERVAL_MS = 15000;
 const AUTO_PUSH_MAX_INTERVAL_MS = 300000;
+const SYNC_HEARTBEAT_MS = 5000;
+const SYNC_BACKOFF_STEPS_MS = [5000, 15000, 30000, 60000, 120000, 300000];
 const PLAYBACK_RATE_MIN = 0.5;
 const PLAYBACK_RATE_MAX = 10;
 const PLAYBACK_RATE_STEP = 0.05;
@@ -38,16 +43,19 @@ const RETENTION_PAUSE_MAX = 5000;
 const RETENTION_PAUSE_STEP = 50;
 const RETENTION_PAUSE_DEFAULT = 850;
 const SHANGUO_BOOK_ID = "27ky-shanguo-gaopin";
+const SYNC_SCHEMA_VERSION = 2;
+
 const SYNC_STATUS_LABELS = {
   unconfigured: "云同步未配置",
   invalid_config: "配置错误",
-  local_only: "本地·未上传",
+  local_only: "本地保存",
   dirty: "待上传",
   syncing: "同步中…",
+  cloud_loaded: "已从云端更新",
   cloud_saved: "云端已保存",
   read_only: "只读",
   error: "同步失败",
-  conflict: "数据冲突"
+  conflict: "自动合并失败"
 };
 
 const SYNC_STATUS_COLORS = {
@@ -56,6 +64,7 @@ const SYNC_STATUS_COLORS = {
   local_only: "#ea580c",
   dirty: "#ea580c",
   syncing: "#2563eb",
+  cloud_loaded: "#64748b",
   cloud_saved: "#16a34a",
   read_only: "#ea580c",
   error: "#dc2626",
@@ -140,7 +149,21 @@ const DEFAULT_SYNC_META = {
   dirtySince: "",
   cloudWritable: false,
   readOnlyMode: false,
-  conflictMode: false
+  localSeq: 0
+};
+const DEFAULT_HASH_SYNC_STATE = {
+  localDirty: false,
+  baseRemoteHash: "",
+  localPayloadHash: "",
+  dirtySince: "",
+  lastSyncStatus: "unconfigured",
+  lastSyncError: "",
+  lastSuccessfulPushAt: "",
+  lastSuccessfulPullAt: "",
+  consecutiveSyncFailures: 0,
+  nextRetryAt: "",
+  lastBackupError: "",
+  localRecoveryRequired: false
 };
 
 const app = document.getElementById("app");
@@ -149,6 +172,7 @@ const state = {
   settings: loadJson(SETTINGS_KEY, DEFAULT_SETTINGS),
   cloud: loadJson(CLOUD_KEY, { token: "", gistId: "" }),
   syncMeta: loadJson(SYNC_META_KEY, DEFAULT_SYNC_META),
+  syncHashState: loadJson(HASH_SYNC_STATE_KEY, DEFAULT_HASH_SYNC_STATE),
   wordsByBook: new Map(),
   maxFreqByBook: new Map(),
   view: "auth",
@@ -189,7 +213,10 @@ const state = {
   syncConfigTimer: null,
   syncHideTimer: null,
   syncInFlight: null,
+  syncHeartbeatTimer: null,
+  isSyncing: false,
   applyingRemotePayload: false,
+  suppressDirty: false,
   cloudConfigDraft: { token: "", gistId: "" },
   autoPushDebounceTimer: null,
   periodicPushTimer: null,
@@ -449,9 +476,10 @@ function ensureSyncMeta(meta = state.syncMeta) {
   ].forEach(function(key) {
     normalized[key] = typeof normalized[key] === "string" ? normalized[key] : "";
   });
-  ["cloudWritable", "readOnlyMode", "conflictMode"].forEach(function(key) {
+  ["cloudWritable", "readOnlyMode"].forEach(function(key) {
     normalized[key] = normalized[key] === true;
   });
+  normalized.localSeq = Math.max(0, Number(normalized.localSeq) || 0);
   return normalized;
 }
 
@@ -495,18 +523,42 @@ function clearPendingOps() {
   savePendingOpsStore({ ops: [] });
 }
 
-function appendPendingOp(op) {
-  if (!isPlainObject(op) || state.applyingRemotePayload) return;
+function nextSeq() {
   state.syncMeta = ensureSyncMeta(state.syncMeta);
-  const createdAt = op.createdAt || new Date().toISOString();
-  const next = {
-    ...op,
-    opId: op.opId || createOpId(),
-    baseRemoteVersion: op.baseRemoteVersion ?? state.syncMeta.lastRemoteVersion ?? "",
-    createdAt
-  };
-  const ops = compactPendingOps([...loadPendingOpsStore().ops, next]);
-  savePendingOpsStore({ ops });
+  state.syncMeta.localSeq += 1;
+  persistSyncMeta();
+  return state.syncMeta.localSeq;
+}
+
+function makeOpId() {
+  return (state.syncMeta.clientId || "local") + ":" + nextSeq();
+}
+
+function localOpToWireOp(op) {
+  // Convert flat local op to v2 wire format
+  var wire = { opId: op.opId, clientId: state.syncMeta.clientId, seq: Number(op.seq) || 0, type: op.type, createdAt: op.createdAt };
+  var payload = {};
+  Object.keys(op).forEach(function(k) {
+    if (k === "opId" || k === "clientId" || k === "seq" || k === "type" || k === "createdAt" || k === "baseRemoteVersion") return;
+    payload[k] = op[k];
+  });
+  wire.payload = payload;
+  return wire;
+}
+
+function wireOpToLocalOp(wire) {
+  var local = { opId: wire.opId, type: wire.type, createdAt: wire.createdAt, seq: Number(wire.seq) || 0, clientId: wire.clientId || "" };
+  if (wire.payload && typeof wire.payload === "object") {
+    Object.keys(wire.payload).forEach(function(k) { local[k] = wire.payload[k]; });
+  }
+  return local;
+}
+
+// P0: pendingOps 已冻结，不再写入新操作。已有数据保留仅诊断。
+// 旧 pendingOps 不参与 dirty 判断、绿灯判断、Pull/Push 决策。
+function appendPendingOp(op) {
+  // P0: pendingOps 已冻结，不再写入
+  return;
 }
 
 function compactPendingOps(ops) {
@@ -534,7 +586,298 @@ function pendingOpKey(op) {
   if (op.type === "settings.set") return `${op.type}`;
   return "";
 }
+function hasLocalChangedSinceSyncStart(localUpdatedAtAtStart, opIdsAtStart) {
+  const initialIds = new Set((Array.isArray(opIdsAtStart) ? opIdsAtStart : []).filter(Boolean));
+  const currentIds = getPendingOps().map((op) => op.opId).filter(Boolean);
+  if (currentIds.length !== initialIds.size) return true;
+  if (currentIds.some((id) => !initialIds.has(id))) return true;
+  const currentUpdatedAt = ensureSyncMeta(state.syncMeta).localUpdatedAt || "";
+  return currentUpdatedAt !== (localUpdatedAtAtStart || "");
+}
 
+function stopIfLocalChangedDuringPull(localUpdatedAtAtStart, opIdsAtStart) {
+  if (!hasLocalChangedSinceSyncStart(localUpdatedAtAtStart, opIdsAtStart)) return false;
+  enterSafeConflictMode("同步过程中检测到新的本地操作，本轮已停止以避免覆盖。请稍后再次同步。");
+  updateSyncIndicator();
+  return true;
+}
+
+// ── Hash-based P0 sync state helpers ──────────────────────────────────
+
+function ensureHashSyncState(sourceState = state.syncHashState) {
+  const source = isPlainObject(sourceState) ? sourceState : {};
+  return {
+    ...DEFAULT_HASH_SYNC_STATE,
+    ...source,
+    localDirty: source.localDirty === true,
+    baseRemoteHash: typeof source.baseRemoteHash === "string" ? source.baseRemoteHash : "",
+    localPayloadHash: typeof source.localPayloadHash === "string" ? source.localPayloadHash : "",
+    dirtySince: typeof source.dirtySince === "string" ? source.dirtySince : "",
+    lastSyncStatus: typeof source.lastSyncStatus === "string" ? source.lastSyncStatus : DEFAULT_HASH_SYNC_STATE.lastSyncStatus,
+    lastSyncError: typeof source.lastSyncError === "string" ? source.lastSyncError : "",
+    lastSuccessfulPushAt: typeof source.lastSuccessfulPushAt === "string" ? source.lastSuccessfulPushAt : "",
+    lastSuccessfulPullAt: typeof source.lastSuccessfulPullAt === "string" ? source.lastSuccessfulPullAt : "",
+    consecutiveSyncFailures: Math.max(0, Number(source.consecutiveSyncFailures) || 0),
+    nextRetryAt: typeof source.nextRetryAt === "string" ? source.nextRetryAt : "",
+    lastBackupError: typeof source.lastBackupError === "string" ? source.lastBackupError : "",
+    localRecoveryRequired: source.localRecoveryRequired === true
+  };
+}
+
+function persistHashSyncState() {
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
+  try {
+    saveJson(HASH_SYNC_STATE_KEY, state.syncHashState);
+  } catch (error) {
+    state.syncHashState.lastBackupError = error?.message || "同步状态写入失败";
+  }
+}
+
+function businessPayloadForHash(payload) {
+  const normalized = normalizeSyncPayload(payload);
+  return {
+    settings: normalized.settings,
+    progress: normalized.progress,
+    unknownProgress: normalized.unknownProgress,
+    marks: normalized.marks,
+    activity: normalized.activity,
+    unitStats: normalized.unitStats
+  };
+}
+
+function businessPayloadHash(payload) {
+  return stableStringifyHash(businessPayloadForHash(payload));
+}
+
+function currentBusinessPayload() {
+  return normalizeSyncPayload(collectSyncPayload());
+}
+
+function refreshLocalPayloadHash({ persist = true } = {}) {
+  const payload = currentBusinessPayload();
+  const hash = businessPayloadHash(payload);
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
+  state.syncHashState.localPayloadHash = hash;
+  if (persist) persistHashSyncState();
+  return { payload, hash };
+}
+
+// ── business hash engine ───────────────────────────────────────────────
+
+var HASH_EXCLUDE_KEYS = [
+  "updatedAt", "savedAt", "syncedAt", "generatedAt",
+  "lastHeartbeatAt", "localUpdatedAt", "lastSyncedLocalUpdatedAt",
+  "dirtySince", "lastSyncAttemptAt", "diagnostic"
+];
+
+function stripTransient(obj) {
+  if (obj === null || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(stripTransient);
+  var out = {};
+  Object.keys(obj).sort().forEach(function(k) {
+    if (HASH_EXCLUDE_KEYS.indexOf(k) !== -1) return;
+    out[k] = stripTransient(obj[k]);
+  });
+  return out;
+}
+
+function businessHash(normalizedPayload) {
+  var stripped = stripTransient(normalizedPayload);
+  return stableStringify(stripped);
+}
+
+function computeLocalPayloadHash() {
+  return businessHash(normalizeSyncPayload(collectSyncPayload()));
+}
+
+function emptyBusinessHash() {
+  return businessHash(normalizeSyncPayload({}));
+}
+
+function effectiveDirty() {
+  return state.syncHashState.localDirty === true ||
+         computeLocalPayloadHash() !== state.syncHashState.baseRemoteHash;
+}
+
+function hasLearningData(payload) {
+  return !isEffectivelyEmptyLocalPayload(normalizeSyncPayload(payload));
+}
+
+function isStrictlyEmptyLocalPayload(payload) {
+  return isEffectivelyEmptyLocalPayload(normalizeSyncPayload(payload || collectSyncPayload()));
+}
+
+function effectiveDirtyForHash(localPayloadHash = state.syncHashState.localPayloadHash) {
+  const syncState = ensureHashSyncState(state.syncHashState);
+  return syncState.localDirty === true || String(localPayloadHash || "") !== String(syncState.baseRemoteHash || "");
+}
+
+function currentSyncFacts({ persistHash = false } = {}) {
+  const local = refreshLocalPayloadHash({ persist: persistHash });
+  return {
+    payload: local.payload,
+    localPayloadHash: local.hash,
+    effectiveDirty: effectiveDirtyForHash(local.hash),
+    syncState: ensureHashSyncState(state.syncHashState)
+  };
+}
+
+function setHashSyncStatus(status, message = "") {
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
+  state.syncHashState.lastSyncStatus = status || state.syncHashState.lastSyncStatus;
+  if (message) state.syncHashState.lastSyncError = status === "error" || status === "conflict" ? message : state.syncHashState.lastSyncError;
+  persistHashSyncState();
+  updateSyncIndicator();
+}
+
+function clearHashSyncError() {
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
+  state.syncHashState.lastSyncError = "";
+  state.syncHashState.consecutiveSyncFailures = 0;
+  state.syncHashState.nextRetryAt = "";
+  persistHashSyncState();
+}
+
+function backoffDelayForFailure(count) {
+  const index = clamp(Math.max(0, Number(count) || 0), 0, SYNC_BACKOFF_STEPS_MS.length - 1);
+  return SYNC_BACKOFF_STEPS_MS[index];
+}
+
+function recordHashSyncFailure(message) {
+  const now = new Date();
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
+  state.syncHashState.localDirty = true;
+  state.syncHashState.lastSyncStatus = "error";
+  state.syncHashState.lastSyncError = message || "同步失败";
+  state.syncHashState.consecutiveSyncFailures += 1;
+  state.syncHashState.nextRetryAt = new Date(now.getTime() + backoffDelayForFailure(state.syncHashState.consecutiveSyncFailures - 1)).toISOString();
+  state.syncMeta.lastSyncErrorAt = now.toISOString();
+  state.syncMeta.lastSyncErrorMessage = state.syncHashState.lastSyncError;
+  persistSyncMeta();
+  persistHashSyncState();
+  appendAuditEvent({ type: "sync:failed", message: state.syncHashState.lastSyncError });
+  updateSyncIndicator();
+}
+
+function safeSetLocalStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    state.syncHashState = ensureHashSyncState(state.syncHashState);
+    state.syncHashState.lastBackupError = error?.message || "本地备份写入失败";
+    persistHashSyncState();
+    return false;
+  }
+}
+
+function loadHashBackupIndex() {
+  const store = loadJson(HASH_BACKUP_INDEX_KEY, { items: [] });
+  return Array.isArray(store.items) ? store.items.filter(isPlainObject) : [];
+}
+
+function saveHashBackupIndex(items) {
+  safeSetLocalStorage(HASH_BACKUP_INDEX_KEY, JSON.stringify({ items: Array.isArray(items) ? items.slice(-20) : [] }));
+}
+
+function pruneOldHashBackups() {
+  const items = loadHashBackupIndex();
+  const latestStartup = items.filter((item) => item.kind === "startup").slice(-1);
+  const startupKeys = new Set(latestStartup.map((item) => item.key));
+  const recentNonStartup = items.filter((item) => !startupKeys.has(item.key)).slice(-(20 - latestStartup.length));
+  const keep = [...latestStartup, ...recentNonStartup]
+    .filter((item, index, array) => item.key && array.findIndex((other) => other.key === item.key) === index)
+    .sort((a, b) => String(a.savedAt || "").localeCompare(String(b.savedAt || "")));
+  const keepKeys = new Set(keep.map((item) => item.key));
+  items.forEach((item) => {
+    if (item.key && !keepKeys.has(item.key)) {
+      try { localStorage.removeItem(item.key); } catch (_) {}
+    }
+  });
+  saveHashBackupIndex(keep);
+}
+function backupBundle(kind, payload, reason = "") {
+  const normalized = normalizeSyncPayload(payload || collectSyncPayload());
+  return {
+    kind,
+    reason,
+    savedAt: new Date().toISOString(),
+    appVersion: APP_VERSION,
+    payloadHash: businessPayloadHash(normalized),
+    payload: normalized,
+    syncState: ensureHashSyncState(state.syncHashState),
+    pendingOpsCount: getPendingOps().length
+  };
+}
+
+function writeHashBackup(kind, payload = null, reason = "") {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const key = kind === "latest" ? `${HASH_BACKUP_PREFIX}latest` : `${HASH_BACKUP_PREFIX}${kind}:${timestamp}`;
+  const bundle = backupBundle(kind, payload, reason);
+  let ok = safeSetLocalStorage(key, JSON.stringify(bundle));
+  if (!ok) {
+    pruneOldHashBackups();
+    ok = safeSetLocalStorage(key, JSON.stringify(bundle));
+  }
+  if (ok && kind !== "latest") {
+    const items = loadHashBackupIndex();
+    items.push({ key, kind, savedAt: bundle.savedAt, payloadHash: bundle.payloadHash });
+    saveHashBackupIndex(items);
+    pruneOldHashBackups();
+  }
+  return ok;
+}
+
+function writeDailyHashBackups(payload, reason = "") {
+  const date = localDateKey();
+  const latestKey = `${HASH_BACKUP_PREFIX}daily:${date}:latest`;
+  const firstKey = `${HASH_BACKUP_PREFIX}daily:${date}:first_non_empty`;
+  const bundle = backupBundle("daily", payload, reason);
+  safeSetLocalStorage(latestKey, JSON.stringify(bundle));
+  if (!localStorage.getItem(firstKey) && !isEffectivelyEmptyLocalPayload(bundle.payload)) {
+    safeSetLocalStorage(firstKey, JSON.stringify({ ...bundle, kind: "daily:first_non_empty" }));
+  }
+}
+
+function hasNonEmptyBackupData() {
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index) || "";
+    if (!key.startsWith(HASH_BACKUP_PREFIX)) continue;
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key) || "{}");
+      if (parsed && parsed.payload && !isEffectivelyEmptyLocalPayload(parsed.payload)) return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
+function isStrictlyEmptyLocalPayload(payload) {
+  return isEffectivelyEmptyLocalPayload(payload) && !hasNonEmptyBackupData();
+}
+
+function markLocalDirtyAfterBusinessWrite(reason = "change") {
+  if (state.applyingRemotePayload || state.suppressDirty) return;
+  const local = refreshLocalPayloadHash({ persist: false });
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
+  state.syncHashState.localPayloadHash = local.hash;
+  state.syncHashState.localDirty = true;
+  if (!state.syncHashState.dirtySince) state.syncHashState.dirtySince = new Date().toISOString();
+  state.syncHashState.lastSyncStatus = "dirty";
+  persistHashSyncState();
+  try { writeLocalSnapshot(reason); } catch (error) { state.syncHashState.lastBackupError = error?.message || "本地快照写入失败"; persistHashSyncState(); }
+  try { writeDailyBackup(reason); } catch (error) { state.syncHashState.lastBackupError = error?.message || "每日备份写入失败"; persistHashSyncState(); }
+  writeHashBackup("latest", local.payload, reason);
+  writeDailyHashBackups(local.payload, reason);
+  updateSyncIndicator();
+  syncTick({ reason: "local_change", bypassBackoff: true });
+}
+
+function startSyncHeartbeat() {
+  if (state.syncHeartbeatTimer) clearInterval(state.syncHeartbeatTimer);
+  state.syncHeartbeatTimer = setInterval(() => {
+    syncTick({ reason: "heartbeat" });
+  }, SYNC_HEARTBEAT_MS);
+}
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -944,34 +1287,158 @@ function isAuthenticated() {
   return localStorage.getItem(AUTH_KEY) === "true";
 }
 
+// ── P0: Hash sync state migration ──────────────────────────────────────
+// 旧设备没有 vocab_machine_hash_sync_state_v1 时，保守默认 dirty。
+// 旧 syncMeta 不能作为"已同步"证明——只有 syncTick GET 后发现云端 hash 匹配才标记 clean。
+function migrateHashSyncStateIfNeeded() {
+  try {
+    var existing = loadJson(HASH_SYNC_STATE_KEY, null);
+    if (existing && typeof existing.localPayloadHash === "string" && existing.localPayloadHash.length > 0) {
+      // Already has valid hash sync state; ensure persisted
+      state.syncHashState = ensureHashSyncState(existing);
+      persistHashSyncState();
+      return;
+    }
+  } catch (_) { /* proceed with migration */ }
+
+  var local = refreshLocalPayloadHash({ persist: false });
+  var empty = isStrictlyEmptyLocalPayload(local.payload);
+  state.syncHashState = ensureHashSyncState({
+    localPayloadHash: local.hash,
+    localDirty: !empty,
+    baseRemoteHash: "",
+    dirtySince: empty ? "" : new Date().toISOString(),
+    lastSyncStatus: empty ? "local_only" : "dirty"
+  });
+  persistHashSyncState();
+}
+
+// ── P0: Backup recovery ─────────────────────────────────────────────────
+// 当业务 payload 空但 backup 非空时，禁止视为严格空。尝试从 backup 恢复。
+// 恢复必须：normalize + validate + 含学习痕迹 全部通过。
+function tryRestoreFromBackupIfPayloadEmpty() {
+  var payload = normalizeSyncPayload(collectSyncPayload());
+  if (!isEffectivelyEmptyLocalPayload(payload)) return "payload_has_data";
+  if (!hasNonEmptyBackupData()) return "no_backup";
+
+  var today = localDateKey();
+  var yesterday = localDateKey(new Date(Date.now() - 86400000));
+  var candidates = [];
+
+  // Priority: latest → daily:today:first_non_empty → daily:yesterday:first_non_empty → latest startup
+  function addCandidate(source, raw) {
+    if (!raw) return;
+    try {
+      var parsed = JSON.parse(raw);
+      var p = parsed && parsed.payload ? parsed.payload : parsed;
+      if (p && typeof p === "object") candidates.push({ source: source, payload: p });
+    } catch (_) {}
+  }
+
+  addCandidate("latest", localStorage.getItem("vocab_machine_backup:latest"));
+  addCandidate("daily:" + today + ":first_non_empty",
+    localStorage.getItem("vocab_machine_backup:daily:" + today + ":first_non_empty"));
+  if (yesterday !== today) {
+    addCandidate("daily:" + yesterday + ":first_non_empty",
+      localStorage.getItem("vocab_machine_backup:daily:" + yesterday + ":first_non_empty"));
+  }
+
+  // Find latest startup backup
+  try {
+    var idx = loadJson("vocab_machine_backup_index_v1", []);
+    var startups = (Array.isArray(idx) ? idx : []).filter(function(e) { return e && e.tag === "startup"; });
+    startups.sort(function(a, b) { return (b.savedAt || "").localeCompare(a.savedAt || ""); });
+    if (startups.length > 0) {
+      var startupRaw = localStorage.getItem(startups[0].key);
+      addCandidate("startup:" + (startups[0].savedAt || ""), startupRaw);
+    }
+  } catch (_) {}
+
+  for (var i = 0; i < candidates.length; i++) {
+    var candidate = candidates[i];
+    try {
+      var normalized = normalizeSyncPayload(candidate.payload);
+      if (!validateSyncPayload(normalized)) continue;
+      if (isEffectivelyEmptyLocalPayload(normalized)) continue; // empty backup, skip
+      // Restore: apply to business localStorage
+      applySyncPayload(normalized);
+      var restored = refreshLocalPayloadHash({ persist: true });
+      state.syncHashState = ensureHashSyncState(state.syncHashState);
+      state.syncHashState.localPayloadHash = restored.hash;
+      state.syncHashState.localDirty = true;
+      state.syncHashState.baseRemoteHash = "";
+      state.syncHashState.dirtySince = new Date().toISOString();
+      state.syncHashState.lastSyncStatus = "dirty";
+      state.syncHashState.lastSyncError = "已从本地备份 " + candidate.source + " 恢复业务数据";
+      persistHashSyncState();
+      appendAuditEvent({ type: "backup:restored", message: "从 " + candidate.source + " 恢复" });
+      updateSyncIndicator();
+      return "restored:" + candidate.source;
+    } catch (_) { continue; }
+  }
+
+  // All candidates failed → persistent protection state, no cloud writes
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
+  state.syncHashState.localRecoveryRequired = true;
+  persistHashSyncState();
+  setHashSyncStatus("error", "本地备份数据无法解析恢复，请打开 rescue.html 手动导出备份再联系处理。备份数据仍保留在浏览器中。");
+  return "restore_failed";
+}
+
 function init() {
   state.syncMeta = ensureSyncMeta(state.syncMeta);
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
   persistSyncMeta();
+  persistHashSyncState();
+  migrateHashSyncStateIfNeeded();
+  // P0: pendingOps 已冻结。一次性截断超量旧数据。
+  try {
+    var opsStore = loadPendingOpsStore();
+    if (opsStore.ops && opsStore.ops.length > 200) {
+      savePendingOpsStore({ ops: opsStore.ops.slice(-200) });
+    }
+  } catch (_) {}
+  // P0: 启动时检查 localRecoveryRequired 是否可以解除
+  try {
+    var syncState = ensureHashSyncState(state.syncHashState);
+    if (syncState.localRecoveryRequired) {
+      var currentPayload = normalizeSyncPayload(collectSyncPayload());
+      if (validateSyncPayload(currentPayload) && !isEffectivelyEmptyLocalPayload(currentPayload)) {
+        // 用户可能已通过 rescue 或其他方式手动恢复了数据
+        state.syncHashState.localRecoveryRequired = false;
+        state.syncHashState.localDirty = true;
+        state.syncHashState.baseRemoteHash = "";
+        state.syncHashState.dirtySince = new Date().toISOString();
+        state.syncHashState.lastSyncStatus = "dirty";
+        state.syncHashState.lastSyncError = "";
+        persistHashSyncState();
+        appendAuditEvent({ type: "recovery:cleared", message: "启动时检测到本地业务数据已恢复，解除保护状态" });
+      }
+    }
+  } catch (_) {}
   normalizeSettings();
   registerServiceWorker();
+  startSyncHeartbeat();
   document.addEventListener("visibilitychange", function() {
     if (document.visibilityState === "hidden") {
       pausePlaybackForBackground();
-      autoPushToGist({ keepalive: true }).catch(function(e) { recordSyncError("页面隐藏时同步失败：" + (e && e.message || "unknown")); });
+      return;
     }
+    syncTick({ reason: "visible", bypassBackoff: true });
   });
   window.addEventListener("pagehide", function() {
     pausePlaybackForBackground();
-    autoPushToGist({ keepalive: true }).catch(function(e) { recordSyncError("页面关闭时同步失败：" + (e && e.message || "unknown")); });
   });
   window.addEventListener("blur", pausePlaybackForBackground);
   window.addEventListener("resize", fitActiveWord);
   preloadSpeechVoices();
   if (isAuthenticated()) {
     renderSetup();
-    migrateSyncMetaIfNeeded().then(function() {
-      queueAutoPull("init");
-    });
+    initializeP0Sync({ reason: "init" });
   } else {
     renderAuth();
   }
 }
-
 function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   let refreshing = false;
@@ -1161,7 +1628,7 @@ function renderSetup() {
             <div class="sync-grid">
               <label class="field-label">
                 GitHub PAT
-                <input class="input" id="tokenInput" type="password" value="${escapeHtml(state.cloudConfigDraft.token || state.cloud.token)}" autocomplete="off">
+                <input class="input" id="tokenInput" type="text" value="${escapeHtml(state.cloudConfigDraft.token || state.cloud.token)}" autocomplete="off" placeholder="ghp_ 或 github_pat_ 开头">
               </label>
               <label class="field-label">
                 Gist ID
@@ -1190,47 +1657,53 @@ function renderSetup() {
 
 function renderSyncDiagnostics() {
   var meta = ensureSyncMeta(state.syncMeta);
+  var syncState = ensureHashSyncState(state.syncHashState);
+  var facts = currentSyncFacts({ persistHash: false });
   var opsCount = getPendingOps().length;
   var info = computeSyncStatus();
   var cloud = validateSavedCloudConfig(state.cloud);
+  var backups = loadHashBackupIndex();
   var gistDisplay = (state.cloud.gistId || "").trim();
   if (gistDisplay.length > 8) gistDisplay = gistDisplay.slice(0, 4) + "…" + gistDisplay.slice(-4);
+  var shortHash = function(value) { return value ? String(value).slice(0, 10) : "无"; };
   var lines = [];
   lines.push('<div class="settings-panel settings-panel--span4" style="margin-top:8px;">');
   lines.push('<h2 class="panel-title">云同步诊断</h2>');
   lines.push('<div class="control-list" style="font-size:13px;line-height:1.8;">');
 
-  // 配置状态
   var statusLabel = SYNC_STATUS_LABELS[info.status] || "";
   var statusColor = SYNC_STATUS_COLORS[info.status] || "#94a3b8";
-  lines.push('<div>配置状态：<span style="color:' + statusColor + ';font-weight:700;">' + escapeHtml(statusLabel) + '</span></div>');
+  lines.push('<div>同步状态：<span style="color:' + statusColor + ';font-weight:700;">' + escapeHtml(statusLabel) + '</span></div>');
   lines.push('<div>Gist ID：' + escapeHtml(gistDisplay || "未设置") + '</div>');
-  lines.push('<div>PAT 格式校验：' + (cloud.ok ? '✅ 通过' : '❌ ' + escapeHtml(cloud.errors.join("；"))) + '</div>');
-  lines.push('<div>写权限：' + (meta.cloudWritable ? '✅ 可写' : '⚠️ 未确认') + '</div>');
+  lines.push('<div>PAT 格式：' + (cloud.ok ? '通过' : escapeHtml(cloud.errors.join("；"))) + '</div>');
+  lines.push('<div>云端可写：' + (meta.cloudWritable ? '是' : '未确认') + '</div>');
+  lines.push('<div>只读模式：' + (meta.readOnlyMode ? '是' : '否') + '</div>');
+  lines.push('<div>本地 dirty：' + (syncState.localDirty ? 'true' : 'false') + '；有效 dirty：' + (facts.effectiveDirty ? 'true' : 'false') + '</div>');
+  lines.push('<div>baseRemoteHash：' + escapeHtml(shortHash(syncState.baseRemoteHash)) + '；localPayloadHash：' + escapeHtml(shortHash(facts.localPayloadHash)) + '</div>');
+  lines.push('<div>dirtySince：' + escapeHtml(syncState.dirtySince || "无") + '</div>');
+  lines.push('<div>最近成功 Push：' + escapeHtml(syncState.lastSuccessfulPushAt || meta.lastSuccessfulPushAt || "无") + '</div>');
+  lines.push('<div>最近成功 Pull：' + escapeHtml(syncState.lastSuccessfulPullAt || meta.lastSuccessfulPullAt || "无") + '</div>');
+  lines.push('<div>待处理旧 pendingOps：' + opsCount + ' 条（P0 已冻结，不再写入）</div>');
+  lines.push('<div>连续失败：' + syncState.consecutiveSyncFailures + '；下次重试：' + escapeHtml(syncState.nextRetryAt || "无") + '</div>');
+  lines.push('<div>关键备份：' + backups.length + ' 条；最新本地快照：' + escapeHtml(getLocalSnapshotTime()) + '</div>');
+  if (backups.length > 0) {
+    var recentBackups = backups.slice(-5).reverse();
+    lines.push('<div style="font-size:11px;color:#94a3b8;">最近备份：' + recentBackups.map(function(b) {
+      return escapeHtml((b.tag || "?") + " " + (b.savedAt || "").slice(0, 19));
+    }).join("；") + '</div>');
+  }
+  lines.push('<div>今日备份：' + escapeHtml(getDailyBackupTime()) + '</div>');
+  lines.push('<div>最近错误：' + escapeHtml(syncState.lastSyncError || meta.lastSyncErrorMessage || "无") + '</div>');
+  if (syncState.lastBackupError) lines.push('<div>备份写入错误：' + escapeHtml(syncState.lastBackupError) + '</div>');
 
-  // 时间
-  lines.push('<div>最近成功 Push：' + escapeHtml(meta.lastSuccessfulPushAt || "无") + '</div>');
-  lines.push('<div>最近成功 Pull：' + escapeHtml(meta.lastSuccessfulPullAt || "无") + '</div>');
-
-  // pending
-  lines.push('<div>本地待上传：' + opsCount + ' 条</div>');
-  lines.push('<div>本地快照时间：' + escapeHtml(getLocalSnapshotTime()) + '</div>');
-  lines.push('<div>每日备份时间：' + escapeHtml(getDailyBackupTime()) + '</div>');
-  lines.push('<div>最近错误：' + escapeHtml(meta.lastSyncErrorMessage || "无") + '</div>');
-
-  // 导出按钮
   lines.push('<div style="margin-top:8px;">');
   lines.push('<button class="btn btn--ghost" id="exportBackupBtn" type="button" style="font-size:12px;">导出本地完整备份 JSON</button>');
   lines.push('<button class="btn btn--ghost" id="exportDiagnosisBtn" type="button" style="font-size:12px;margin-left:4px;">导出诊断摘要</button>');
   lines.push('</div>');
-
-  // 版本号
   lines.push('<div style="color:#94a3b8;font-size:11px;margin-top:4px;">应用版本：' + escapeHtml(APP_VERSION) + '</div>');
-
   lines.push('</div></div>');
   return lines.join("\n");
 }
-
 function getLocalSnapshotTime() {
   try {
     var raw = localStorage.getItem(LOCAL_SNAPSHOT_KEY);
@@ -1335,24 +1808,31 @@ async function testAndSaveCloudConfig() {
     return;
   }
 
-  // Success
+  // Success: healthcheck only proves write permission. It must not mark the
+  // business snapshot as cloud_saved.
   state.cloud.token = draft.token;
   state.cloud.gistId = draft.gistId;
   persistCloud();
+  resetSyncMetaForGist(draft.gistId);
   state.syncMeta.cloudWritable = true;
   state.syncMeta.readOnlyMode = false;
-  state.syncMeta.conflictMode = false;
   state.syncMeta.lastSyncErrorAt = "";
   state.syncMeta.lastSyncErrorMessage = "";
   state.consecutivePushFailures = 0;
-  resetSyncMetaForGist(draft.gistId);
-  state.syncMeta.cloudWritable = true;
   persistSyncMeta();
+  const local = refreshLocalPayloadHash({ persist: false });
+  state.syncHashState = ensureHashSyncState({
+    ...DEFAULT_HASH_SYNC_STATE,
+    localPayloadHash: local.hash,
+    localDirty: !isEffectivelyEmptyLocalPayload(local.payload),
+    dirtySince: isEffectivelyEmptyLocalPayload(local.payload) ? "" : new Date().toISOString(),
+    lastSyncStatus: isEffectivelyEmptyLocalPayload(local.payload) ? "local_only" : "dirty"
+  });
+  persistHashSyncState();
   updateSyncIndicator();
-  if (statusEl) { statusEl.textContent = "✅ 配置保存成功！已确认 Gist 写入权限。"; statusEl.className = "status status--ok"; }
+  if (statusEl) { statusEl.textContent = "配置保存成功，已确认 Gist 可写；业务数据将在后台安全同步。"; statusEl.className = "status status--ok"; }
 
-  // 保存成功后触发首次同步
-  queueAutoPull("config");
+  initializeP0Sync({ reason: "config" });
 }
 
 function primeSetupBookData(book) {
@@ -1599,24 +2079,37 @@ function exportLocalBackup() {
 
 function exportDiagnosisSummary() {
   var meta = ensureSyncMeta(state.syncMeta);
+  var syncState = ensureHashSyncState(state.syncHashState);
+  var facts = currentSyncFacts({ persistHash: false });
   var opsCount = getPendingOps().length;
   var info = computeSyncStatus();
+  var config = validateSavedCloudConfig(state.cloud);
+  var gist = state.cloud.gistId || "";
+  var gistMasked = gist ? gist.slice(0, 4) + "…" + gist.slice(-4) : "未设置";
   var lines = [];
   lines.push("刷词机同步诊断摘要");
   lines.push("================================");
   lines.push("导出时间：" + new Date().toISOString());
   lines.push("应用版本：" + APP_VERSION);
   lines.push("同步状态：" + info.status + " - " + (info.detail || ""));
-  lines.push("Gist ID：" + (state.cloud.gistId || "未设置").slice(0, 8) + "…");
-  lines.push("PAT 校验：" + (validateSavedCloudConfig(state.cloud).ok ? "通过" : "失败"));
-  lines.push("云端可写：" + (meta.cloudWritable ? "是" : "否"));
+  lines.push("Gist ID：" + gistMasked);
+  lines.push("PAT 格式：" + (config.ok ? "通过" : "失败：" + config.errors.join("；")));
+  lines.push("云端可写：" + (meta.cloudWritable ? "是" : "未确认"));
   lines.push("只读模式：" + (meta.readOnlyMode ? "是" : "否"));
-  lines.push("最近成功 Push：" + (meta.lastSuccessfulPushAt || "无"));
-  lines.push("最近成功 Pull：" + (meta.lastSuccessfulPullAt || "无"));
-  lines.push("本地待上传：" + opsCount + " 条");
-  lines.push("最近错误：" + (meta.lastSyncErrorMessage || "无"));
+  lines.push("localDirty：" + syncState.localDirty);
+  lines.push("effectiveDirty：" + facts.effectiveDirty);
+  lines.push("baseRemoteHash：" + (syncState.baseRemoteHash || "无"));
+  lines.push("localPayloadHash：" + (facts.localPayloadHash || "无"));
+  lines.push("dirtySince：" + (syncState.dirtySince || "无"));
+  lines.push("最近成功 Push：" + (syncState.lastSuccessfulPushAt || meta.lastSuccessfulPushAt || "无"));
+  lines.push("最近成功 Pull：" + (syncState.lastSuccessfulPullAt || meta.lastSuccessfulPullAt || "无"));
+  lines.push("旧 pendingOps：" + opsCount + " 条");
+  lines.push("连续失败：" + syncState.consecutiveSyncFailures);
+  lines.push("下次重试：" + (syncState.nextRetryAt || "无"));
+  lines.push("最近错误：" + (syncState.lastSyncError || meta.lastSyncErrorMessage || "无"));
   lines.push("lastRemoteVersion：" + (meta.lastRemoteVersion || "无"));
   lines.push("lastSyncedPayloadHash：" + (meta.lastSyncedPayloadHash || "无"));
+  lines.push("备份索引数量：" + loadHashBackupIndex().length);
   lines.push("");
 
   var text = lines.join("\n");
@@ -1634,7 +2127,6 @@ function exportDiagnosisSummary() {
     alert("诊断摘要已复制到剪贴板。");
   }
 }
-
 function bindRange(elementId, key, unit, parser, formatter = String) {
   const input = document.getElementById(elementId);
   const output = document.getElementById(`${elementId}Value`);
@@ -3056,6 +3548,83 @@ function bindStatsEvents() {
   if (review) review.addEventListener("click", () => startReview(state.statsMode));
 }
 
+// ── v2 sync.json ops engine ───────────────────────────────────────────
+
+function buildV2OpsFromLocal() {
+  return getPendingOps().map(function(op) { return localOpToWireOp(op); });
+}
+
+function buildV2SyncPayload() {
+  var snapshot = normalizeSyncPayload(collectSyncPayload());
+  var ops = buildV2OpsFromLocal();
+  var clients = {};
+  var meta = ensureSyncMeta(state.syncMeta);
+  clients[meta.clientId] = { lastSeq: meta.localSeq };
+  return {
+    schemaVersion: SYNC_SCHEMA_VERSION,
+    updatedAt: new Date().toISOString(),
+    clientId: meta.clientId,
+    snapshot: snapshot,
+    ops: ops,
+    clients: clients
+  };
+}
+
+function snapshotFromV2Payload(v2) {
+  if (!v2 || !v2.snapshot) return null;
+  return normalizeSyncPayload(v2.snapshot);
+}
+
+function applyOpToSnapshot(snapshot, op) {
+  // op.payload contains the same fields as old flat op
+  var flatOp = { type: op.type, createdAt: op.createdAt };
+  if (op.payload && typeof op.payload === "object") {
+    Object.keys(op.payload).forEach(function(k) { flatOp[k] = op.payload[k]; });
+  }
+  var ops = [flatOp];
+  return normalizeSyncPayload(applyPendingOps(cloneJson(snapshot), ops));
+}
+
+function reduceOps(baseSnapshot, ops) {
+  var current = normalizeSyncPayload(baseSnapshot || {});
+  var sorted = (Array.isArray(ops) ? ops.slice() : []).sort(function(a, b) {
+    return (a.createdAt || "").localeCompare(b.createdAt || "");
+  });
+  sorted.forEach(function(op) {
+    current = applyOpToSnapshot(current, op);
+  });
+  return current;
+}
+
+function mergeOpLists(remoteOps, localOps) {
+  var map = {};
+  (Array.isArray(remoteOps) ? remoteOps : []).forEach(function(op) {
+    if (op && op.opId) map[op.opId] = op;
+  });
+  (Array.isArray(localOps) ? localOps : []).forEach(function(op) {
+    if (op && op.opId) {
+      var existing = map[op.opId];
+      if (existing) {
+        // Same opId — check if identical
+        var existingJson = stableStringify(existing);
+        var newJson = stableStringify(op);
+        if (existingJson !== newJson) {
+          // True conflict: same opId, different content → newer wins by seq
+          if ((Number(op.seq) || 0) >= (Number(existing.seq) || 0)) {
+            map[op.opId] = op;
+          }
+        }
+      } else {
+        map[op.opId] = op;
+      }
+    }
+  });
+  var result = [];
+  Object.keys(map).forEach(function(k) { result.push(map[k]); });
+  result.sort(function(a, b) { return (a.createdAt || "").localeCompare(b.createdAt || ""); });
+  return result;
+}
+
 function collectSyncPayload() {
   const progress = {};
   const unknownProgress = {};
@@ -3229,26 +3798,9 @@ function isEffectivelyEmptyLocalPayload(payload) {
     noUnitStats(normalized);
 }
 
-function shouldRepairEmptyLocalFromRemote(localPayload, remotePayload, ops = []) {
-  if (!Array.isArray(ops) || ops.length) return false;
-  const local = normalizeSyncPayload(localPayload);
-  const remote = normalizeSyncPayload(remotePayload);
-  if (isEffectivelyEmptyLocalPayload(remote)) return false;
-
-  const localEmpty = isEffectivelyEmptyLocalPayload(local);
-  if (localEmpty) return true;
-
-  // Only use the shrink heuristic as a repair path for an already-bound device.
-  // During first-time binding, even a tiny amount of local learning data is real
-  // user data and must not be silently overwritten by a richer cloud snapshot.
-  const meta = ensureSyncMeta(state.syncMeta);
-  const initializedForCurrentGist = meta.initialized && meta.gistId === state.cloud.gistId && Boolean(meta.lastRemoteVersion);
-  const hasUnsyncedLocalTimestamp = Boolean(meta.localUpdatedAt && meta.lastSyncedLocalUpdatedAt && meta.localUpdatedAt !== meta.lastSyncedLocalUpdatedAt);
-  if (!initializedForCurrentGist || hasUnsyncedLocalTimestamp) return false;
-
-  const localScore = syncContentScore(local);
-  const remoteScore = syncContentScore(remote);
-  return remoteScore >= 20 && localScore < remoteScore * 0.1;
+function shouldRepairEmptyLocalFromRemote() {
+  // P0: 已废弃。P0 用 isStrictlyEmptyLocalPayload + initializeP0Sync 替代。
+  throw new Error("shouldRepairEmptyLocalFromRemote 已废弃");
 }
 
 function noMarks(payload) {
@@ -3378,7 +3930,7 @@ function applySettingsSet(payload, op) {
   if (!isPlainObject(op.patch)) return;
   const currentUpdatedAt = dateMs(payload.settings?.updatedAt);
   if (currentUpdatedAt && currentUpdatedAt > dateMs(op.createdAt)) return;
-  payload.settings = normalizeSettingsPayload({ ...(payload.settings || {}), ...op.patch });
+  payload.settings = normalizeSettingsPayload({ ...(payload.settings || {}), ...op.patch, updatedAt: op.createdAt });
 }
 
 // ── P0 同步状态核心函数 ──────────────────────────────────────────────
@@ -3405,12 +3957,12 @@ function stableStringifyHash(payload) {
 }
 
 function computeCurrentPayloadHash() {
-  var payload = normalizeSyncPayload(collectSyncPayload());
-  return stableStringifyHash(payload);
+  return businessPayloadHash(currentBusinessPayload());
 }
 
+// P0: 仅用于 audit/诊断，不得参与业务同步分支决策（Pull/Push/绿灯只看 sync.json 内容 hash）
 function extractRemoteVersion(gist) {
-  return (gist && gist.history && gist.history[0] && gist.history[0].version) ? gist.history[0].version : "";
+  return (gist && gist.history && gist.history[0] && gist.history[0].version) || (gist && gist.updated_at) || "";
 }
 
 function hasActiveError() {
@@ -3431,83 +3983,75 @@ function hasUnsyncedLocalPayload() {
 }
 
 function canShowCloudSaved() {
-  var meta = ensureSyncMeta(state.syncMeta);
-  var opsCount = getPendingOps().length;
-  if (opsCount !== 0) return { ok: false, reason: "仍有 " + opsCount + " 条待上传" };
-  var currentHash = computeCurrentPayloadHash();
-  if (!meta.lastSyncedPayloadHash || currentHash !== meta.lastSyncedPayloadHash) {
-    return { ok: false, reason: "本地数据与上次同步不一致" };
-  }
-  if (!meta.lastRemoteVersion) {
-    return { ok: false, reason: "无有效云端 revision" };
-  }
-  if (hasActiveError()) {
-    return { ok: false, reason: "存在未解决的同步错误" };
-  }
-  return { ok: true };
+  // P0: cloud_saved 只能由 finalizeVerifiedPatch() 写入。
+  // 本函数只读取 lastSyncStatus，不自算 hash/revision/ops。
+  return { ok: state.syncHashState && state.syncHashState.lastSyncStatus === "cloud_saved" };
 }
 
 function buildStatusDetail(status, baseMessage, opsCount) {
   var opsSuffix = opsCount > 0 ? "；本地 " + opsCount + " 条待上传" : "";
   var msg = baseMessage || "";
-  switch (status) {
-    case "invalid_config":
-    case "error":
-    case "read_only":
-    case "conflict":
-      return msg + opsSuffix;
-    case "local_only":
-      if (opsCount > 0) return "本地 " + opsCount + " 条待上传";
-      return msg || "本地数据未上传·需完成同步";
-    default:
-      return msg;
+  if (status === "error" || status === "read_only" || status === "dirty") {
+    return msg + opsSuffix;
   }
+  return msg || opsSuffix;
 }
 
 function computeSyncStatus() {
-  var t = (state.cloud.token || "").trim();
-  var g = (state.cloud.gistId || "").trim();
+  const facts = currentSyncFacts({ persistHash: false });
+  const syncState = ensureHashSyncState(state.syncHashState);
+  const token = (state.cloud.token || "").trim();
+  const gistId = (state.cloud.gistId || "").trim();
 
-  if (!t && !g) {
-    if (getPendingOps().length > 0 || hasUnsyncedLocalPayload()) {
-      return { status: "local_only", detail: buildStatusDetail("local_only", "云端未配置", getPendingOps().length) };
+  if (!token && !gistId) {
+    if (facts.effectiveDirty || !isEffectivelyEmptyLocalPayload(facts.payload)) {
+      return { status: "local_only", detail: "本地进度已保存，云同步未配置" };
     }
     return { status: "unconfigured", detail: "" };
   }
 
-  var cloud = validateSavedCloudConfig(state.cloud);
+  const cloud = validateSavedCloudConfig(state.cloud);
   if (!cloud.ok) {
-    return { status: "invalid_config", detail: buildStatusDetail("invalid_config", cloud.errors.join("；"), getPendingOps().length) };
+    return { status: "invalid_config", detail: cloud.errors.join("；") };
   }
 
-  var meta = ensureSyncMeta(state.syncMeta);
-  if (meta.conflictMode) {
-    return { status: "conflict", detail: buildStatusDetail("conflict", "数据冲突·需手动处理", getPendingOps().length) };
+  // P0: 本地备份恢复失败保护
+  if (syncState.localRecoveryRequired) {
+    return { status: "error", detail: "本地备份待恢复，请打开 rescue.html" };
   }
 
-  if (hasActiveError()) {
-    return { status: "error", detail: buildStatusDetail("error", meta.lastSyncErrorMessage || "同步失败", getPendingOps().length) };
+  if (state.isSyncing) return { status: "syncing", detail: "正在同步" };
+
+  if (state.syncMeta.readOnlyMode) {
+    return { status: "read_only", detail: "只读模式·无法上传" };
   }
 
-  var opsCount = getPendingOps().length;
-  if (opsCount > 0) {
-    return { status: "dirty", detail: "本地 " + opsCount + " 条待上传" };
+  if (syncState.lastSyncStatus === "conflict") {
+    return { status: "conflict", detail: syncState.lastSyncError || "自动合并失败" };
   }
 
-  if (meta.readOnlyMode) {
-    return { status: "read_only", detail: buildStatusDetail("read_only", "只读模式·无法上传", 0) };
+  if (syncState.lastSyncStatus === "error" && facts.effectiveDirty) {
+    return { status: "error", detail: syncState.lastSyncError || "同步失败" };
   }
 
-  if (hasUnsyncedLocalPayload()) {
-    return { status: "local_only", detail: buildStatusDetail("local_only", "本地数据未上传·需完成同步", 0) };
+  // P0 硬要求 0：effectiveDirty 优先于 cloud_saved
+  // 即使 lastSyncStatus === "cloud_saved"，只要又产生了本地操作导致 effectiveDirty=true，
+  // UI 必须显示"本地待上传"而不是绿色。
+  if (facts.effectiveDirty) {
+    return { status: "dirty", detail: "本地待上传" };
   }
 
-  var greenCheck = canShowCloudSaved();
-  if (greenCheck.ok) {
-    return { status: "cloud_saved", detail: meta.lastCloudSaveConfirmedAt || "" };
+  // P0: cloud_saved 只能由 finalizeVerifiedPatch() 写入。
+  // 这里的检查只是读取已写入的状态，不自算 hash 是否匹配。
+  if (syncState.lastSyncStatus === "cloud_saved" && syncState.localPayloadHash && syncState.localPayloadHash === syncState.baseRemoteHash) {
+    return { status: "cloud_saved", detail: syncState.lastSuccessfulPushAt || "" };
   }
 
-  return { status: "unconfigured", detail: "" };
+  if (syncState.lastSyncStatus === "cloud_loaded") {
+    return { status: "cloud_loaded", detail: syncState.lastSuccessfulPullAt || "已从云端更新" };
+  }
+
+  return { status: "local_only", detail: "本地已保存，尚未确认云端保存" };
 }
 
 // ── 配置校验 ──────────────────────────────────────────────────────────
@@ -3560,14 +4104,8 @@ function normalizeCloudConfig() {
 }
 
 function queueAutoPull(reason = "auto") {
-  if (!normalizeCloudConfig()) return;
-  if (state.syncConfigTimer) clearTimeout(state.syncConfigTimer);
-  state.syncConfigTimer = window.setTimeout(() => {
-    state.syncConfigTimer = null;
-    autoPullFromGist();
-  }, reason === "init" ? 0 : AUTO_SYNC_DEBOUNCE_MS);
+  initializeP0Sync({ reason });
 }
-
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -3584,58 +4122,7 @@ function progressDepth(progress) {
   return unit * 100000 + lastWordId;
 }
 
-function progressMapScore(progressMap) {
-  if (!isPlainObject(progressMap)) return 0;
-  return BOOKS.reduce((score, book) => score + progressDepth(progressMap[book.id]), 0);
-}
-
-function unknownProgressMapScore(progressMap) {
-  if (!isPlainObject(progressMap)) return 0;
-  return BOOKS.reduce((score, book) => {
-    const item = isPlainObject(progressMap[book.id]) ? progressMap[book.id] : {};
-    const unitScore = isPlainObject(item.units)
-      ? Object.values(item.units).reduce((sum, progress) => sum + progressDepth(progress), 0)
-      : 0;
-    return score + progressDepth(item.book) + unitScore;
-  }, 0);
-}
-
-function marksMapScore(marksMap) {
-  if (!isPlainObject(marksMap)) return 0;
-  return BOOKS.reduce((score, book) => {
-    const marks = sanitizeMarksPayload(marksMap[book.id]);
-    return score + marks.known.length + marks.unknown.length;
-  }, 0);
-}
-
-function activityMapScore(activityMap) {
-  if (!isPlainObject(activityMap)) return 0;
-  return BOOKS.reduce((score, book) => {
-    const activity = sanitizeActivityPayload(activityMap[book.id]);
-    return score + Object.values(activity.days).reduce((sum, day) => (
-      sum + (Number(day.words) || 0) + (Number(day.known) || 0) + (Number(day.unknown) || 0) + normalizeIdList(day.wordIds).length
-    ), 0);
-  }, 0);
-}
-
-function unitStatsMapScore(unitStatsMap) {
-  if (!isPlainObject(unitStatsMap)) return 0;
-  return BOOKS.reduce((score, book) => {
-    const stats = sanitizeUnitStatsPayload(unitStatsMap[book.id]);
-    return score + Object.values(stats.units).reduce((sum, unit) => sum + (Number(unit.completed) || 0), 0);
-  }, 0);
-}
-
-function syncContentScore(payload) {
-  if (!isPlainObject(payload)) return 0;
-  return (
-    progressMapScore(payload.progress) +
-    unknownProgressMapScore(payload.unknownProgress) +
-    marksMapScore(payload.marks) * 1000000 +
-    activityMapScore(payload.activity) * 100000 +
-    unitStatsMapScore(payload.unitStats) * 100000
-  );
-}
+// P0: syncContentScore 及其 5 个 helper 已删除。P0 不使用数据量评分做同步决策。
 
 function normalizeIdList(ids) {
   return Array.from(new Set((Array.isArray(ids) ? ids : [])
@@ -3700,21 +4187,47 @@ function sanitizeUnitStatsPayload(stats) {
 function parseSyncPayloadContent(content) {
   if (!String(content || "").trim()) return { kind: "empty" };
   try {
-    const payload = JSON.parse(content);
+    var payload = JSON.parse(content);
     if (!isPlainObject(payload) || !Object.keys(payload).length) return { kind: "empty" };
-    if (payload.version !== undefined && payload.version !== 1) return { kind: "invalid" };
-    if (!isPlainObject(payload.settings) || !isPlainObject(payload.progress)) return { kind: "empty" };
-    const normalized = normalizeSyncPayload(payload);
-    if (!validateSyncPayload(normalized)) return { kind: "invalid" };
-    return { kind: "valid", payload: normalized };
-  } catch {
+
+    // v2: schemaVersion === 2
+    if (payload.schemaVersion === 2) {
+      if (!isPlainObject(payload.snapshot)) return { kind: "empty" };
+      var snapshot = snapshotFromV2Payload(payload);
+      if (!snapshot || !validateSyncPayload(snapshot)) return { kind: "invalid" };
+      return {
+        kind: "valid",
+        schemaVersion: 2,
+        snapshot: snapshot,
+        ops: Array.isArray(payload.ops) ? payload.ops : [],
+        clients: isPlainObject(payload.clients) ? payload.clients : {},
+        rawV2: payload
+      };
+    }
+
+    // v1: version === 1 (legacy)
+    if (payload.version === 1) {
+      if (!isPlainObject(payload.settings) || !isPlainObject(payload.progress)) return { kind: "empty" };
+      var normalized = normalizeSyncPayload(payload);
+      if (!validateSyncPayload(normalized)) return { kind: "invalid" };
+      return { kind: "valid", schemaVersion: 1, snapshot: normalized, ops: [], clients: {}, rawV1: payload };
+    }
+
+    return { kind: "invalid" };
+  } catch (_) {
     return { kind: "invalid" };
   }
 }
 
+// P0: 已废弃。P0 不使用 v2 ops 格式上传。
+function wrapLegacyV1Payload() {
+  throw new Error("wrapLegacyV1Payload 已废弃");
+}
+
 async function fetchGistSyncPayload() {
   const { gist, readOnlyAuthFallback, authStatus } = await fetchGistMetadata();
-  const remoteVersion = (gist.history && gist.history[0] && gist.history[0].version) || "";
+  // P0: remoteVersion 仅用于 audit/诊断，不得参与业务同步决策。空值不阻断同步。
+  var remoteVersion = (gist.history && gist.history[0] && gist.history[0].version) || "";
   const remoteUpdatedAt = gist.updated_at || "";
   const files = gist.files || {};
   const primary = files[SYNC_FILE_NAME];
@@ -3796,31 +4309,601 @@ async function readGistFileContent(file, { unauthenticated = false } = {}) {
 }
 
 async function autoPullFromGist() {
-  return syncWithGist();
+  return syncTick({ reason: "manual_pull", bypassBackoff: true });
 }
 
 async function autoPushToGist({ keepalive = false } = {}) {
-  return syncWithGist({ keepalive });
+  return syncTick({ reason: "manual_push", keepalive, bypassBackoff: true });
 }
 
 async function syncWithGist({ keepalive = false } = {}) {
-  if (!normalizeCloudConfig()) return false;
-  if (state.syncInFlight) return state.syncInFlight;
-  state.syncInFlight = runGistSync({ keepalive }).finally(() => {
-    state.syncInFlight = null;
-  });
-  return state.syncInFlight;
+  return syncTick({ reason: "manual", keepalive, bypassBackoff: true });
 }
 
-// ── Push 快照与绿色/红色入口 ──────────────────────────────────────────
+function currentRemoteHash(remote) {
+  return remote && remote.kind === "valid" && remote.snapshot ? businessPayloadHash(remote.snapshot) : "";
+}
 
-function buildPushSnapshot(payloadToPush) {
+function currentRemotePayload(remote) {
+  return remote && remote.kind === "valid" && remote.snapshot ? normalizeSyncPayload(remote.snapshot) : null;
+}
+
+function updateLegacyMetaAfterRemote(remote, payloadHash, type) {
+  const now = new Date().toISOString();
+  state.syncMeta = ensureSyncMeta(state.syncMeta);
+  state.syncMeta.initialized = true;
+  state.syncMeta.gistId = state.cloud.gistId;
+  state.syncMeta.fileName = SYNC_FILE_NAME;
+  state.syncMeta.lastRemoteVersion = remote?.remoteVersion || state.syncMeta.lastRemoteVersion || "";
+  state.syncMeta.lastRemoteUpdatedAt = remote?.remoteUpdatedAt || state.syncMeta.lastRemoteUpdatedAt || "";
+  state.syncMeta.lastSyncedPayloadHash = payloadHash || "";
+  state.syncMeta.lastSyncedLocalUpdatedAt = now;
+  state.syncMeta.lastSyncErrorAt = "";
+  state.syncMeta.lastSyncErrorMessage = "";
+  if (type === "push") {
+    state.syncMeta.lastCloudSaveConfirmedAt = now;
+    state.syncMeta.lastSuccessfulPushAt = now;
+    state.syncMeta.cloudWritable = true;
+    state.syncMeta.readOnlyMode = false;
+  }
+  if (type === "pull") {
+    state.syncMeta.lastSuccessfulPullAt = now;
+  }
+  persistSyncMeta();
+}
+
+function markHashCleanFromRemote(remote, payloadHash, status) {
+  const now = new Date().toISOString();
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
+  state.syncHashState.baseRemoteHash = payloadHash || "";
+  state.syncHashState.localPayloadHash = payloadHash || "";
+  state.syncHashState.localDirty = false;
+  state.syncHashState.dirtySince = "";
+  state.syncHashState.lastSyncStatus = status || "cloud_loaded";
+  state.syncHashState.lastSyncError = "";
+  state.syncHashState.consecutiveSyncFailures = 0;
+  state.syncHashState.nextRetryAt = "";
+  if (status === "cloud_saved") state.syncHashState.lastSuccessfulPushAt = now;
+  if (status === "cloud_loaded") state.syncHashState.lastSuccessfulPullAt = now;
+  persistHashSyncState();
+  if (status === "cloud_saved" || status === "cloud_loaded") {
+    updateLegacyMetaAfterRemote(remote, payloadHash, status === "cloud_saved" ? "push" : "pull");
+    // P0: pendingOps 已冻结，不再参与同步决策，不在此清理
+  }
+  updateSyncIndicator();
+}
+
+function markHashDirty(localHash, reason) {
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
+  state.syncHashState.localPayloadHash = localHash || state.syncHashState.localPayloadHash || "";
+  state.syncHashState.localDirty = true;
+  if (!state.syncHashState.dirtySince) state.syncHashState.dirtySince = new Date().toISOString();
+  state.syncHashState.lastSyncStatus = "dirty";
+  if (reason) state.syncHashState.lastSyncError = reason;
+  persistHashSyncState();
+  updateSyncIndicator();
+}
+
+function savedCloudConfigGate() {
+  state.cloud.token = (state.cloud.token || "").trim();
+  state.cloud.gistId = (state.cloud.gistId || "").trim();
+  const validation = validateSavedCloudConfig(state.cloud);
+  if (!validation.ok) {
+    state.syncMeta = ensureSyncMeta(state.syncMeta);
+    state.syncMeta.cloudWritable = false;
+    state.syncMeta.readOnlyMode = false;
+    persistSyncMeta();
+    setHashSyncStatus("invalid_config", validation.errors.join("；"));
+    return { ok: false, message: validation.errors.join("；") };
+  }
+  persistCloud();
+  return { ok: true, message: "" };
+}
+
+function isIdleForSyncHeartbeat() {
+  return state.view !== "flash" || state.playbackPaused === true;
+}
+
+function setReadOnlySyncState(message) {
+  state.syncMeta = ensureSyncMeta(state.syncMeta);
+  state.syncMeta.cloudWritable = false;
+  state.syncMeta.readOnlyMode = true;
+  state.syncMeta.lastSyncErrorAt = new Date().toISOString();
+  state.syncMeta.lastSyncErrorMessage = message || "GitHub Gist 当前不可写";
+  persistSyncMeta();
+  setHashSyncStatus("read_only", state.syncMeta.lastSyncErrorMessage);
+}
+
+function shouldSkipSyncForBackoff(bypassBackoff) {
+  if (bypassBackoff) return false;
+  const nextRetryAt = ensureHashSyncState(state.syncHashState).nextRetryAt;
+  const time = Date.parse(nextRetryAt || "");
+  return Number.isFinite(time) && time > Date.now();
+}
+
+async function initializeP0Sync({ reason = "init" } = {}) {
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
+  const localAtStart = refreshLocalPayloadHash({ persist: true });
+  writeHashBackup("startup", localAtStart.payload, reason);
+  updateSyncIndicator();
+
+  const gate = savedCloudConfigGate();
+  if (!gate.ok) return false;
+  if (state.isSyncing) return false;
+
+  state.isSyncing = true;
+  setSyncStatus("syncing");
+  try {
+    const remote = await fetchGistSyncPayload();
+    const remotePayload = currentRemotePayload(remote);
+    const remoteHash = currentRemoteHash(remote);
+    // P0: 先尝试 backup 恢复再判断严格空
+    var restoreResult = tryRestoreFromBackupIfPayloadEmpty();
+    var local = refreshLocalPayloadHash({ persist: false });
+    var strictlyEmpty = isStrictlyEmptyLocalPayload(local.payload);
+    var syncState = ensureHashSyncState(state.syncHashState);
+    var effectiveDirty = syncState.localDirty === true || local.hash !== syncState.baseRemoteHash;
+
+    if (remote.kind !== "valid" && remote.kind !== "empty") {
+      recordHashSyncFailure("云端 sync.json 无法解析，已停止自动覆盖");
+      return false;
+    }
+
+    if (remote.readOnlyAuthFallback) {
+      if (strictlyEmpty && remotePayload && restoreResult !== "restore_failed") {
+        writeHashBackup("pre_pull", local.payload, reason);
+        if (applyRemotePayloadSafely(remotePayload)) {
+          renderCurrentView({ touchProgress: false });
+          markHashCleanFromRemote(remote, remoteHash, "cloud_loaded");
+          enterSyncInfoMode("已从云端加载");
+          setReadOnlySyncState("PAT 无效或无写权限，当前只读；已加载云端数据但不会上传。");
+          return true;
+        }
+      }
+      setReadOnlySyncState("PAT 无效或没有 Gist 写权限；本地数据已保留，不会自动覆盖。");
+      return false;
+    }
+
+    state.syncMeta.readOnlyMode = false;
+    state.syncMeta.cloudWritable = true;
+    persistSyncMeta();
+
+    // P0: backup 恢复失败 → 保护状态，不 Pull 不 Push
+    if (restoreResult === "restore_failed") {
+      return false;
+    }
+
+    // P0: backup 恢复成功 → effectiveDirty=true，跳过分支交给 syncTick
+    if (typeof restoreResult === "string" && restoreResult.indexOf("restored:") === 0) {
+      markHashDirty(local.hash, "已从本地备份恢复数据，等待后台同步");
+      setTimeout(function() { syncTick({ reason: "backup_restored", bypassBackoff: true }); }, 0);
+      return false;
+    }
+
+    if (strictlyEmpty) {
+      if (remotePayload) {
+        writeHashBackup("pre_pull", local.payload, reason);
+        if (applyRemotePayloadSafely(remotePayload)) {
+          renderCurrentView({ touchProgress: false });
+          markHashCleanFromRemote(remote, remoteHash, "cloud_loaded");
+          enterSyncInfoMode("已从云端加载");
+          return true;
+        }
+        recordHashSyncFailure("云端数据应用失败");
+        return false;
+      }
+      markHashCleanFromRemote(remote, local.hash, "local_only");
+      return true;
+    }
+
+    if (!effectiveDirty) {
+      if (remotePayload && remoteHash !== syncState.baseRemoteHash) {
+        writeHashBackup("pre_pull", local.payload, reason);
+        if (applyRemotePayloadSafely(remotePayload)) {
+          renderCurrentView({ touchProgress: false });
+          markHashCleanFromRemote(remote, remoteHash, "cloud_loaded");
+          enterSyncInfoMode("已从云端加载");
+          return true;
+        }
+        recordHashSyncFailure("云端数据应用失败");
+        return false;
+      }
+      if (remote.kind === "empty") {
+        markHashDirty(local.hash, "云端缺少 sync.json，等待后台创建");
+        setTimeout(() => syncTick({ reason: "init_create_remote", bypassBackoff: true }), 0);
+        return false;
+      }
+      state.syncHashState = ensureHashSyncState(state.syncHashState);
+      state.syncHashState.localPayloadHash = local.hash;
+      state.syncHashState.lastSyncStatus = state.syncHashState.lastSyncStatus === "cloud_saved" ? "cloud_saved" : "local_only";
+      persistHashSyncState();
+      updateSyncIndicator();
+      return true;
+    }
+
+    markHashDirty(local.hash, "本地有未上传数据，正在后台保存");
+    setTimeout(() => syncTick({ reason: "init_dirty", bypassBackoff: true }), 0);
+    return false;
+  } catch (error) {
+    recordHashSyncFailure(syncErrorMessage(error));
+    return false;
+  } finally {
+    state.isSyncing = false;
+    updateSyncIndicator();
+  }
+}
+
+// ── P0.1 分支函数 ─────────────────────────────────────────────────────
+
+function applyRemotePayloadSafely(payload) {
+  state.applyingRemotePayload = true;
+  try {
+    var normalized = normalizeSyncPayload(payload);
+    if (!validateSyncPayload(normalized)) return false;
+    state.settings = { ...DEFAULT_SETTINGS, ...normalized.settings };
+    normalizeSettings();
+    saveJson(SETTINGS_KEY, state.settings);
+    Object.keys(normalized.progress).forEach(function(bookId) {
+      saveProgress(bookId, normalized.progress[bookId], { touch: false });
+    });
+    Object.keys(normalized.marks).forEach(function(bookId) {
+      saveMarks(bookId, normalized.marks[bookId], { touch: false });
+    });
+    Object.keys(normalized.activity).forEach(function(bookId) {
+      saveActivity(bookId, normalized.activity[bookId], { touch: false });
+    });
+    Object.keys(normalized.unitStats).forEach(function(bookId) {
+      saveUnitStats(bookId, normalized.unitStats[bookId], { touch: false });
+    });
+    Object.keys(normalized.unknownProgress).forEach(function(bookId) {
+      applyUnknownProgressPayload(bookId, normalized.unknownProgress[bookId]);
+    });
+    state.syncMeta.localUpdatedAt = normalized.updatedAt || new Date().toISOString();
+    persistSyncMeta();
+    return true;
+  } finally {
+    state.applyingRemotePayload = false;
+  }
+}
+
+// P0: 已废弃。P0 使用 syncTick() → syncBranchPushLocal()。
+async function pushLocalPayload() {
+  throw new Error("pushLocalPayload 已废弃，请使用 syncTick");
+}
+
+// P0: 已废弃。P0 使用 syncTick() 四分支。
+function pullOrMergeRemotePayload() {
+  throw new Error("pullOrMergeRemotePayload 已废弃，请使用 syncTick");
+}
+
+// P0: 已废弃。P0 使用 syncTick() → syncBranchMerge()。
+function safeMergeAndPush() {
+  throw new Error("safeMergeAndPush 已废弃，请使用 syncTick");
+}
+
+// P0: 已废弃。P0 使用 safeMergePayloads()。
+function autoSafeMerge() {
+  throw new Error("autoSafeMerge 已废弃，请使用 safeMergePayloads");
+}
+
+// P0: 已废弃。cloud_saved 只能由 finalizeVerifiedPatch() → markHashCleanFromRemote() 写入。
+function markHashClean() {
+  throw new Error("markHashClean 已废弃，请使用 markHashCleanFromRemote");
+}
+
+// ── P0.1 syncTick ─────────────────────────────────────────────────────
+
+async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff = false } = {}) {
+  if (state.isSyncing) return false;
+  if (typeof document !== "undefined" && document.hidden) return false;
+
+  // P0: 本地备份恢复失败保护 — 禁止 Pull、禁止 Push
+  const syncStateInit = ensureHashSyncState(state.syncHashState);
+  if (syncStateInit.localRecoveryRequired) return false;
+
+  const gate = savedCloudConfigGate();
+  if (!gate.ok) return false;
+
+  const facts = currentSyncFacts({ persistHash: true });
+  if (reason === "heartbeat" && isIdleForSyncHeartbeat() && !facts.effectiveDirty) return false;
+  if (shouldSkipSyncForBackoff(bypassBackoff)) return false;
+
+  state.isSyncing = true;
+  setSyncStatus("syncing");
+  try {
+    const remote = await fetchGistSyncPayload();
+    const remotePayload = currentRemotePayload(remote);
+    const remoteHash = currentRemoteHash(remote);
+    const local = refreshLocalPayloadHash({ persist: false });
+    const syncState = ensureHashSyncState(state.syncHashState);
+    const effectiveDirty = syncState.localDirty === true || local.hash !== syncState.baseRemoteHash;
+
+    if (remote.kind !== "valid" && remote.kind !== "empty") {
+      recordHashSyncFailure("云端 sync.json 无法解析，已停止同步");
+      return false;
+    }
+
+    if (remote.readOnlyAuthFallback) {
+      const strictlyEmpty = isStrictlyEmptyLocalPayload(local.payload);
+      if (strictlyEmpty && !effectiveDirty && remotePayload) {
+        writeHashBackup("pre_pull", local.payload, reason);
+        if (applyRemotePayloadSafely(remotePayload)) {
+          renderCurrentView({ touchProgress: false });
+          markHashCleanFromRemote(remote, remoteHash, "cloud_loaded");
+        }
+      }
+      setReadOnlySyncState("PAT 无效或无写权限，当前只读；不会上传或显示云端已保存。");
+      return false;
+    }
+
+    state.syncMeta.readOnlyMode = false;
+    state.syncMeta.cloudWritable = true;
+    persistSyncMeta();
+
+    if (remoteHash === syncState.baseRemoteHash && !effectiveDirty) {
+      return true;
+    }
+
+    if (remoteHash === syncState.baseRemoteHash && effectiveDirty) {
+      return syncBranchPushLocal({ remote, local, keepalive, reason });
+    }
+
+    if (remoteHash !== syncState.baseRemoteHash && !effectiveDirty) {
+      if (!remotePayload) {
+        markHashDirty(local.hash, "云端缺少 sync.json，等待后台重新上传本地快照");
+        return false;
+      }
+      writeHashBackup("pre_pull", local.payload, reason);
+      const recheck = currentSyncFacts({ persistHash: true });
+      if (!recheck.effectiveDirty) {
+        if (applyRemotePayloadSafely(remotePayload)) {
+          renderCurrentView({ touchProgress: false });
+          markHashCleanFromRemote(remote, remoteHash, "cloud_loaded");
+          return true;
+        }
+        recordHashSyncFailure("云端数据应用失败");
+        return false;
+      }
+      return syncBranchMerge({ remote, remotePayload, local: recheck, keepalive, reason });
+    }
+
+    return syncBranchMerge({ remote, remotePayload, local, keepalive, reason });
+  } catch (error) {
+    recordHashSyncFailure(syncErrorMessage(error));
+    return false;
+  } finally {
+    state.isSyncing = false;
+    updateSyncIndicator();
+  }
+}
+
+async function syncBranchPushLocal({ remote, local, keepalive, reason }) {
+  const payload = normalizeSyncPayload(local.payload);
+  writeHashBackup("pre_push", payload, reason);
+  const uploadedHash = businessPayloadHash(payload);
+  const result = await patchBusinessPayloadToGist(payload, { remote, keepalive });
+  if (!result.ok) return false;
+  return finalizeVerifiedPatch({
+    uploadedPayload: payload,
+    uploadedHash,
+    verifiedRemote: result.remote,
+    localHashAtBuild: local.hash,
+    applyUploadedToLocal: false
+  });
+}
+
+async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason }) {
+  if (!remotePayload) remotePayload = normalizeSyncPayload({});
+  const currentLocal = local && local.payload ? local : refreshLocalPayloadHash({ persist: true });
+  writeHashBackup("pre_merge", currentLocal.payload, reason);
+  const mergedPayload = safeMergePayloads(remotePayload, currentLocal.payload);
+  const normalized = normalizeSyncPayload(mergedPayload);
+  if (!validateSyncPayload(normalized)) {
+    state.syncHashState = ensureHashSyncState(state.syncHashState);
+    state.syncHashState.lastSyncStatus = "conflict";
+    state.syncHashState.lastSyncError = "自动合并后的数据校验失败；本地数据已保留";
+    persistHashSyncState();
+    updateSyncIndicator();
+    return false;
+  }
+  const uploadedHash = businessPayloadHash(normalized);
+  const result = await patchBusinessPayloadToGist(normalized, { remote, keepalive });
+  if (!result.ok) return false;
+  return finalizeVerifiedPatch({
+    uploadedPayload: normalized,
+    uploadedHash,
+    verifiedRemote: result.remote,
+    localHashAtBuild: currentLocal.localPayloadHash || currentLocal.hash,
+    applyUploadedToLocal: true
+  });
+}
+
+async function patchBusinessPayloadToGist(payload, { remote, keepalive = false } = {}) {
+  const normalized = normalizeSyncPayload(payload);
+  if (!validateSyncPayload(normalized)) {
+    recordHashSyncFailure("准备上传的数据校验失败");
+    return { ok: false };
+  }
+
+  const payloadJson = JSON.stringify(normalized, null, 2);
+  const today = localDateKey();
+  const files = {};
+  files[SYNC_FILE_NAME] = { content: payloadJson };
+  files[SYNC_BACKUP_FILE_NAME] = { content: (remote && remote.rawContent) || "{}" };
+  files[SYNC_CLOUD_BACKUP_PREFIX + today + ".json"] = { content: payloadJson };
+
+  let response;
+  try {
+    response = await fetch("https://api.github.com/gists/" + encodeURIComponent(state.cloud.gistId), {
+      method: "PATCH",
+      keepalive,
+      headers: {
+        Authorization: "Bearer " + state.cloud.token,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ files })
+    });
+  } catch (error) {
+    recordHashSyncFailure("网络请求失败：" + (error && error.message || "unknown"));
+    return { ok: false };
+  }
+
+  if (!response.ok) {
+    recordHashSyncFailure(syncErrorMessage({ message: "云端 PATCH 失败：" + response.status }));
+    return { ok: false };
+  }
+
+  const uploadedHash = businessPayloadHash(normalized);
+  let verified;
+  try {
+    verified = await fetchGistSyncPayload();
+  } catch (error) {
+    recordHashSyncFailure("PATCH 成功但 GET 校验失败：" + (error && error.message || "unknown"));
+    return { ok: false };
+  }
+
+  if (verified.kind !== "valid") {
+    recordHashSyncFailure("PATCH 成功但云端 sync.json 无法通过校验");
+    return { ok: false };
+  }
+  const verifiedHash = currentRemoteHash(verified);
+  if (verifiedHash !== uploadedHash) {
+    recordHashSyncFailure("PATCH 成功但云端内容 hash 不匹配");
+    return { ok: false };
+  }
+  // P0: PATCH 后 GET hash 匹配即确认成功。remoteVersion 仅 audit，不阻断。
+  return { ok: true, remote: verified, uploadedHash };
+}
+
+function finalizeVerifiedPatch({ uploadedPayload, uploadedHash, verifiedRemote, localHashAtBuild, applyUploadedToLocal = false }) {
+  let current = refreshLocalPayloadHash({ persist: false });
+  if (current.hash === uploadedHash) {
+    markHashCleanFromRemote(verifiedRemote, uploadedHash, "cloud_saved");
+    return true;
+  }
+
+  if (applyUploadedToLocal && current.hash === localHashAtBuild) {
+    if (applyRemotePayloadSafely(uploadedPayload)) {
+      renderCurrentView({ touchProgress: false });
+      current = refreshLocalPayloadHash({ persist: false });
+      if (current.hash === uploadedHash) {
+        markHashCleanFromRemote(verifiedRemote, uploadedHash, "cloud_saved");
+        return true;
+      }
+    }
+  }
+
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
+  state.syncHashState.baseRemoteHash = uploadedHash;
+  state.syncHashState.localPayloadHash = current.hash;
+  state.syncHashState.localDirty = true;
+  if (!state.syncHashState.dirtySince) state.syncHashState.dirtySince = new Date().toISOString();
+  state.syncHashState.lastSyncStatus = "dirty";
+  state.syncHashState.lastSyncError = "同步期间检测到新的本地操作，已保留本地改动并等待下轮上传";
+  state.syncHashState.consecutiveSyncFailures = 0;
+  state.syncHashState.nextRetryAt = "";
+  persistHashSyncState();
+  updateLegacyMetaAfterRemote(verifiedRemote, uploadedHash, "push");
+  updateSyncIndicator();
+  return false;
+}
+
+function safeMergePayloads(remotePayload, localPayload) {
+  const remote = normalizeSyncPayload(cloneJson(remotePayload));
+  const local = normalizeSyncPayload(cloneJson(localPayload));
+  const merged = normalizeSyncPayload(remote);
+  merged.settings = normalizeSettingsPayload(local.settings);
+  merged.activeBookId = local.activeBookId || remote.activeBookId;
+  BOOKS.forEach((book) => {
+    merged.progress[book.id] = chooseFurtherProgress(remote.progress[book.id], local.progress[book.id]);
+    merged.unknownProgress[book.id] = mergeUnknownProgress(book, remote.unknownProgress[book.id], local.unknownProgress[book.id]);
+    merged.marks[book.id] = mergeMarksLocalPriority(remote.marks[book.id], local.marks[book.id]);
+    merged.activity[book.id] = mergeActivity(remote.activity[book.id], local.activity[book.id]);
+    merged.unitStats[book.id] = mergeUnitStats(remote.unitStats[book.id], local.unitStats[book.id]);
+  });
+  merged.updatedAt = new Date().toISOString();
+  return normalizeSyncPayload(merged);
+}
+
+function chooseFurtherProgress(remoteProgress, localProgress) {
+  const remote = sanitizeProgressPayload(remoteProgress);
+  const local = sanitizeProgressPayload(localProgress);
+  if (progressDepth(local) >= progressDepth(remote)) return local;
+  return remote;
+}
+
+function mergeUnknownProgress(book, remoteProgress, localProgress) {
+  const remote = normalizeUnknownProgressPayload(book, remoteProgress);
+  const local = normalizeUnknownProgressPayload(book, localProgress);
+  const units = {};
+  Array.from({ length: book.totalUnits }, (_, index) => index + 1).forEach((unit) => {
+    const key = String(unit);
+    units[key] = chooseFurtherProgress(remote.units[key], local.units[key]);
+  });
+  return {
+    book: chooseFurtherProgress(remote.book, local.book),
+    units
+  };
+}
+
+function mergeMarksLocalPriority(remoteMarks, localMarks) {
+  const remote = sanitizeMarksPayload(remoteMarks);
+  const local = sanitizeMarksPayload(localMarks);
+  const ids = new Set([...remote.known, ...remote.unknown, ...local.known, ...local.unknown]);
+  const known = [];
+  const unknown = [];
+  ids.forEach((id) => {
+    if (local.known.includes(id)) known.push(id);
+    else if (local.unknown.includes(id)) unknown.push(id);
+    else if (remote.known.includes(id)) known.push(id);
+    else if (remote.unknown.includes(id)) unknown.push(id);
+  });
+  return sanitizeMarksPayload({ known, unknown });
+}
+
+function mergeActivity(remoteActivity, localActivity) {
+  const remote = sanitizeActivityPayload(remoteActivity);
+  const local = sanitizeActivityPayload(localActivity);
+  const days = {};
+  const keys = new Set([...Object.keys(remote.days), ...Object.keys(local.days)]);
+  keys.forEach((date) => {
+    const a = remote.days[date] || { seconds: 0, words: 0, known: 0, unknown: 0, wordIds: [] };
+    const b = local.days[date] || { seconds: 0, words: 0, known: 0, unknown: 0, wordIds: [] };
+    days[date] = {
+      seconds: Math.max(Number(a.seconds) || 0, Number(b.seconds) || 0),
+      words: Math.max(Number(a.words) || 0, Number(b.words) || 0),
+      known: Math.max(Number(a.known) || 0, Number(b.known) || 0),
+      unknown: Math.max(Number(a.unknown) || 0, Number(b.unknown) || 0),
+      wordIds: normalizeIdList([...(a.wordIds || []), ...(b.wordIds || [])])
+    };
+  });
+  return sanitizeActivityPayload({ days });
+}
+
+function mergeUnitStats(remoteStats, localStats) {
+  const remote = sanitizeUnitStatsPayload(remoteStats);
+  const local = sanitizeUnitStatsPayload(localStats);
+  const units = {};
+  const keys = new Set([...Object.keys(remote.units), ...Object.keys(local.units)]);
+  keys.forEach((unit) => {
+    const a = remote.units[unit] || { completed: 0 };
+    const b = local.units[unit] || { completed: 0 };
+    const completed = Math.max(Number(a.completed) || 0, Number(b.completed) || 0);
+    units[unit] = {
+      completed,
+      updatedAt: dateMs(a.updatedAt) >= dateMs(b.updatedAt) ? a.updatedAt : b.updatedAt
+    };
+  });
+  return sanitizeUnitStatsPayload({ units });
+}
+function buildPushSnapshot(payloadToPush, opIdsToClear) {
   var payload = normalizeSyncPayload(payloadToPush || collectSyncPayload());
   return {
-    pushedOpIds: getPendingOps().map(function(op) { return op.opId; }),
+    pushedOpIds: Array.isArray(opIdsToClear) ? opIdsToClear.filter(Boolean) : [],
     pushedPayload: payload,
     pushedPayloadHash: stableStringifyHash(payload),
-    localUpdatedAtAtBuild: state.syncMeta.localUpdatedAt || new Date().toISOString(),
+    localUpdatedAtAtBuild: payload.updatedAt || state.syncMeta.localUpdatedAt || new Date().toISOString(),
     payloadBuiltAt: new Date().toISOString()
   };
 }
@@ -3831,38 +4914,9 @@ function clearPendingOpsByIds(opIds) {
   savePendingOpsStore({ ops: remaining });
 }
 
-function markCloudSaveConfirmed(snapshot, updatedGist) {
-  var newRevision = extractRemoteVersion(updatedGist);
-  if (!newRevision) {
-    return false;
-  }
-
-  var now = new Date().toISOString();
-
-  clearPendingOpsByIds(snapshot.pushedOpIds);
-
-  state.syncMeta.lastRemoteVersion = newRevision;
-  state.syncMeta.lastRemoteUpdatedAt = updatedGist.updated_at || "";
-  state.syncMeta.lastCloudSaveConfirmedAt = now;
-  state.syncMeta.lastSuccessfulPushAt = now;
-  state.syncMeta.lastSyncedLocalUpdatedAt = snapshot.localUpdatedAtAtBuild;
-  state.syncMeta.lastSyncedPayloadHash = snapshot.pushedPayloadHash;
-  state.syncMeta.dirtySince = "";
-  state.syncMeta.lastSyncErrorAt = "";
-  state.syncMeta.lastSyncErrorMessage = "";
-  state.syncMeta.conflictMode = false;
-  state.syncMeta.readOnlyMode = false;
-  state.syncMeta.cloudWritable = true;
-  state.consecutivePushFailures = 0;
-  persistSyncMeta();
-  updateSyncIndicator();
-  appendAuditEvent({
-    type: "push:succeeded",
-    remoteVersion: newRevision,
-    clearedOpCount: snapshot.pushedOpIds.length,
-    remainingOpCount: getPendingOps().length
-  });
-  return true;
+function markCloudSaveConfirmed() {
+  // P0: 已废弃。P0 使用 finalizeVerifiedPatch() → markHashCleanFromRemote()。
+  throw new Error("markCloudSaveConfirmed 已废弃，请使用 finalizeVerifiedPatch");
 }
 
 function recordSyncError(message, httpStatus) {
@@ -3878,6 +4932,7 @@ function recordSyncError(message, httpStatus) {
 }
 
 async function verifyRemoteContentAfterPatch(gistId, snapshot) {
+  // P0: 业务同步决策只看 sync.json 内容 hash，不依赖 gist.history[0].version
   try {
     var response = await fetch(
       "https://api.github.com/gists/" + encodeURIComponent(gistId),
@@ -3892,11 +4947,9 @@ async function verifyRemoteContentAfterPatch(gistId, snapshot) {
     if (parsed.kind !== "valid") return { verified: false, reason: "远端 sync.json 无效" };
     var remoteHash = stableStringifyHash(parsed.payload);
     if (remoteHash === snapshot.pushedPayloadHash) {
+      // P0: hash 匹配即确认内容一致。revision 仅用于 audit，从 PATCH 响应中取
       var confirmedRevision = (gist.history && gist.history[0] && gist.history[0].version) || "";
-      if (!confirmedRevision) {
-        return { verified: false, reason: "远端 hash 匹配但无法获取 revision" };
-      }
-      return { verified: true, revision: confirmedRevision };
+      return { verified: true, revision: confirmedRevision || "hash-confirmed" };
     }
     return { verified: false, reason: "hash mismatch: expected " + snapshot.pushedPayloadHash.slice(0, 8) + "…" };
   } catch (e) {
@@ -3969,54 +5022,28 @@ function maybeRemindExport() {
 
 function onLocalDataChanged(reason) {
   reason = reason || "change";
-  writeLocalSnapshot(reason);
-  writeDailyBackup(reason);
-  scheduleAutoPush();
+  markLocalDirtyAfterBusinessWrite(reason);
   maybeRemindExport();
 }
 
 // ── 自动推送调度 ──────────────────────────────────────────────────────
 
 function shouldAttemptAutoPush() {
-  if (state.syncInFlight) return false;
-  var cloud = validateSavedCloudConfig(state.cloud);
-  if (!cloud.ok) return false;
-  if (state.syncMeta.readOnlyMode) return false;
-  if (state.syncMeta.conflictMode) return false;
-  if (getPendingOps().length === 0 && !hasUnsyncedLocalPayload()) return false;
-  return true;
+  if (state.isSyncing) return false;
+  const cloud = validateSavedCloudConfig(state.cloud);
+  if (!cloud.ok || state.syncMeta.readOnlyMode) return false;
+  return currentSyncFacts({ persistHash: false }).effectiveDirty;
 }
 
 function scheduleAutoPush() {
   if (!shouldAttemptAutoPush()) return;
-  if (state.autoPushDebounceTimer) clearTimeout(state.autoPushDebounceTimer);
-  state.autoPushDebounceTimer = setTimeout(function() {
-    state.autoPushDebounceTimer = null;
-    if (shouldAttemptAutoPush()) autoPushToGist().catch(function(e) { recordSyncError("自动同步失败：" + (e && e.message || "unknown")); });
-  }, AUTO_PUSH_DEBOUNCE_MS);
-  schedulePeriodicPush();
+  syncTick({ reason: "legacy_schedule", bypassBackoff: true });
 }
 
 function schedulePeriodicPush() {
-  if (state.periodicPushTimer) return;
-  var interval = Math.min(
-    AUTO_PUSH_MAX_INTERVAL_MS,
-    AUTO_PUSH_BASE_INTERVAL_MS * Math.pow(2, state.consecutivePushFailures)
-  );
-  state.periodicPushTimer = setTimeout(function() {
-    state.periodicPushTimer = null;
-    if (shouldAttemptAutoPush()) {
-      autoPushToGist().catch(function(e) { recordSyncError("周期同步失败：" + (e && e.message || "unknown")); }).then(function() {
-        if ((getPendingOps().length > 0 || hasUnsyncedLocalPayload()) && shouldAttemptAutoPush()) {
-          schedulePeriodicPush();
-        }
-      });
-    }
-  }, interval);
+  // P0 sync uses one heartbeat only. This compatibility stub prevents older
+  // callers from starting a second retry loop.
 }
-
-// ── 旧版迁移 ──────────────────────────────────────────────────────────
-
 async function migrateSyncMetaIfNeeded() {
   var meta = ensureSyncMeta(state.syncMeta);
   if (meta.lastSyncedPayloadHash) return;
@@ -4044,251 +5071,54 @@ async function migrateSyncMetaIfNeeded() {
   } catch (_) {}
 }
 
-async function runGistSync(_ref) {
-  var keepalive = (_ref && _ref.keepalive) || false;
-  try {
-    appendAuditEvent({ type: "sync:start" });
-    setSyncStatus("syncing");
-    state.syncMeta = ensureSyncMeta(state.syncMeta);
-    var remote = await fetchGistSyncPayload();
-    var localPayload = normalizeSyncPayload(collectSyncPayload());
-    var ops = getPendingOps();
-
-    // ── remote empty → push local ──
-    if (remote.kind === "empty") {
-      return createRemoteSyncJson(localPayload, remote, { keepalive: keepalive });
-    }
-
-    if (remote.kind !== "valid") {
-      enterSafeConflictMode("云端 sync.json 无法解析。为避免数据丢失，已暂停自动同步。");
-      updateSyncIndicator();
-      return false;
-    }
-
-    // ── read-only fallback: NEVER auto-overwrite non-empty local ──
-    if (remote.readOnlyAuthFallback) {
-      state.syncMeta.readOnlyMode = true;
-      persistSyncMeta();
-      if (isEffectivelyEmptyLocalPayload(localPayload) && ops.length === 0) {
-        enterSyncInfoMode("检测到公开 Gist 但 PAT 无效。本地为空，可以手动恢复（只读）。");
-      } else {
-        enterSafeConflictMode(
-          "GitHub PAT 无效，虽然能只读访问公开 Gist，但本地有学习数据，为防止覆盖已暂停自动同步。请重新填写有 Gist 写入权限的 PAT。"
-        );
-      }
-      updateSyncIndicator();
-      return false;
-    }
-
-    // ── self-heal: only when no pendingOps ──
-    if (shouldRepairEmptyLocalFromRemote(localPayload, remote.payload, ops)) {
-      applySyncPayload(remote.payload);
-      markSyncedWithRemote(remote, remote.payload);
-      clearPendingOps();
-      renderCurrentView({ touchProgress: false });
-      enterSyncInfoMode("已同步云端最新学习数据。");
-      updateSyncIndicator();
-      return true;
-    }
-
-    // ── first-time init ──
-    if (!state.syncMeta.initialized || state.syncMeta.gistId !== state.cloud.gistId || !state.syncMeta.lastRemoteVersion) {
-      if (isEffectivelyEmptyLocalPayload(localPayload) && ops.length === 0) {
-        applySyncPayload(remote.payload);
-        markSyncedWithRemote(remote, remote.payload);
-        clearPendingOps();
-        renderCurrentView({ touchProgress: false });
-        enterSyncInfoMode("已从云端恢复学习数据。");
-        updateSyncIndicator();
-        return true;
-      }
-      enterSafeConflictMode("本地和云端都已有学习数据。为避免覆盖，已暂停自动同步，请先导出本地备份后手动处理。");
-      updateSyncIndicator();
-      return false;
-    }
-
-    var remoteChanged = remote.remoteVersion !== state.syncMeta.lastRemoteVersion;
-    var localChanged = ops.length > 0 || hasUnsyncedLocalPayload();
-
-    // ── both unchanged → no fake green, let computeSyncStatus decide ──
-    if (!remoteChanged && !localChanged) {
-      updateSyncIndicator();
-      return true;
-    }
-
-    // ── only local changed → push ──
-    if (!remoteChanged && localChanged) {
-      return pushPayloadWithBackup(remote, localPayload, { keepalive: keepalive });
-    }
-
-    // ── only remote changed → pull (no green) ──
-    if (remoteChanged && !localChanged) {
-      applySyncPayload(remote.payload);
-      markSyncedWithRemote(remote, remote.payload);
-      if (getPendingOps().length === 0) clearPendingOps();
-      renderCurrentView({ touchProgress: false });
-      enterSyncInfoMode("已同步云端最新学习数据。");
-      updateSyncIndicator();
-      return true;
-    }
-
-    // ── both changed → rebase + push ──
-    if (remoteChanged && localChanged) {
-      if (!ops.length) {
-        // pendingOps empty but hash mismatch → full snapshot push
-        return pushPayloadWithBackup(remote, localPayload, { keepalive: keepalive });
-      }
-      var mergedPayload = normalizeSyncPayload(applyPendingOps(cloneJson(remote.payload), ops));
-      if (!validateSyncPayload(mergedPayload)) {
-        enterSafeConflictMode("本地操作重放后校验失败。为避免数据丢失，已暂停自动同步。");
-        updateSyncIndicator();
-        return false;
-      }
-      return pushPayloadWithBackup(remote, mergedPayload, { keepalive: keepalive, applyBackToLocal: true, acceptCurrentRemoteVersion: true });
-    }
-
-    updateSyncIndicator();
-    return true;
-  } catch (error) {
-    recordSyncError(syncErrorMessage(error));
-    updateSyncIndicator();
-    return false;
-  }
+// P0: 已废弃。P0 使用 syncTick() 统一同步入口。
+async function runGistSync() {
+  throw new Error("runGistSync 已废弃，请使用 syncTick");
 }
 
-async function createRemoteSyncJson(payload, remote, { keepalive = false } = {}) {
-  const normalized = normalizeSyncPayload(payload);
-  if (!validateSyncPayload(normalized)) {
-    enterSafeConflictMode("本地同步数据校验失败，已阻止创建云端 sync.json。");
-    return false;
-  }
-  return patchGistFiles({
-    payload: normalized,
-    remote,
-    keepalive,
-    includeBackup: false,
-    applyBackToLocal: false
+function buildClientsMap(remoteOps, localOps) {
+  var clients = {};
+  (Array.isArray(remoteOps) ? remoteOps : []).concat(Array.isArray(localOps) ? localOps : []).forEach(function(op) {
+    var cid = op.clientId || "";
+    if (!cid) return;
+    var seq = Number(op.seq) || 0;
+    if (!clients[cid] || seq > (clients[cid].lastSeq || 0)) {
+      clients[cid] = { lastSeq: seq };
+    }
   });
+  return clients;
 }
 
-async function pushPayloadWithBackup(remote, payload, { keepalive = false, applyBackToLocal = false, acceptCurrentRemoteVersion = false } = {}) {
-  if (!state.syncMeta.initialized || state.syncMeta.gistId !== state.cloud.gistId || !state.syncMeta.lastRemoteVersion) {
-    enterSafeConflictMode("本地尚未从云端初始化，请先拉取云端数据。");
-    return false;
-  }
-  if (!acceptCurrentRemoteVersion && remote.remoteVersion !== state.syncMeta.lastRemoteVersion) {
-    enterSafeConflictMode("云端版本已变化，已禁止覆盖。请先完成安全同步。");
-    return false;
-  }
-  if (acceptCurrentRemoteVersion && !remote.remoteVersion) {
-    enterSafeConflictMode("云端版本未知，已禁止覆盖。");
-    return false;
-  }
-  const normalized = normalizeSyncPayload(payload);
-  if (!validateSyncPayload(normalized)) {
-    enterSafeConflictMode("本地同步数据校验失败，已阻止上传。");
-    return false;
-  }
-  const remoteScore = syncContentScore(remote.payload);
-  const localScore = syncContentScore(normalized);
-  if (remoteScore >= 20 && localScore < remoteScore * 0.1) {
-    enterSafeConflictMode("本地数据量明显小于云端，疑似缓存清空或数据损坏，已阻止上传。");
-    return false;
-  }
-  return patchGistFiles({
-    payload: normalized,
-    remote,
-    keepalive,
-    includeBackup: true,
-    applyBackToLocal
-  });
+// P0: 已废弃。P0 使用 syncTick() 统一同步入口。
+async function createRemoteSyncJson() {
+  throw new Error("createRemoteSyncJson 已废弃");
 }
 
-async function patchGistFiles(_ref) {
-  var payload = _ref.payload;
-  var remote = _ref.remote;
-  var keepalive = _ref.keepalive || false;
-  var includeBackup = _ref.includeBackup !== false;
-  var applyBackToLocal = _ref.applyBackToLocal || false;
-
-  // snapshot 必须用真正写入 Gist 的 payload，不能用 collectSyncPayload()
-  var snapshot = buildPushSnapshot(payload);
-  var today = localDateKey();
-
-  var files = {};
-  files[SYNC_FILE_NAME] = { content: JSON.stringify(payload, null, 2) };
-  if (includeBackup) {
-    files[SYNC_BACKUP_FILE_NAME] = {
-      content: (remote && remote.rawContent) || JSON.stringify((remote && remote.payload) || {}, null, 2)
-    };
-  }
-  files[SYNC_CLOUD_BACKUP_PREFIX + today + ".json"] = { content: JSON.stringify(payload, null, 2) };
-
-  var response;
-  try {
-    response = await fetch("https://api.github.com/gists/" + encodeURIComponent(state.cloud.gistId), {
-      method: "PATCH",
-      keepalive: keepalive,
-      headers: {
-        Authorization: "Bearer " + state.cloud.token,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ files: files })
-    });
-  } catch (e) {
-    recordSyncError("网络请求失败：" + (e && e.message), 0);
-    return false;
-  }
-
-  if (!response.ok) {
-    recordSyncError(syncErrorMessage({ message: "云端推送失败：" + response.status }), response.status);
-    return false;
-  }
-
-  var updatedGist;
-  try {
-    updatedGist = await response.json();
-  } catch (e) {
-    recordSyncError("解析 PATCH 响应失败", response.status);
-    return false;
-  }
-
-  if (applyBackToLocal) applySyncPayload(payload);
-
-  var newRevision = extractRemoteVersion(updatedGist);
-  if (newRevision) {
-    return markCloudSaveConfirmed(snapshot, updatedGist);
-  }
-
-  // 2xx but no revision → verify remote content
-  var verified = await verifyRemoteContentAfterPatch(state.cloud.gistId, snapshot);
-  if (verified.verified && verified.revision) {
-    return markCloudSaveConfirmed(snapshot, { history: [{ version: verified.revision }], updated_at: updatedGist.updated_at || "" });
-  }
-
-  recordSyncError("PATCH 返回 2xx 但无法确认远端内容：" + (verified.reason || "unknown"));
-  return false;
+// P0: 已废弃。P0 使用 syncTick() 统一同步入口。
+async function pushPayloadWithBackup() {
+  throw new Error("pushPayloadWithBackup 已废弃");
 }
 
-function markSyncedWithRemote(remote, payload) {
-  var syncedAt = (payload && payload.updatedAt) || new Date().toISOString();
-  state.syncMeta = {
-    ...ensureSyncMeta(state.syncMeta),
-    initialized: true,
-    gistId: state.cloud.gistId,
-    fileName: SYNC_FILE_NAME,
-    lastRemoteVersion: remote.remoteVersion || "",
-    lastRemoteUpdatedAt: remote.remoteUpdatedAt || "",
-    localUpdatedAt: syncedAt,
-    lastSyncedLocalUpdatedAt: syncedAt
-  };
-  persistSyncMeta();
+// ── 旧版 PATCH 引擎（P0 已废弃，syncTick 使用 patchBusinessPayloadToGist）──
+// P0: 以下两个函数已封死，防止任何旧路径绕过 syncTick 直接 PATCH Gist
+
+async function patchGistFilesV2() {
+  throw new Error("patchGistFilesV2 已废弃，请使用 patchBusinessPayloadToGist");
+}
+
+async function patchGistFiles() {
+  throw new Error("patchGistFiles 已废弃，请使用 patchBusinessPayloadToGist");
+}
+// P0: 已废弃。P0 使用 markHashCleanFromRemote()。
+function markSyncedWithRemote() {
+  throw new Error("markSyncedWithRemote 已废弃，请使用 markHashCleanFromRemote");
 }
 
 function enterSafeConflictMode(message) {
-  state.syncMeta.conflictMode = true;
+  state.syncMeta.lastSyncErrorAt = new Date().toISOString();
+  state.syncMeta.lastSyncErrorMessage = message || "同步已安全阻断";
   persistSyncMeta();
+  appendAuditEvent({ type: "sync:blocked", message: message || "同步已安全阻断" });
   if (state.view === "setup") {
     state.setupStatus = { message: message, type: "error" };
     renderSetup();
@@ -4314,7 +5144,10 @@ function syncErrorMessage(error) {
 function applySyncPayload(payload) {
   const normalized = normalizeSyncPayload(payload);
   if (!validateSyncPayload(normalized)) return false;
+  const previousApplying = state.applyingRemotePayload;
+  const previousSuppressDirty = state.suppressDirty;
   state.applyingRemotePayload = true;
+  state.suppressDirty = true;
   try {
     state.settings = { ...DEFAULT_SETTINGS, ...normalized.settings };
     normalizeSettings();
@@ -4328,10 +5161,10 @@ function applySyncPayload(payload) {
     persistSyncMeta();
     return true;
   } finally {
-    state.applyingRemotePayload = false;
+    state.applyingRemotePayload = previousApplying;
+    state.suppressDirty = previousSuppressDirty;
   }
 }
-
 function applyUnknownProgressPayload(bookId, progressMap) {
   const book = BOOKS.find((item) => item.id === bookId);
   if (!book || !isPlainObject(progressMap)) return;
