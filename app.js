@@ -3203,26 +3203,21 @@ function parseSyncPayloadContent(content) {
 }
 
 async function fetchGistSyncPayload() {
-  const response = await fetch(`https://api.github.com/gists/${encodeURIComponent(state.cloud.gistId)}`, {
-    headers: {
-      Authorization: `Bearer ${state.cloud.token}`,
-      Accept: "application/vnd.github+json"
-    }
-  });
-  if (!response.ok) throw new Error(`云端拉取失败：${response.status}`);
-  const gist = await response.json();
+  const { gist, readOnlyAuthFallback, authStatus } = await fetchGistMetadata();
   const remoteVersion = gist.history?.[0]?.version || gist.updated_at || "";
   const remoteUpdatedAt = gist.updated_at || "";
   const files = gist.files || {};
   const primary = files[SYNC_FILE_NAME];
   if (primary) {
-    const content = await readGistFileContent(primary);
+    const content = await readGistFileContent(primary, { unauthenticated: readOnlyAuthFallback });
     return {
       ...parseSyncPayloadContent(content),
       rawContent: content,
       remoteVersion,
       remoteUpdatedAt,
-      fileName: SYNC_FILE_NAME
+      fileName: SYNC_FILE_NAME,
+      readOnlyAuthFallback,
+      authStatus
     };
   }
 
@@ -3232,7 +3227,7 @@ async function fetchGistSyncPayload() {
   const candidates = Object.values(files)
     .filter((file) => file && file.filename !== SYNC_BACKUP_FILE_NAME && /\.json$/i.test(file.filename || ""));
   for (const file of candidates) {
-    const content = await readGistFileContent(file);
+    const content = await readGistFileContent(file, { unauthenticated: readOnlyAuthFallback });
     const parsed = parseSyncPayloadContent(content);
     if (parsed.kind === "valid") {
       return {
@@ -3240,22 +3235,52 @@ async function fetchGistSyncPayload() {
         rawContent: content,
         remoteVersion,
         remoteUpdatedAt,
-        fileName: file.filename || ""
+        fileName: file.filename || "",
+        readOnlyAuthFallback,
+        authStatus
       };
     }
   }
-  return { kind: "empty", rawContent: "", remoteVersion, remoteUpdatedAt, fileName: "" };
+  return { kind: "empty", rawContent: "", remoteVersion, remoteUpdatedAt, fileName: "", readOnlyAuthFallback, authStatus };
 }
 
-async function readGistFileContent(file) {
-  if (!file.truncated && typeof file.content === "string") return file.content;
-  if (!file.raw_url) return "";
-  const response = await fetch(file.raw_url, {
+async function fetchGistMetadata() {
+  const url = `https://api.github.com/gists/${encodeURIComponent(state.cloud.gistId)}`;
+  const authResponse = await fetch(url, {
     headers: {
       Authorization: `Bearer ${state.cloud.token}`,
-      Accept: "application/vnd.github.raw"
+      Accept: "application/vnd.github+json"
     }
   });
+  if (authResponse.ok) {
+    return { gist: await authResponse.json(), readOnlyAuthFallback: false, authStatus: authResponse.status };
+  }
+
+  // If the token is invalid but the Gist is public, still read it without the
+  // Authorization header so existing cloud data can restore the UI. Writes will
+  // still be blocked until the user enters a valid PAT.
+  if (authResponse.status === 401 || authResponse.status === 403) {
+    const publicResponse = await fetch(url, {
+      headers: {
+        Accept: "application/vnd.github+json"
+      }
+    });
+    if (publicResponse.ok) {
+      return { gist: await publicResponse.json(), readOnlyAuthFallback: true, authStatus: authResponse.status };
+    }
+  }
+
+  throw new Error(`云端拉取失败：${authResponse.status}`);
+}
+
+async function readGistFileContent(file, { unauthenticated = false } = {}) {
+  if (!file.truncated && typeof file.content === "string") return file.content;
+  if (!file.raw_url) return "";
+  const headers = {
+    Accept: "application/vnd.github.raw"
+  };
+  if (!unauthenticated) headers.Authorization = `Bearer ${state.cloud.token}`;
+  const response = await fetch(file.raw_url, { headers });
   if (!response.ok) throw new Error(`云端文件读取失败：${response.status}`);
   return response.text();
 }
@@ -3291,6 +3316,20 @@ async function runGistSync({ keepalive = false } = {}) {
 
     if (remote.kind !== "valid") {
       enterSafeConflictMode("云端 sync.json 无法解析。为避免数据丢失，已暂停自动同步。");
+      return false;
+    }
+
+    if (remote.readOnlyAuthFallback) {
+      const localChangedForReadOnly = ops.length > 0 || state.syncMeta.localUpdatedAt !== state.syncMeta.lastSyncedLocalUpdatedAt;
+      if (!localChangedForReadOnly || isEffectivelyEmptyLocalPayload(localPayload)) {
+        applySyncPayload(remote.payload);
+        markSyncedWithRemote(remote, remote.payload);
+        clearPendingOps();
+        renderCurrentView({ touchProgress: false });
+        enterSafeConflictMode("已从公开 Gist 只读恢复学习数据，但当前 GitHub PAT 无效，无法上传新进度。请重新填写有 Gist 写入权限的 PAT。");
+        return true;
+      }
+      enterSafeConflictMode("GitHub PAT 无效，虽然能只读访问公开 Gist，但本地有未同步改动，已暂停上传。请重新填写有 Gist 写入权限的 PAT。");
       return false;
     }
 
@@ -3480,8 +3519,8 @@ function enterSyncInfoMode(message) {
 
 function syncErrorMessage(error) {
   const raw = error?.message || "云同步失败";
-  if (/401/.test(raw)) return "云同步失败：GitHub Token 无效或没有 Gist 权限。请检查 PAT。";
-  if (/403/.test(raw)) return "云同步失败：GitHub API 拒绝访问，可能是 Token 权限或频率限制。";
+  if (/401/.test(raw)) return "云同步失败：GitHub PAT 无效、已过期，或粘贴的不是完整 token。请重新生成带 Gist 写入权限的 PAT。";
+  if (/403/.test(raw)) return "云同步失败：GitHub API 拒绝访问，可能是 PAT 没有 Gist 写入权限、频率限制，或短时间内多次使用无效 token 被临时限制。";
   if (/404/.test(raw)) return "云同步失败：没有找到这个 Gist。请检查 Gist ID 是否正确，以及 Token 是否能访问它。";
   return raw;
 }
