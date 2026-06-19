@@ -1,16 +1,42 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#111318">
-    <title>考研词汇自动刷词机</title>
-    <link rel="manifest" href="manifest.json">
-    <link rel="icon" href="icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="style.css">
-  </head>
-  <body>
-    <main id="app" class="app-shell" aria-live="polite"></main>
-    <script src="app.js?v=28" defer></script>
-  </body>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>考研词汇自动刷词机</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="manifest" href="manifest.json" />
+  <style>
+    .cloud-sync-indicator {
+      display: flex; align-items: center; gap: 6px;
+      position: fixed; top: 12px; right: 16px; z-index: 2000;
+      background: rgba(15,23,42,0.88); backdrop-filter: blur(12px);
+      border-radius: 24px; padding: 6px 14px;
+      font-size: 12px; font-weight: 600; color: #e2e8f0;
+      cursor: pointer; user-select: none;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.28);
+      white-space: nowrap;
+    }
+    .cloud-sync-indicator__dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background-color: var(--sync-color, #94a3b8);
+      flex-shrink: 0;
+    }
+    .cloud-sync-indicator__label { }
+    .cloud-sync-indicator__time {
+      color: #94a3b8; font-weight: 400;
+    }
+    .cloud-sync-indicator.is-syncing .cloud-sync-indicator__dot {
+      animation: sync-pulse 0.8s ease-in-out infinite;
+    }
+    @keyframes sync-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+  </style>
+</head>
+<body>
+<div id="app"></div>
+<script src="app.js"></script>
+</body>
 </html>
