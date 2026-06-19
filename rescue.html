@@ -469,7 +469,13 @@
     const lines = [];
     lines.push("刷词机本地数据救援诊断摘要");
     lines.push("================================");
-    lines.push("生成时间：" + bundle.meta.generatedAt);
+    function fmtLocal(value) {
+      if (!value) return "无";
+      var d = new Date(value);
+      if (Number.isNaN(d.getTime())) return String(value);
+      return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(d);
+    }
+    lines.push("生成时间：" + fmtLocal(bundle.meta.generatedAt) + "（UTC: " + bundle.meta.generatedAt + "）");
     lines.push("页面地址：" + bundle.meta.href);
     lines.push("Origin：" + bundle.meta.origin);
     lines.push("User Agent：" + bundle.meta.userAgent);
