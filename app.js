@@ -2888,6 +2888,28 @@ function isEffectivelyEmptyLocalPayload(payload) {
     noUnitStats(normalized);
 }
 
+function shouldRepairEmptyLocalFromRemote(localPayload, remotePayload, ops = []) {
+  if (!Array.isArray(ops) || ops.length) return false;
+  const local = normalizeSyncPayload(localPayload);
+  const remote = normalizeSyncPayload(remotePayload);
+  if (isEffectivelyEmptyLocalPayload(remote)) return false;
+
+  const localEmpty = isEffectivelyEmptyLocalPayload(local);
+  if (localEmpty) return true;
+
+  // Only use the shrink heuristic as a repair path for an already-bound device.
+  // During first-time binding, even a tiny amount of local learning data is real
+  // user data and must not be silently overwritten by a richer cloud snapshot.
+  const meta = ensureSyncMeta(state.syncMeta);
+  const initializedForCurrentGist = meta.initialized && meta.gistId === state.cloud.gistId && Boolean(meta.lastRemoteVersion);
+  const hasUnsyncedLocalTimestamp = Boolean(meta.localUpdatedAt && meta.lastSyncedLocalUpdatedAt && meta.localUpdatedAt !== meta.lastSyncedLocalUpdatedAt);
+  if (!initializedForCurrentGist || hasUnsyncedLocalTimestamp) return false;
+
+  const localScore = syncContentScore(local);
+  const remoteScore = syncContentScore(remote);
+  return remoteScore >= 20 && localScore < remoteScore * 0.1;
+}
+
 function noMarks(payload) {
   return BOOKS.every((book) => {
     const marks = payload.marks?.[book.id] || {};
@@ -3247,6 +3269,20 @@ async function runGistSync({ keepalive = false } = {}) {
     if (remote.kind !== "valid") {
       enterSafeConflictMode("云端 sync.json 无法解析。为避免数据丢失，已暂停自动同步。");
       return false;
+    }
+
+    // Self-heal: older buggy builds or interrupted syncs may leave syncMeta marked as
+    // initialized while the actual local learning data is empty. In that case the
+    // normal revision comparison can incorrectly conclude "nothing to sync" and keep
+    // showing 0 progress. When there are no unsynced local operations, prefer the
+    // richer remote snapshot and repair local state silently.
+    if (shouldRepairEmptyLocalFromRemote(localPayload, remote.payload, ops)) {
+      applySyncPayload(remote.payload);
+      markSyncedWithRemote(remote, remote.payload);
+      clearPendingOps();
+      renderCurrentView({ touchProgress: false });
+      setSyncStatus("ok");
+      return true;
     }
 
     if (!state.syncMeta.initialized || state.syncMeta.gistId !== state.cloud.gistId || !state.syncMeta.lastRemoteVersion) {
