@@ -253,6 +253,9 @@ function exportAuditLog() {
     if (typeof flushAuditBuffer === "function") flushAuditBuffer();
     var store = loadJson(SYNC_AUDIT_KEY, { events: [] });
     var events = Array.isArray(store.events) ? store.events : [];
+    events.sort(function(a, b) {
+      return (Date.parse(a.at || "") || 0) - (Date.parse(b.at || "") || 0);
+    });
     var bundle = {
       exportedAt: beijingISOString(),
       appVersion: APP_VERSION,

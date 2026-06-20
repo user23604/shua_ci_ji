@@ -104,6 +104,23 @@ function computeSyncStatus() {
     return { status: "cloud_loaded", detail: syncState.lastSuccessfulPullAt || "已从云端更新" };
   }
 
+  // P0.7 clean fallback: hash 一致 + 有成功记录 → cloud_saved/cloud_loaded
+  if (
+    !facts.effectiveDirty &&
+    Boolean(syncState.baseRemoteHash) &&
+    facts.localPayloadHash === syncState.baseRemoteHash &&
+    (syncState.lastSuccessfulPushAt || syncState.lastSuccessfulPullAt)
+  ) {
+    var pushAt = syncState.lastSuccessfulPushAt || "";
+    var pullAt = syncState.lastSuccessfulPullAt || "";
+    var pushTime = Date.parse(pushAt) || 0;
+    var pullTime = Date.parse(pullAt) || 0;
+    if (pushTime >= pullTime) {
+      return { status: "cloud_saved", detail: pushAt || "" };
+    }
+    return { status: "cloud_loaded", detail: pullAt || "已从云端更新" };
+  }
+
   return { status: "local_only", detail: "本地已保存，尚未确认云端保存" };
 }
 

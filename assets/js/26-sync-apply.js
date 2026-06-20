@@ -44,7 +44,7 @@ function markHashCleanFromRemote(remote, payloadHash, status, options = {}) {
   if (status === "cloud_saved" || status === "cloud_loaded") {
     updateLegacyMetaAfterRemote(remote, payloadHash, status === "cloud_saved" ? "push" : "pull");
   }
-  updateSyncIndicator();
+  refreshVisibleSyncDiagnostics();
   return true;
 }
 
@@ -58,7 +58,7 @@ function markHashDirty(localHash, reason, options = {}) {
   state.syncHashState.lastSyncStatus = "dirty";
   if (reason) state.syncHashState.lastSyncError = reason;
   persistHashSyncState();
-  updateSyncIndicator();
+  refreshVisibleSyncDiagnostics();
   return true;
 }
 

@@ -288,6 +288,34 @@ function updateSyncIndicatorDOM(info) {
 }
 
 
+// ── P0.7 诊断 UI 防抖刷新 ─────────────────────────────────────────────────
+
+var syncDiagnosticsRefreshTimer = 0;
+
+function isEditingSetupField() {
+  var el = document.activeElement;
+  if (!el) return false;
+  var tag = String(el.tagName || "").toLowerCase();
+  return tag === "input" || tag === "textarea" || tag === "select";
+}
+
+function refreshVisibleSyncDiagnostics() {
+  updateSyncIndicator();
+  if (state.view !== "setup") return;
+  clearTimeout(syncDiagnosticsRefreshTimer);
+  syncDiagnosticsRefreshTimer = setTimeout(function() {
+    if (state.view !== "setup") return;
+    if (typeof renderCloudSyncDiagnostics === "function") {
+      renderCloudSyncDiagnostics();
+      return;
+    }
+    if (typeof renderSetup === "function" && !isEditingSetupField()) {
+      renderSetup();
+    }
+  }, 100);
+}
+
+
 function normalizeSyncStatus(status) {
   return Object.prototype.hasOwnProperty.call(SYNC_STATUS_LABELS, status) ? status : "unconfigured";
 }

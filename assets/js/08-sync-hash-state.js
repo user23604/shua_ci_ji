@@ -448,34 +448,77 @@ function clearHashSyncError() {
 }
 
 
+// ── P0.7 clean 状态判断（watchdog/网络错误不覆盖已确认的 cloud_saved/cloud_loaded）──
+
+function isCleanConfirmedSyncState(facts, syncState) {
+  facts = facts || currentSyncFacts({ persistHash: false });
+  syncState = ensureHashSyncState(syncState || state.syncHashState);
+  return (
+    !facts.effectiveDirty &&
+    Boolean(syncState.baseRemoteHash) &&
+    facts.localPayloadHash === syncState.baseRemoteHash &&
+    (Boolean(syncState.lastSuccessfulPushAt) || Boolean(syncState.lastSuccessfulPullAt))
+  );
+}
+
+
 function recordHashSyncFailure(message, options) {
   options = options || {};
   if (isStaleSyncRun(options.runId)) return false;
   const now = new Date();
   var text = message && message.message ? message.message : String(message || "同步失败");
-  const facts = currentSyncFacts({ persistHash: false });
+  var facts = currentSyncFacts({ persistHash: false });
   state.syncHashState = ensureHashSyncState(state.syncHashState);
-  state.syncHashState.localDirty = shouldMarkDirtyOnFailure(options.errorKind || "unknown", facts);
-  state.syncHashState.localPayloadHash = facts.localPayloadHash;
-  if (state.syncHashState.localDirty && !state.syncHashState.dirtySince) state.syncHashState.dirtySince = beijingISOString(now);
-  state.syncHashState.lastSyncStatus = options.status || "error";
-  state.syncHashState.lastSyncError = text;
-  state.syncHashState.consecutiveSyncFailures += 1;
-  state.syncHashState.nextRetryAt = beijingISOString(new Date(now.getTime() + backoffDelayForFailure(state.syncHashState.consecutiveSyncFailures - 1)));
+  var syncState = state.syncHashState;
+
+  // P0.7: 非阻塞错误（watchdog/网络/版本检查）且数据已 clean 时，保持成功态
+  var nonBlockingErrors = ["sync_watchdog_timeout", "remote_get_failed", "version_check_failed"];
+  var isNonBlocking = nonBlockingErrors.indexOf(options.errorKind || "") !== -1;
+  var cleanConfirmed = isNonBlocking && isCleanConfirmedSyncState(facts, syncState);
+  var preserveCleanSuccessStatus = isNonBlocking && cleanConfirmed;
+
+  if (preserveCleanSuccessStatus) {
+    // clean 分支：明确写回正确成功态，绝不到达 lastSyncStatus = "error"
+    syncState.localDirty = false;
+    syncState.localPayloadHash = facts.localPayloadHash;
+    syncState.lastSyncError = text;
+    syncState.lastSyncErrorAt = beijingISOString();
+    if (syncState.lastSuccessfulPushAt) {
+      syncState.lastSyncStatus = "cloud_saved";
+    } else {
+      syncState.lastSyncStatus = "cloud_loaded";
+    }
+    // 不覆盖 baseRemoteHash、lastSuccessfulPushAt/PullAt
+  } else {
+    // 原有失败逻辑
+    // dirty 保护：原本 dirty 不清掉
+    if (facts.effectiveDirty || syncState.localDirty) {
+      syncState.localDirty = true;
+    } else {
+      syncState.localDirty = shouldMarkDirtyOnFailure(options.errorKind || "unknown", facts);
+    }
+    if (syncState.localDirty && !syncState.dirtySince) syncState.dirtySince = beijingISOString(now);
+    syncState.lastSyncStatus = options.status || "error";
+    syncState.lastSyncError = text;
+    syncState.lastSyncErrorAt = beijingISOString();
+  }
+  syncState.localPayloadHash = facts.localPayloadHash;
+  syncState.consecutiveSyncFailures += 1;
+  syncState.nextRetryAt = beijingISOString(new Date(now.getTime() + backoffDelayForFailure(syncState.consecutiveSyncFailures - 1)));
   state.syncMeta = ensureSyncMeta(state.syncMeta);
   state.syncMeta.lastSyncAttemptAt = beijingISOString(now);
-  state.syncMeta.lastSyncErrorAt = beijingISOString(now);
+  state.syncMeta.lastSyncErrorAt = beijingISOString();
   state.syncMeta.lastSyncErrorMessage = text;
   persistSyncMeta();
   persistHashSyncState();
   appendAuditEvent({ type: "sync:failed", message: text, httpStatus: options.httpStatus || 0 });
-  updateSyncIndicator();
+  refreshVisibleSyncDiagnostics();
   if (options.banner === true) showSyncFailureBanner("同步失败", text, { runId: options.runId });
   if (options.dialog === true || options.banner === true) {
     var dialogExtra = {
-      severity: options.severity || "error",
+      severity: preserveCleanSuccessStatus ? "warning" : (options.severity || "error"),
       code: options.errorKind || "SYNC_FAILED",
-      title: options.title || "同步失败",
+      title: options.title || (preserveCleanSuccessStatus ? "同步检查超时" : "同步失败"),
       message: text,
       technical: options.technical || "",
       runId: options.runId,
@@ -496,9 +539,9 @@ function recordHashSyncFailure(message, options) {
       dialogExtra.remoteHash = options.remoteHash || "";
       dialogExtra.localHasBusinessData = hasBusinessData(facts.payload);
       dialogExtra.remoteHasBusinessData = Boolean(options.remoteHasBusinessData);
-      dialogExtra.baseRemoteHash = state.syncHashState.baseRemoteHash || "";
+      dialogExtra.baseRemoteHash = syncState.baseRemoteHash || "";
       dialogExtra.localPayloadHash = facts.localPayloadHash || "";
-      dialogExtra.localDirty = state.syncHashState.localDirty === true;
+      dialogExtra.localDirty = syncState.localDirty === true;
       dialogExtra.effectiveDirty = facts.effectiveDirty === true;
       dialogExtra.readOnly = Boolean(Object.prototype.hasOwnProperty.call(options, "readOnly") ? options.readOnly : (state.syncMeta && state.syncMeta.readOnlyMode));
     }

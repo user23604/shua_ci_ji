@@ -411,7 +411,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
       state.syncLastProgressAt = 0;
       state.lastSyncFinishedAt = Date.now();
       appendAuditEvent({ type: "sync:complete", message: "runId=" + runId + " elapsed=" + elapsedMs + "ms reason=" + (reason || "") });
-      updateSyncIndicator();
+      refreshVisibleSyncDiagnostics();
     }
     releaseCrossTabSyncLock();
   }

@@ -1,7 +1,7 @@
 "use strict";
 
-const APP_VERSION = "2026-06-20-p4-modular3";
-const APP_BUILD_ID = "2026-06-20-p4-modular3";
+const APP_VERSION = "2026-06-20-p4-modular4";
+const APP_BUILD_ID = "2026-06-20-p4-modular4";
 
 
 const ACCESS_KEY = "ky2027";

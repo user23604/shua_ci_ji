@@ -215,7 +215,7 @@ function finalizeVerifiedPatch({ uploadedPayload, uploadedHash, verifiedRemote, 
     state.syncHashState.lastSyncError = "云端已写入本轮 payload，但本地在同步期间又发生新变化，因此不能标记为已保存";
     persistHashSyncState();
     updateLegacyMetaAfterRemote(verifiedRemote, uploadedHash, "push");
-    updateSyncIndicator();
+    refreshVisibleSyncDiagnostics();
     showSyncProblemDialog({ severity: "warning", code: "LOCAL_CHANGED_DURING_VERIFY", title: "本地又产生了新变化", message: state.syncHashState.lastSyncError, runId });
     return false;
   }

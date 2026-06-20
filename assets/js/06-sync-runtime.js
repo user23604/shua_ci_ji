@@ -102,13 +102,21 @@ function releaseStuckSyncLockIfNeeded() {
   state.syncLastProgressAt = 0;
   state.syncRunId = ++state.syncRunSeq;
   releaseCrossTabSyncLock();
-  recordHashSyncFailure("同步流程超过 45 秒没有进展，已自动解除同步锁。本地数据未丢失。", {
-    errorKind: "sync_watchdog_timeout",
-    banner: true,
-    dialog: true,
-    technical: "lastStage=" + (state.syncLastProgressStage || "")
-  });
-  updateSyncIndicator();
+  var cleanForWatchdog = isCleanConfirmedSyncState();
+  recordHashSyncFailure(
+    cleanForWatchdog
+      ? "本地数据和上次确认的云端数据一致。刚才一轮后台同步检查卡住，系统已自动解除同步锁，后续会继续自动检查。"
+      : "同步流程超过 45 秒没有进展，已自动解除同步锁。本地数据未丢失。",
+    {
+      errorKind: "sync_watchdog_timeout",
+      banner: true,
+      dialog: true,
+      severity: cleanForWatchdog ? "warning" : "error",
+      title: cleanForWatchdog ? "同步检查超时" : undefined,
+      technical: "lastStage=" + (state.syncLastProgressStage || "")
+    }
+  );
+  refreshVisibleSyncDiagnostics();
   return true;
 }
 
