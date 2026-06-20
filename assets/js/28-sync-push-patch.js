@@ -63,7 +63,7 @@ function buildSyncEnvelope(payload) {
     version: 1,
     appVersion: APP_VERSION,
     buildId: APP_BUILD_ID,
-    updatedAt: new Date().toISOString(),
+    updatedAt: beijingISOString(),
     clientId: ensureSyncMeta(state.syncMeta).clientId,
     payloadHash,
     payload: normalized
@@ -163,7 +163,7 @@ function finalizeVerifiedPatch({ uploadedPayload, uploadedHash, verifiedRemote, 
     state.syncHashState.baseRemoteHash = uploadedHash;
     state.syncHashState.localPayloadHash = current.hash;
     state.syncHashState.localDirty = true;
-    if (!state.syncHashState.dirtySince) state.syncHashState.dirtySince = new Date().toISOString();
+    if (!state.syncHashState.dirtySince) state.syncHashState.dirtySince = beijingISOString();
     state.syncHashState.lastSyncStatus = "dirty";
     state.syncHashState.lastSyncError = "云端已写入本轮 payload，但本地在同步期间又发生新变化，因此不能标记为已保存";
     persistHashSyncState();
@@ -182,8 +182,8 @@ function buildPushSnapshot(payloadToPush, opIdsToClear) {
     pushedOpIds: Array.isArray(opIdsToClear) ? opIdsToClear.filter(Boolean) : [],
     pushedPayload: payload,
     pushedPayloadHash: stableStringifyHash(payload),
-    localUpdatedAtAtBuild: payload.updatedAt || state.syncMeta.localUpdatedAt || new Date().toISOString(),
-    payloadBuiltAt: new Date().toISOString()
+    localUpdatedAtAtBuild: payload.updatedAt || state.syncMeta.localUpdatedAt || beijingISOString(),
+    payloadBuiltAt: beijingISOString()
   };
 }
 
@@ -203,7 +203,7 @@ function markCloudSaveConfirmed() {
 
 function recordSyncError(message, httpStatus) {
   httpStatus = httpStatus || 0;
-  var now = new Date().toISOString();
+  var now = beijingISOString();
   state.syncMeta.lastSyncErrorAt = now;
   state.syncMeta.lastSyncErrorMessage = message;
   state.syncMeta.lastSyncAttemptAt = now;

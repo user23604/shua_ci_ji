@@ -152,7 +152,7 @@ function recordUnitCompletion(bookId, unit) {
   const stats = loadUnitStats(bookId);
   const key = String(unit);
   const item = stats.units[key] || { completed: 0 };
-  const updatedAt = new Date().toISOString();
+  const updatedAt = beijingISOString();
   const completed = Math.max(0, Number(item.completed) || 0) + 1;
   stats.units[key] = { completed, updatedAt };
   saveUnitStats(bookId, stats);

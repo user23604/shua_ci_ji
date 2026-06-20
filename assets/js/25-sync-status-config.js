@@ -193,7 +193,7 @@ function setReadOnlySyncState(message, options = {}) {
   state.syncMeta = ensureSyncMeta(state.syncMeta);
   state.syncMeta.cloudWritable = false;
   state.syncMeta.readOnlyMode = true;
-  state.syncMeta.lastSyncErrorAt = new Date().toISOString();
+  state.syncMeta.lastSyncErrorAt = beijingISOString();
   state.syncMeta.lastSyncErrorMessage = message || "GitHub Gist 当前不可写";
   persistSyncMeta();
   setHashSyncStatus("read_only", state.syncMeta.lastSyncErrorMessage, { runId: options.runId });

@@ -97,7 +97,7 @@ function markSyncedWithRemote() {
 
 
 function enterSafeConflictMode(message) {
-  state.syncMeta.lastSyncErrorAt = new Date().toISOString();
+  state.syncMeta.lastSyncErrorAt = beijingISOString();
   state.syncMeta.lastSyncErrorMessage = message || "同步已安全阻断";
   persistSyncMeta();
   appendAuditEvent({ type: "sync:blocked", message: message || "同步已安全阻断" });

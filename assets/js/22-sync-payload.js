@@ -15,7 +15,7 @@ function collectSyncPayload() {
   });
   return {
     version: 1,
-    updatedAt: new Date().toISOString(),
+    updatedAt: beijingISOString(),
     activeBookId: state.settings.bookId,
     settings: { ...state.settings },
     progress,
@@ -83,7 +83,7 @@ function normalizeSyncPayload(payload) {
   });
   return {
     version: 1,
-    updatedAt: typeof source.updatedAt === "string" && source.updatedAt ? source.updatedAt : new Date().toISOString(),
+    updatedAt: typeof source.updatedAt === "string" && source.updatedAt ? source.updatedAt : beijingISOString(),
     activeBookId: BOOKS.some((book) => book.id === source.activeBookId) ? source.activeBookId : normalizeSettingsPayload(source.settings).bookId,
     settings: normalizeSettingsPayload(source.settings),
     progress,

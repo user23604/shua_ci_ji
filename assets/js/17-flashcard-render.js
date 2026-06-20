@@ -11,9 +11,9 @@ function renderFlashcard({ touchProgress = true } = {}) {
     return;
   }
   if (state.reviewMode?.mode === "unknown-archive") {
-    saveUnknownProgress(book.id, state.reviewMode.scope || currentUnknownScope(), { lastWordId: word.id, unit: word.unit, updatedAt: new Date().toISOString() }, { touch: touchProgress });
+    saveUnknownProgress(book.id, state.reviewMode.scope || currentUnknownScope(), { lastWordId: word.id, unit: word.unit, updatedAt: beijingISOString() }, { touch: touchProgress });
   } else if (!state.reviewMode) {
-    saveProgress(book.id, { lastWordId: word.id, unit: word.unit, updatedAt: new Date().toISOString() }, { touch: touchProgress });
+    saveProgress(book.id, { lastWordId: word.id, unit: word.unit, updatedAt: beijingISOString() }, { touch: touchProgress });
   }
   const marks = loadMarks(book.id);
   const markedKind = marks.known.includes(word.id) ? "known" : marks.unknown.includes(word.id) ? "unknown" : "";

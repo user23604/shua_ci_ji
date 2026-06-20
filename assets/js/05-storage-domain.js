@@ -220,7 +220,7 @@ function persistSyncMeta() {
 
 function touchLocalSync() {
   state.syncMeta = ensureSyncMeta(state.syncMeta);
-  state.syncMeta.localUpdatedAt = new Date().toISOString();
+  state.syncMeta.localUpdatedAt = beijingISOString();
   persistSyncMeta();
 }
 

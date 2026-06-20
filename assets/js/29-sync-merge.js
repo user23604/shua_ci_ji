@@ -13,7 +13,7 @@ function safeMergePayloads(remotePayload, localPayload) {
     merged.activity[book.id] = mergeActivity(remote.activity[book.id], local.activity[book.id]);
     merged.unitStats[book.id] = mergeUnitStats(remote.unitStats[book.id], local.unitStats[book.id]);
   });
-  merged.updatedAt = new Date().toISOString();
+  merged.updatedAt = beijingISOString();
   return normalizeSyncPayload(merged);
 }
 

@@ -13,7 +13,7 @@ function buildV2SyncPayload() {
   clients[meta.clientId] = { lastSeq: meta.localSeq };
   return {
     schemaVersion: SYNC_SCHEMA_VERSION,
-    updatedAt: new Date().toISOString(),
+    updatedAt: beijingISOString(),
     clientId: meta.clientId,
     snapshot: snapshot,
     ops: ops,
@@ -92,7 +92,7 @@ function applyPendingOps(payload, ops) {
     else if (op.type === "settings.set") applySettingsSet(merged, op);
   });
   const latestOpTime = compactPendingOps(ops).reduce((latest, op) => Math.max(latest, dateMs(op.createdAt)), dateMs(merged.updatedAt));
-  merged.updatedAt = new Date(latestOpTime || Date.now()).toISOString();
+  merged.updatedAt = beijingISOString(new Date(latestOpTime || Date.now()));
   return normalizeSyncPayload(merged);
 }
 

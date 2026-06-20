@@ -86,7 +86,8 @@ function syncRiskTechnicalText(fields) {
 function markReadOnlyDirtyState(message, facts, options = {}) {
   if (isStaleSyncRun(options.runId)) return false;
   const currentFacts = facts && facts.payload ? facts : currentSyncFacts({ persistHash: true });
-  const now = new Date().toISOString();
+  const now = beijingISOString();
+
   state.syncHashState = ensureHashSyncState(state.syncHashState);
   state.syncHashState.localPayloadHash = currentFacts.localPayloadHash || state.syncHashState.localPayloadHash || "";
   state.syncHashState.localDirty = true;
@@ -197,7 +198,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
 
   try {
     state.syncMeta = ensureSyncMeta(state.syncMeta);
-    state.syncMeta.lastSyncAttemptAt = new Date().toISOString();
+    state.syncMeta.lastSyncAttemptAt = beijingISOString();
     persistSyncMeta();
 
     markSyncProgress("remote:get:start", runId);

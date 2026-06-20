@@ -218,7 +218,7 @@ async function classifyGithubResponseError(response, action) {
   const reset = response.headers && response.headers.get ? response.headers.get("X-RateLimit-Reset") : "";
   let message = (action || "GitHub 请求") + "失败：HTTP " + status;
   if (status === 401) message = "GitHub PAT 无效或已过期，请重新生成带 Gist 权限的 PAT。";
-  else if (status === 403 && remaining === "0") message = "GitHub API 限流，请等待到 " + (reset ? new Date(Number(reset) * 1000).toISOString() : "reset 时间") + " 后重试。";
+  else if (status === 403 && remaining === "0") message = "GitHub API 限流，请等待到 " + (reset ? beijingISOString(new Date(Number(reset) * 1000)) : "reset 时间") + " 后重试。";
   else if (status === 403) message = "GitHub API 拒绝访问，可能是 PAT 权限不足、scope 不含 Gist，或触发限流。";
   else if (status === 404) message = "没有找到这个 Gist，或当前 token 无权访问 private gist。";
   else if (status === 409 || status === 422) message = "GitHub 拒绝 PATCH 内容或请求格式，请导出诊断联系处理。";

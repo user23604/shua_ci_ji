@@ -51,7 +51,7 @@ function backupBundle(kind, payload, reason = "") {
   return {
     kind,
     reason,
-    savedAt: new Date().toISOString(),
+    savedAt: beijingISOString(),
     appVersion: APP_VERSION,
     buildId: APP_BUILD_ID,
     nonEmpty: hasBusinessData(normalized),
@@ -68,7 +68,7 @@ function backupBundle(kind, payload, reason = "") {
 
 
 function writeHashBackup(kind, payload = null, reason = "") {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const timestamp = beijingISOString().replace(/[:.]/g, "-");
   const key = kind === "latest" ? `${HASH_BACKUP_PREFIX}latest` : `${HASH_BACKUP_PREFIX}${kind}:${timestamp}`;
   const bundle = backupBundle(kind, payload, reason);
   let ok = safeSetLocalStorage(key, JSON.stringify(bundle));
@@ -120,7 +120,7 @@ function markLocalDirtyAfterBusinessWrite(reason = "change") {
   state.syncHashState = ensureHashSyncState(state.syncHashState);
   state.syncHashState.localPayloadHash = local.hash;
   state.syncHashState.localDirty = true;
-  if (!state.syncHashState.dirtySince) state.syncHashState.dirtySince = new Date().toISOString();
+  if (!state.syncHashState.dirtySince) state.syncHashState.dirtySince = beijingISOString();
   state.syncHashState.lastSyncStatus = "dirty";
   persistHashSyncState();
   try { writeLocalSnapshot(reason); } catch (error) { state.syncHashState.lastBackupError = error?.message || "本地快照写入失败"; persistHashSyncState(); }
@@ -346,7 +346,7 @@ function writeLocalSnapshot(reason) {
   var payload = normalizeSyncPayload(collectSyncPayload());
   safeLocalStorageSet(LOCAL_SNAPSHOT_KEY, JSON.stringify({
     reason: reason,
-    savedAt: new Date().toISOString(),
+    savedAt: beijingISOString(),
     pendingOpsCount: getPendingOps().length,
     payload: payload
   }), { priority: "snapshot" });
@@ -370,7 +370,7 @@ function writeDailyBackup(reason) {
   if (newHash !== storedHash) {
     safeLocalStorageSet(key, JSON.stringify({
       reason: reason,
-      savedAt: new Date().toISOString(),
+      savedAt: beijingISOString(),
       payloadHash: newHash,
       payload: payload
     }), { priority: "daily_backup" });
@@ -383,7 +383,7 @@ function appendAuditEvent(event) {
   var events = Array.isArray(store.events) ? store.events : [];
   events.push({
     id: createOpId(),
-    at: new Date().toISOString(),
+    at: beijingISOString(),
     pendingOpsCount: getPendingOps().length,
     localUpdatedAt: state.syncMeta.localUpdatedAt,
     lastRemoteVersion: state.syncMeta.lastRemoteVersion,

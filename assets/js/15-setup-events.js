@@ -66,7 +66,7 @@ async function testAndSaveCloudConfig() {
       body: JSON.stringify({
         files: {
           [SYNC_HEALTHCHECK_FILE_NAME]: {
-            content: "sync probe at " + new Date().toISOString() + " clientId=" + ensureSyncMeta().clientId
+            content: "sync probe at " + beijingISOString() + " clientId=" + ensureSyncMeta().clientId
           }
         }
       })
@@ -102,7 +102,7 @@ async function testAndSaveCloudConfig() {
     ...DEFAULT_HASH_SYNC_STATE,
     localPayloadHash: local.hash,
     localDirty: hasBusinessData(local.payload),
-    dirtySince: hasBusinessData(local.payload) ? new Date().toISOString() : "",
+    dirtySince: hasBusinessData(local.payload) ? beijingISOString() : "",
     lastSyncStatus: hasBusinessData(local.payload) ? "dirty" : "local_only"
   });
   persistHashSyncState();
@@ -218,7 +218,7 @@ function exportLocalBackup() {
   var payload = normalizeSyncPayload(collectSyncPayload());
   var meta = ensureSyncMeta(state.syncMeta);
   var bundle = {
-    exportedAt: new Date().toISOString(),
+    exportedAt: beijingISOString(),
     appVersion: APP_VERSION,
     pendingOpsCount: getPendingOps().length,
     syncMeta: meta,
@@ -227,7 +227,7 @@ function exportLocalBackup() {
   var json = JSON.stringify(bundle, null, 2);
   var blob = new Blob([json], { type: "application/json;charset=utf-8" });
   var url = URL.createObjectURL(blob);
-  var stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  var stamp = beijingISOString().replace(/[:.]/g, "-");
   var a = document.createElement("a");
   a.href = url;
   a.download = "shua-ci-ji-backup-" + stamp + ".json";

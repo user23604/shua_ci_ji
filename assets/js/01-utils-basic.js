@@ -19,7 +19,8 @@ function formatLocalDateTime(value) {
   return new Intl.DateTimeFormat("zh-CN", {
     year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false
+    hour12: false,
+    timeZone: "Asia/Shanghai"
   }).format(d);
 }
 
@@ -59,23 +60,41 @@ function freqAlpha(freq) {
 }
 
 
+function beijingISOString(date) {
+  if (date === undefined || date === null) date = new Date();
+  if (!(date instanceof Date) || isNaN(date.getTime())) return "";
+  const ms = date.getTime() + 8 * 3600000;
+  const bj = new Date(ms);
+  return bj.getUTCFullYear() + "-" +
+    String(bj.getUTCMonth() + 1).padStart(2, "0") + "-" +
+    String(bj.getUTCDate()).padStart(2, "0") + "T" +
+    String(bj.getUTCHours()).padStart(2, "0") + ":" +
+    String(bj.getUTCMinutes()).padStart(2, "0") + ":" +
+    String(bj.getUTCSeconds()).padStart(2, "0") + "." +
+    String(bj.getUTCMilliseconds()).padStart(3, "0") + "+08:00";
+}
+
+
 function localDateKey(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
+  const ms = (date instanceof Date ? date.getTime() : Date.parse(date)) + 8 * 3600000;
+  const bj = new Date(Number.isFinite(ms) ? ms : Date.now() + 8 * 3600000);
+  const year = bj.getUTCFullYear();
+  const month = String(bj.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(bj.getUTCDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
 
 
 function startOfLocalDay(date = new Date()) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const ms = date.getTime() + 8 * 3600000;
+  const bj = new Date(ms);
+  return new Date(Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate()));
 }
 
 
 function addDays(date, days) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
+  const ms = date.getTime() + days * 86400000;
+  return new Date(ms);
 }
 
 

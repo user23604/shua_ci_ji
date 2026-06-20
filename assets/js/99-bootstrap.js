@@ -23,7 +23,7 @@ function init() {
         state.syncHashState.localRecoveryRequired = false;
         state.syncHashState.localDirty = true;
         state.syncHashState.baseRemoteHash = "";
-        state.syncHashState.dirtySince = new Date().toISOString();
+        state.syncHashState.dirtySince = beijingISOString();
         state.syncHashState.lastSyncStatus = "dirty";
         state.syncHashState.lastSyncError = "";
         persistHashSyncState();

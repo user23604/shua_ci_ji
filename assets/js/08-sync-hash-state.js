@@ -457,14 +457,14 @@ function recordHashSyncFailure(message, options) {
   state.syncHashState = ensureHashSyncState(state.syncHashState);
   state.syncHashState.localDirty = shouldMarkDirtyOnFailure(options.errorKind || "unknown", facts);
   state.syncHashState.localPayloadHash = facts.localPayloadHash;
-  if (state.syncHashState.localDirty && !state.syncHashState.dirtySince) state.syncHashState.dirtySince = now.toISOString();
+  if (state.syncHashState.localDirty && !state.syncHashState.dirtySince) state.syncHashState.dirtySince = beijingISOString(now);
   state.syncHashState.lastSyncStatus = options.status || "error";
   state.syncHashState.lastSyncError = text;
   state.syncHashState.consecutiveSyncFailures += 1;
-  state.syncHashState.nextRetryAt = new Date(now.getTime() + backoffDelayForFailure(state.syncHashState.consecutiveSyncFailures - 1)).toISOString();
+  state.syncHashState.nextRetryAt = beijingISOString(new Date(now.getTime() + backoffDelayForFailure(state.syncHashState.consecutiveSyncFailures - 1)));
   state.syncMeta = ensureSyncMeta(state.syncMeta);
-  state.syncMeta.lastSyncAttemptAt = now.toISOString();
-  state.syncMeta.lastSyncErrorAt = now.toISOString();
+  state.syncMeta.lastSyncAttemptAt = beijingISOString(now);
+  state.syncMeta.lastSyncErrorAt = beijingISOString(now);
   state.syncMeta.lastSyncErrorMessage = text;
   persistSyncMeta();
   persistHashSyncState();
@@ -525,7 +525,7 @@ function migrateHashSyncStateIfNeeded() {
     localPayloadHash: local.hash,
     localDirty: !empty,
     baseRemoteHash: "",
-    dirtySince: empty ? "" : new Date().toISOString(),
+    dirtySince: empty ? "" : beijingISOString(),
     lastSyncStatus: empty ? "local_only" : "dirty"
   });
   persistHashSyncState();

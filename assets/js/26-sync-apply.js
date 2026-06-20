@@ -1,7 +1,7 @@
 "use strict";
 
 function updateLegacyMetaAfterRemote(remote, payloadHash, type) {
-  const now = new Date().toISOString();
+  const now = beijingISOString();
   state.syncMeta = ensureSyncMeta(state.syncMeta);
   state.syncMeta.initialized = true;
   state.syncMeta.gistId = state.cloud.gistId;
@@ -27,7 +27,7 @@ function updateLegacyMetaAfterRemote(remote, payloadHash, type) {
 
 function markHashCleanFromRemote(remote, payloadHash, status, options = {}) {
   if (isStaleSyncRun(options.runId)) return false;
-  const now = new Date().toISOString();
+  const now = beijingISOString();
   state.syncHashState = ensureHashSyncState(state.syncHashState);
   state.syncHashState.baseRemoteHash = payloadHash || "";
   state.syncHashState.localPayloadHash = payloadHash || "";
@@ -54,7 +54,7 @@ function markHashDirty(localHash, reason, options = {}) {
   state.syncHashState = ensureHashSyncState(state.syncHashState);
   state.syncHashState.localPayloadHash = localHash || state.syncHashState.localPayloadHash || "";
   state.syncHashState.localDirty = true;
-  if (!state.syncHashState.dirtySince) state.syncHashState.dirtySince = new Date().toISOString();
+  if (!state.syncHashState.dirtySince) state.syncHashState.dirtySince = beijingISOString();
   state.syncHashState.lastSyncStatus = "dirty";
   if (reason) state.syncHashState.lastSyncError = reason;
   persistHashSyncState();
@@ -97,7 +97,7 @@ function applyRemotePayloadSafely(payload, options = {}) {
     Object.keys(normalized.unknownProgress).forEach(function(bookId) {
       applyUnknownProgressPayload(bookId, normalized.unknownProgress[bookId]);
     });
-    state.syncMeta.localUpdatedAt = normalized.updatedAt || new Date().toISOString();
+    state.syncMeta.localUpdatedAt = normalized.updatedAt || beijingISOString();
     persistSyncMeta();
     bumpLocalBusinessRevision(options.reason || options.source || "remote_apply", { source: options.source === "rescue" ? "rescue" : "sync", runId: options.runId || null });
     const afterHash = businessPayloadHash(collectSyncPayload());

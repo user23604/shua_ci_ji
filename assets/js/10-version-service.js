@@ -9,7 +9,7 @@ async function checkServerVersion(options = {}) {
       status: info.appVersion === APP_VERSION ? "latest" : "stale",
       serverVersion: String(info.appVersion || ""),
       serverBuildId: String(info.buildId || ""),
-      checkedAt: new Date().toISOString(),
+      checkedAt: beijingISOString(),
       error: ""
     };
     renderVersionBadge();
@@ -26,7 +26,7 @@ async function checkServerVersion(options = {}) {
     }
     return state.versionInfo;
   } catch (error) {
-    state.versionInfo = { ...(state.versionInfo || {}), status: "error", checkedAt: new Date().toISOString(), error: error && error.message || String(error) };
+    state.versionInfo = { ...(state.versionInfo || {}), status: "error", checkedAt: beijingISOString(), error: error && error.message || String(error) };
     renderVersionBadge();
     return state.versionInfo;
   }

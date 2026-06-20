@@ -64,7 +64,7 @@ function buildSyncDiagnosisText(extra = {}) {
   const lines = [];
   lines.push("刷词机同步诊断摘要");
   lines.push("================================");
-  lines.push("导出时间：" + new Date().toISOString());
+  lines.push("导出时间：" + beijingISOString());
   lines.push("应用版本：" + APP_VERSION);
   lines.push("Build ID：" + APP_BUILD_ID);
   lines.push("服务器 version.json：" + (versionInfo.serverVersion || "未检查") + (versionInfo.serverBuildId ? " / " + versionInfo.serverBuildId : ""));
@@ -74,7 +74,7 @@ function buildSyncDiagnosisText(extra = {}) {
   lines.push("同步状态：" + info.status + " - " + (info.detail || ""));
   lines.push("syncRunId：" + state.syncRunId);
   lines.push("syncRunSeq：" + state.syncRunSeq);
-  lines.push("syncStartedAt：" + (state.syncStartedAt ? new Date(state.syncStartedAt).toISOString() : "无"));
+  lines.push("syncStartedAt：" + (state.syncStartedAt ? beijingISOString(new Date(state.syncStartedAt)) : "无"));
   lines.push("syncLastProgressStage：" + (state.syncLastProgressStage || "无"));
   lines.push("当前是否同步中：" + (state.isSyncing ? "是" : "否"));
   lines.push("Gist ID：" + maskGistId(state.cloud.gistId));
