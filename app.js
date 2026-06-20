@@ -1,7 +1,7 @@
 (function() {
   "use strict";
 
-  var BUILD_ID = "2026-06-21-p11-study-queued-status-fix";
+  var BUILD_ID = "2026-06-21-p12-queued-not-green-status-fix";
 
   window.__SHUA_APP_VERSION__ = BUILD_ID;
   window.__SHUA_BUILD_ID__ = BUILD_ID;

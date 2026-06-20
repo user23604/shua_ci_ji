@@ -86,16 +86,16 @@ function hasQueuedStudyLocalState() {
 }
 
 function queuedStudyDetail() {
-  if (state.view === "flash") return "学习中，本地已保存，稍后同步";
-  return "本地已保存，待同步";
+  if (state.view === "flash") return "学习中，待同步（本地已保存）";
+  return "待同步（本地已保存）";
 }
 
 function activeStudyDirtyDetail() {
   if (state.lastDirtyFromVerify) return "本地已保存，稍后继续同步";
   if (state.view === "flash") {
-    if (typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()) return "学习中，本地已保存，稍后同步";
+    if (typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()) return "学习中，待同步（本地已保存）";
     var last = typeof lastActiveStudyAt === "function" ? Number(lastActiveStudyAt() || 0) : Number(state.lastUserStudyActionAt || 0);
-    if (last && Date.now() - last < ACTIVE_STUDY_SYNC_DEBOUNCE_MS) return "本地已保存，待同步";
+    if (last && Date.now() - last < ACTIVE_STUDY_SYNC_DEBOUNCE_MS) return "待同步（本地已保存）";
   }
   return "本地待上传";
 }

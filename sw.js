@@ -1,4 +1,4 @@
-const APP_VERSION = "2026-06-21-p11-study-queued-status-fix";
+const APP_VERSION = "2026-06-21-p12-queued-not-green-status-fix";
 
 self.addEventListener("install", function(event) {
   self.skipWaiting();

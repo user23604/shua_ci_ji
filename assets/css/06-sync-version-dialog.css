@@ -55,8 +55,8 @@
 
 
 .cloud-sync-indicator.is-study_queued .cloud-sync-indicator__dot {
-  background: #0f766e;
-  box-shadow: 0 0 0 5px rgba(15, 118, 110, 0.14), 0 0 18px rgba(15, 118, 110, 0.26);
+  background: #7c3aed;
+  box-shadow: 0 0 0 5px rgba(124, 58, 237, 0.14), 0 0 18px rgba(109, 40, 217, 0.26);
 }
 
 @keyframes syncPulse {
