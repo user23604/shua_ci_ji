@@ -27,7 +27,11 @@ async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, re
     return syncBranchMerge({ remote: latestRemote, remotePayload: currentRemotePayload(latestRemote), local: currentSyncFacts({ persistHash: true }), keepalive, reason: "preflight_rebase", runId, rebaseCount: rebaseCount + 1 });
   }
   if (!result.ok) return false;
-  return finalizeVerifiedPatch({ uploadedPayload: payload, uploadedHash, verifiedRemote: result.remote, runId });
+  var finalResult = finalizeVerifiedPatch({ uploadedPayload: payload, uploadedHash, verifiedRemote: result.remote, runId });
+  if (finalResult && finalResult.localChangedDuringVerify) {
+    return false;
+  }
+  return finalResult;
 }
 
 
@@ -72,7 +76,11 @@ async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason
     return syncBranchMerge({ remote: latestRemote, remotePayload: currentRemotePayload(latestRemote), local: currentSyncFacts({ persistHash: true }), keepalive, reason: "preflight_rebase", runId, rebaseCount: rebaseCount + 1 });
   }
   if (!result.ok) return false;
-  return finalizeVerifiedPatch({ uploadedPayload: mergedPayload, uploadedHash: mergedHash, verifiedRemote: result.remote, runId });
+  var finalResult = finalizeVerifiedPatch({ uploadedPayload: mergedPayload, uploadedHash: mergedHash, verifiedRemote: result.remote, runId });
+  if (finalResult && finalResult.localChangedDuringVerify) {
+    return false;
+  }
+  return finalResult;
 }
 
 
@@ -128,6 +136,7 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
   let response;
   try {
     markSyncProgress("patch:start", runId);
+    appendAuditEvent({ type: "sync:patch_sent", message: "runId=" + runId + " hash=" + String(businessPayloadHash(normalized)).slice(0, 8) });
     response = await fetchWithTimeout("https://api.github.com/gists/" + encodeURIComponent(state.cloud.gistId), {
       method: "PATCH",
       keepalive,
@@ -178,11 +187,14 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
   }
 
   const uploadedHash = businessPayloadHash(normalized);
+  appendAuditEvent({ type: "sync:patch_success", message: "runId=" + runId + " uploadedHash=" + String(uploadedHash).slice(0, 8) });
   let verified;
   try {
     markSyncProgress("verify:get:start", runId);
+    appendAuditEvent({ type: "sync:verify_start", message: "runId=" + runId });
     verified = await fetchGistSyncPayload();
     markSyncProgress("verify:get:done", runId);
+    appendAuditEvent({ type: "sync:verify_done", message: "runId=" + runId + " verifiedHash=" + String(currentRemoteHash(verified) || "").slice(0, 8) });
   } catch (error) {
     recordHashSyncFailure("PATCH 成功但 GET 校验失败：" + (error && error.message || "unknown"), { errorKind: "verify_failed", banner: true, dialog: true, runId });
     return { ok: false };
@@ -206,18 +218,39 @@ function finalizeVerifiedPatch({ uploadedPayload, uploadedHash, verifiedRemote, 
   markSyncProgress("sync:finalize", runId);
   const current = refreshLocalPayloadHash({ persist: false });
   if (current.hash !== uploadedHash) {
+    var now = beijingISOString();
     state.syncHashState = ensureHashSyncState(state.syncHashState);
+
+    // 云端已确认 uploadedHash
     state.syncHashState.baseRemoteHash = uploadedHash;
+    state.syncHashState.lastSuccessfulPushAt = now;
+
+    // 当前本地又变，保持 dirty
     state.syncHashState.localPayloadHash = current.hash;
     state.syncHashState.localDirty = true;
-    if (!state.syncHashState.dirtySince) state.syncHashState.dirtySince = beijingISOString();
+    if (!state.syncHashState.dirtySince) {
+      state.syncHashState.dirtySince = now;
+    }
+
     state.syncHashState.lastSyncStatus = "dirty";
-    state.syncHashState.lastSyncError = "云端已写入本轮 payload，但本地在同步期间又发生新变化，因此不能标记为已保存";
+    state.syncHashState.lastSyncError = "";
+    state.syncHashState.lastSyncErrorAt = "";
+
     persistHashSyncState();
     updateLegacyMetaAfterRemote(verifiedRemote, uploadedHash, "push");
+
+    appendAuditEvent({
+      type: "sync:local_changed_during_verify",
+      message:
+        "runId=" + runId +
+        " uploadedHash=" + String(uploadedHash || "").slice(0, 8) +
+        " currentHash=" + String(current.hash || "").slice(0, 8)
+    });
+
+    scheduleSyncSoon("local_changed_during_verify", 2500);
     refreshVisibleSyncDiagnostics();
-    showSyncProblemDialog({ severity: "warning", code: "LOCAL_CHANGED_DURING_VERIFY", title: "本地又产生了新变化", message: state.syncHashState.lastSyncError, runId });
-    return false;
+
+    return { ok: false, localChangedDuringVerify: true };
   }
   markHashCleanFromRemote(verifiedRemote, uploadedHash, "cloud_saved", { runId });
   return true;

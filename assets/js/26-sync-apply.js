@@ -45,12 +45,20 @@ function markHashCleanFromRemote(remote, payloadHash, status, options = {}) {
     updateLegacyMetaAfterRemote(remote, payloadHash, status === "cloud_saved" ? "push" : "pull");
   }
   refreshVisibleSyncDiagnostics();
+  appendAuditEvent({
+    type: "sync:mark_clean",
+    message:
+      "runId=" + (options && options.runId || "") +
+      " status=" + String(status || "") +
+      " hash=" + String(payloadHash || "").slice(0, 8)
+  });
   return true;
 }
 
 
 function markHashDirty(localHash, reason, options = {}) {
   if (isStaleSyncRun(options.runId)) return false;
+  var wasDirty = state.syncHashState && state.syncHashState.localDirty === true;
   state.syncHashState = ensureHashSyncState(state.syncHashState);
   state.syncHashState.localPayloadHash = localHash || state.syncHashState.localPayloadHash || "";
   state.syncHashState.localDirty = true;
@@ -59,6 +67,15 @@ function markHashDirty(localHash, reason, options = {}) {
   if (reason) state.syncHashState.lastSyncError = reason;
   persistHashSyncState();
   refreshVisibleSyncDiagnostics();
+
+  if (!wasDirty) {
+    appendAuditEvent({
+      type: "sync:mark_dirty",
+      message:
+        "runId=" + (options.runId || "") +
+        " reason=" + String(reason || "").slice(0, 100)
+    });
+  }
   return true;
 }
 

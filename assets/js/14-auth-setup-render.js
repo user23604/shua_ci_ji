@@ -197,7 +197,7 @@ function renderSyncDiagnostics() {
   if (gistDisplay.length > 8) gistDisplay = gistDisplay.slice(0, 4) + "…" + gistDisplay.slice(-4);
   var shortHash = function(value) { return value ? String(value).slice(0, 10) : "无"; };
   var lines = [];
-  lines.push('<div class="settings-panel settings-panel--span4" style="margin-top:8px;">');
+  lines.push('<div class="settings-panel settings-panel--span4" style="margin-top:8px;" data-cloud-sync-diagnostics>');
   lines.push('<h2 class="panel-title">云同步诊断</h2>');
   lines.push('<div class="control-list" style="font-size:13px;line-height:1.8;">');
 
@@ -241,6 +241,32 @@ function renderSyncDiagnostics() {
   lines.push('<div style="color:#94a3b8;font-size:11px;margin-top:4px;">诊断版本：' + escapeHtml(APP_VERSION) + ' · ' + escapeHtml(APP_BUILD_ID) + '</div>');
   lines.push('</div></div>');
   return lines.join("\n");
+}
+
+function renderCloudSyncDiagnostics() {
+  var box = document.querySelector("[data-cloud-sync-diagnostics]");
+  if (!box) return;
+
+  var sx = window.scrollX || 0;
+  var sy = window.scrollY || 0;
+
+  box.outerHTML = renderSyncDiagnostics();
+
+  bindSyncDiagnosticsButtons();
+
+  requestAnimationFrame(function() {
+    window.scrollTo(sx, sy);
+  });
+}
+
+function bindSyncDiagnosticsButtons() {
+  var exportBackupBtn = document.getElementById("exportBackupBtn");
+  var exportDiagnosisBtn = document.getElementById("exportDiagnosisBtn");
+  var exportAuditLogBtn = document.getElementById("exportAuditLogBtn");
+
+  if (exportBackupBtn) exportBackupBtn.onclick = exportLocalBackup;
+  if (exportDiagnosisBtn) exportDiagnosisBtn.onclick = exportDiagnosisSummary;
+  if (exportAuditLogBtn) exportAuditLogBtn.onclick = exportAuditLog;
 }
 
 function getLocalSnapshotTime() {

@@ -163,7 +163,7 @@ function showSyncProblemDialog(problem) {
     <div class="sync-problem-dialog__panel" role="dialog" aria-modal="true">
       <div class="sync-problem-dialog__header">
         <strong>${escapeHtml(problem.title || "同步出现问题")}</strong>
-        <span>${escapeHtml(problem.code || problem.severity || "SYNC_PROBLEM")}</span>
+        <span style="color:${problem.severity === 'warning' ? '#ea580c' : '#b42318'}">${escapeHtml(problem.code || problem.severity || "SYNC_PROBLEM")}</span>
       </div>
       <div class="sync-problem-dialog__body">
         <p>${escapeHtml(problem.message || "同步未能完成。为避免数据风险，当前不会显示云端已保存。")}</p>
@@ -310,7 +310,12 @@ function refreshVisibleSyncDiagnostics() {
       return;
     }
     if (typeof renderSetup === "function" && !isEditingSetupField()) {
+      var sx = window.scrollX || 0;
+      var sy = window.scrollY || 0;
       renderSetup();
+      requestAnimationFrame(function() {
+        window.scrollTo(sx, sy);
+      });
     }
   }, 100);
 }

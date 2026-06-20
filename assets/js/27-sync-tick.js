@@ -410,6 +410,10 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
       state.syncStartedAt = 0;
       state.syncLastProgressAt = 0;
       state.lastSyncFinishedAt = Date.now();
+      // sync:complete = syncTick 流程结束（不一定已 cloud_saved）
+      // sync:mark_clean = 已确认云端保存或加载
+      // sync:local_changed_during_verify = 上一轮云端已写入，但本地又产生新变化
+      // sync:failed = 真失败
       appendAuditEvent({ type: "sync:complete", message: "runId=" + runId + " elapsed=" + elapsedMs + "ms reason=" + (reason || "") });
       refreshVisibleSyncDiagnostics();
     }
