@@ -378,23 +378,60 @@ function writeDailyBackup(reason) {
 }
 
 
+// ── P0.7 审计日志 buffer ──────────────────────────────────────────────────
+var auditBuffer = [];
+var auditBufferTimer = 0;
+var AUDIT_BUFFER_MAX = 50;
+var AUDIT_FLUSH_INTERVAL_MS = 30000;
+
+function flushAuditBuffer() {
+  clearTimeout(auditBufferTimer);
+  auditBufferTimer = 0;
+  if (!auditBuffer.length) return;
+  try {
+    var store = loadJson(SYNC_AUDIT_KEY, { events: [] });
+    var events = Array.isArray(store.events) ? store.events : [];
+    var batch = auditBuffer.splice(0);
+    events = events.concat(batch);
+    saveJson(SYNC_AUDIT_KEY, { events: events.slice(-500) });
+  } catch (_) {
+    // quota 满或解析失败，静默丢弃 buffer
+    auditBuffer = [];
+  }
+}
+
 function appendAuditEvent(event) {
-  var store = loadJson(SYNC_AUDIT_KEY, { events: [] });
-  var events = Array.isArray(store.events) ? store.events : [];
-  events.push({
-    id: createOpId(),
+  var isHighFreq = event.type === "user:mark" || event.type === "user:undo";
+  var entry = {
     at: beijingISOString(),
-    pendingOpsCount: getPendingOps().length,
-    localUpdatedAt: state.syncMeta.localUpdatedAt,
-    lastRemoteVersion: state.syncMeta.lastRemoteVersion,
     type: event.type || "",
     message: event.message || "",
-    httpStatus: event.httpStatus || 0,
-    remoteVersion: event.remoteVersion || "",
-    clearedOpCount: event.clearedOpCount || 0,
-    remainingOpCount: event.remainingOpCount || 0
+    httpStatus: event.httpStatus || 0
+  };
+  // 只对高频事件进 buffer，其他直接写入
+  if (isHighFreq) {
+    try {
+      auditBuffer.push(entry);
+      if (auditBuffer.length >= AUDIT_BUFFER_MAX) flushAuditBuffer();
+      else if (!auditBufferTimer) auditBufferTimer = setTimeout(flushAuditBuffer, AUDIT_FLUSH_INTERVAL_MS);
+    } catch (_) { /* 静默 */ }
+    return;
+  }
+  try {
+    var store = loadJson(SYNC_AUDIT_KEY, { events: [] });
+    var events = Array.isArray(store.events) ? store.events : [];
+    events.push(entry);
+    saveJson(SYNC_AUDIT_KEY, { events: events.slice(-500) });
+  } catch (_) { /* quota 满静默 */ }
+}
+
+// 页面离开/隐藏时强制 flush
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushAuditBuffer);
+  window.addEventListener("beforeunload", flushAuditBuffer);
+  document.addEventListener("visibilitychange", function() {
+    if (document.visibilityState === "hidden") flushAuditBuffer();
   });
-  saveJson(SYNC_AUDIT_KEY, { events: events.slice(-200) });
 }
 
 

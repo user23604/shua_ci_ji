@@ -1,6 +1,6 @@
 "use strict";
 
-async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, remoteHashAtDecision, rebaseCount = 0 }) {
+async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, remoteHashAtDecision, rebaseCount = 0, patch409Retries = 0 }) {
   if (isStaleSyncRun(runId)) return false;
   const currentLocal = local && local.payload ? local : refreshLocalPayloadHash({ persist: true });
   const payload = normalizeSyncPayload(currentLocal.payload);
@@ -8,6 +8,16 @@ async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, re
   const uploadedHash = businessPayloadHash(payload);
   const result = await patchBusinessPayloadToGist(payload, { remote, keepalive, runId, remoteHashAtDecision: remoteHashAtDecision || currentRemoteHash(remote) });
   if (isStaleSyncRun(runId)) return false;
+  // 409 retryable conflict: 延迟后重试，不超过 MAX_PATCH_409_RETRIES
+  if (result.retryableConflict) {
+    if (patch409Retries >= MAX_PATCH_409_RETRIES) {
+      recordHashSyncFailure("GitHub Gist 并发更新冲突，已重试" + MAX_PATCH_409_RETRIES + "次仍失败。本地数据已保留，请稍后重新同步。", { errorKind: "patch_conflict_409", banner: true, dialog: true, runId, httpStatus: 409 });
+      return false;
+    }
+    appendAuditEvent({ type: "sync:patch_retry", message: "409 retry " + (patch409Retries + 1) + "/" + MAX_PATCH_409_RETRIES, httpStatus: 409 });
+    await delay(1200);
+    return syncBranchPushLocal({ remote, local: currentSyncFacts({ persistHash: true }), keepalive, reason: "patch_409_retry", runId, remoteHashAtDecision, rebaseCount, patch409Retries: patch409Retries + 1 });
+  }
   if (result.preflightChanged) {
     if (rebaseCount >= MAX_PREFLIGHT_REBASE) {
       recordHashSyncFailure("云端在上传前连续变化，已停止自动上传。本地数据仍保留，请稍后重新同步。", { errorKind: "preflight_remote_changed", banner: true, dialog: true, runId, remote: result.remote, remoteHash: currentRemoteHash(result.remote), remoteHasBusinessData: remoteHasBusinessPayload(result.remote), readOnly: result.remote && result.remote.readOnlyAuthFallback === true });
@@ -21,7 +31,7 @@ async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, re
 }
 
 
-async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason, runId, rebaseCount = 0 }) {
+async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason, runId, rebaseCount = 0, patch409Retries = 0 }) {
   if (isStaleSyncRun(runId)) return false;
   markSyncProgress("merge:start", runId);
   if (!remotePayload) remotePayload = normalizeSyncPayload({});
@@ -43,6 +53,16 @@ async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason
   markSyncProgress("merge:done", runId);
   const result = await patchBusinessPayloadToGist(mergedPayload, { remote, keepalive, runId, remoteHashAtDecision: currentRemoteHash(remote) });
   if (isStaleSyncRun(runId)) return false;
+  // 409 retryable conflict: 延迟后重试，不超过 MAX_PATCH_409_RETRIES
+  if (result.retryableConflict) {
+    if (patch409Retries >= MAX_PATCH_409_RETRIES) {
+      recordHashSyncFailure("GitHub Gist 并发更新冲突，已重试" + MAX_PATCH_409_RETRIES + "次仍失败。本地数据已保留，请稍后重新同步。", { errorKind: "patch_conflict_409", banner: true, dialog: true, runId, httpStatus: 409 });
+      return false;
+    }
+    appendAuditEvent({ type: "sync:patch_retry", message: "409 retry " + (patch409Retries + 1) + "/" + MAX_PATCH_409_RETRIES, httpStatus: 409 });
+    await delay(1200);
+    return syncBranchMerge({ remote, remotePayload, local: currentSyncFacts({ persistHash: true }), keepalive, reason: "patch_409_retry", runId, rebaseCount, patch409Retries: patch409Retries + 1 });
+  }
   if (result.preflightChanged) {
     if (rebaseCount >= MAX_PREFLIGHT_REBASE) {
       recordHashSyncFailure("云端在上传前连续变化，已停止自动上传。本地数据仍保留，请稍后重新同步。", { errorKind: "preflight_remote_changed", banner: true, dialog: true, runId, remote: result.remote, remoteHash: currentRemoteHash(result.remote), remoteHasBusinessData: remoteHasBusinessPayload(result.remote), readOnly: result.remote && result.remote.readOnlyAuthFallback === true });
@@ -125,9 +145,36 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
   }
 
   if (!response.ok) {
+    // 409 Conflict: GitHub Gist 并发/短时间连续更新冲突，可重试
+    if (response.status === 409) {
+      appendAuditEvent({ type: "sync:patch_409", message: "HTTP 409", httpStatus: 409 });
+      await delay(1000 + Math.floor(Math.random() * 500));
+      var recheckRemote;
+      try {
+        recheckRemote = await fetchGistSyncPayload();
+      } catch (_) {
+        recheckRemote = null;
+      }
+      if (recheckRemote && isRemoteValidKind(recheckRemote.kind)) {
+        var recheckHash = currentRemoteHash(recheckRemote);
+        var uploadedHash409 = businessPayloadHash(normalized);
+        // 虽然 PATCH 返回 409，但云端内容已是本轮内容
+        if (recheckHash === uploadedHash409) {
+          return { ok: true, remote: recheckRemote, uploadedHash: uploadedHash409 };
+        }
+        // 远端已变 → 走 rebase
+        if (String(recheckHash || "") !== String(remoteHashAtDecision || "")) {
+          return { ok: false, preflightChanged: true, remote: recheckRemote };
+        }
+      }
+      // 远端没变但 GitHub 仍拒绝 → 上层重试
+      return { ok: false, retryableConflict: true, httpStatus: 409 };
+    }
+    // 422: 请求内容/格式错误，不可重试
+    var is422 = response.status === 422;
     const classified = await classifyGithubResponseError(response, "PATCH sync.json");
-    recordHashSyncFailure(classified.message, { errorKind: "patch_failed", banner: true, dialog: true, runId, httpStatus: response.status, technical: classified.technical });
-    return { ok: false };
+    recordHashSyncFailure(classified.message, { errorKind: is422 ? "patch_failed_422" : "patch_failed_network", banner: true, dialog: true, runId, httpStatus: response.status, technical: classified.technical });
+    return { ok: false, fatal: true, httpStatus: response.status, message: classified.message, technical: classified.technical };
   }
 
   const uploadedHash = businessPayloadHash(normalized);

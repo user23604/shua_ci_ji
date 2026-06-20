@@ -1,6 +1,7 @@
 "use strict";
 
 function init() {
+  appendAuditEvent({ type: "app:startup", message: APP_VERSION + "/" + APP_BUILD_ID });
   state.syncMeta = ensureSyncMeta(state.syncMeta);
   state.syncHashState = ensureHashSyncState(state.syncHashState);
   persistSyncMeta();
@@ -44,6 +45,7 @@ function init() {
     scheduleVisibleSync();
   });
   window.addEventListener("pagehide", function() {
+    appendAuditEvent({ type: "app:background" });
     pausePlaybackForBackground();
   });
   window.addEventListener("blur", pausePlaybackForBackground);

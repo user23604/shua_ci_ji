@@ -1,7 +1,7 @@
 "use strict";
 
-const APP_VERSION = "2026-06-20-p4-modular2";
-const APP_BUILD_ID = "2026-06-20-p4-modular2";
+const APP_VERSION = "2026-06-20-p4-modular3";
+const APP_BUILD_ID = "2026-06-20-p4-modular3";
 
 
 const ACCESS_KEY = "ky2027";
@@ -47,6 +47,8 @@ const SYNC_NO_PROGRESS_TIMEOUT_MS = 45000;
 const CROSS_TAB_LOCK_LEASE_MS = 90000;
 
 const MAX_PREFLIGHT_REBASE = 2;
+const MAX_PATCH_409_RETRIES = 2;
+const SYNC_MIN_INTERVAL_MS = 2000;
 const SYNC_LOCK_KEY = "shua_ci_ji_sync_lock";
 
 const TAB_ID = (globalThis.crypto && globalThis.crypto.randomUUID)

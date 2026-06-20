@@ -209,8 +209,10 @@ function bindSetupEvents() {
   // 导出按钮
   var exportBackupBtn = document.getElementById("exportBackupBtn");
   var exportDiagnosisBtn = document.getElementById("exportDiagnosisBtn");
+  var exportAuditLogBtn = document.getElementById("exportAuditLogBtn");
   if (exportBackupBtn) exportBackupBtn.addEventListener("click", exportLocalBackup);
   if (exportDiagnosisBtn) exportDiagnosisBtn.addEventListener("click", exportDiagnosisSummary);
+  if (exportAuditLogBtn) exportAuditLogBtn.addEventListener("click", exportAuditLog);
 }
 
 
@@ -244,7 +246,39 @@ function exportDiagnosisSummary() {
   }).catch(function() {
     alert("诊断摘要复制失败，请在同步错误弹窗中手动选择文本复制。");
   });
-}function bindRange(elementId, key, unit, parser, formatter = String) {
+}
+
+function exportAuditLog() {
+  try {
+    if (typeof flushAuditBuffer === "function") flushAuditBuffer();
+    var store = loadJson(SYNC_AUDIT_KEY, { events: [] });
+    var events = Array.isArray(store.events) ? store.events : [];
+    var bundle = {
+      exportedAt: beijingISOString(),
+      appVersion: APP_VERSION,
+      buildId: APP_BUILD_ID,
+      userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+      totalEvents: events.length,
+      events: events
+    };
+    var json = JSON.stringify(bundle, null, 2);
+    var blob = new Blob([json], { type: "application/json;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var stamp = beijingISOString().replace(/[:.]/g, "-");
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "shua-ci-ji-audit-log-" + stamp + ".json";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function() { URL.revokeObjectURL(url); a.remove(); }, 1000);
+  } catch (err) {
+    alert("日志导出失败：" + (err && err.message || "unknown"));
+  }
+}
+
+window.exportAuditLog = exportAuditLog;
+
+function bindRange(elementId, key, unit, parser, formatter = String) {
   const input = document.getElementById(elementId);
   const output = document.getElementById(`${elementId}Value`);
   if (!input || !output) return;

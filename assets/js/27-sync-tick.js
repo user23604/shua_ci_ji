@@ -177,6 +177,18 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     return false;
   }
 
+  // P0.7: 自动同步最小间隔。非手动触发的同步，距离上次完成不到 2s 则跳过，但 dirty 会重调度
+  var isManualSync = reason === "manual" || reason === "manual_retry" || reason === "manual_push" || reason === "manual_pull" || reason === "ignore_empty_backup" || reason === "config_saved" || reason === "remote_restore_merge";
+  if (!isManualSync && state.lastSyncFinishedAt && Date.now() - state.lastSyncFinishedAt < SYNC_MIN_INTERVAL_MS) {
+    var syncStateForSkip = ensureHashSyncState(state.syncHashState);
+    appendAuditEvent({ type: "sync:skip_min_interval", message: "reason=" + reason + " remaining=" + (SYNC_MIN_INTERVAL_MS - (Date.now() - state.lastSyncFinishedAt)) });
+    if (syncStateForSkip.localDirty) {
+      var remainingMs = SYNC_MIN_INTERVAL_MS - (Date.now() - state.lastSyncFinishedAt) + 300;
+      scheduleSyncSoon("min_interval_reschedule", remainingMs);
+    }
+    return false;
+  }
+
   const preFacts = currentSyncFacts({ persistHash: true });
   if (reason === "heartbeat" && isIdleForSyncHeartbeat() && !preFacts.effectiveDirty) return false;
   if (shouldSkipSyncForBackoff(bypassBackoff)) return false;
@@ -191,6 +203,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   state.syncStartedAt = Date.now();
   state.syncLastProgressAt = state.syncStartedAt;
   state.syncLastProgressStage = "sync:start";
+  appendAuditEvent({ type: "sync:start", message: "reason=" + reason + " runId=" + runId });
   const localRevisionAtStart = state.localBusinessRevision || 0;
   const localHashAtStart = businessPayloadHash(collectSyncPayload());
   setSyncStatus("syncing");
@@ -265,6 +278,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     const readOnly = remote.readOnlyAuthFallback === true;
 
     if (remoteEmpty && localHasBusinessData) {
+      appendAuditEvent({ type: "sync:decision", message: "branch=empty_cloud_protect_local remoteKind=" + (remote && remote.kind) + " readOnly=" + readOnly + " runId=" + runId });
       const message = readOnly
         ? "只读模式：云端为空，但本地有学习数据。已阻止云端空数据覆盖本地。请更换可写 PAT 后重新同步。"
         : "云端 sync.json 是空数据，但本机仍有学习记录。已阻止云端空数据覆盖本地。";
@@ -314,6 +328,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
       }
 
       if (remoteHasData) {
+        appendAuditEvent({ type: "sync:decision", message: "branch=pull_remote remoteKind=" + (remote && remote.kind) + " runId=" + runId });
         if (hasUserLocalChangeSinceSyncStart(localRevisionAtStart, localHashAtStart, runId)) {
           const recheck = currentSyncFacts({ persistHash: true });
           if (remote.readOnlyAuthFallback) {
@@ -353,11 +368,13 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     if (remoteHash === syncState.baseRemoteHash && !effectiveDirty) return true;
 
     if (remoteHash === syncState.baseRemoteHash && effectiveDirty) {
+      appendAuditEvent({ type: "sync:decision", message: "branch=push_local hash_match dirty=true runId=" + runId });
       return syncBranchPushLocal({ remote, local: facts, keepalive, reason, runId, remoteHashAtDecision: remoteHash });
     }
 
     if (remoteHash !== syncState.baseRemoteHash) {
       if (remoteHasData) {
+        appendAuditEvent({ type: "sync:decision", message: "branch=merge hash_diff remoteHasData=true runId=" + runId });
         if (hasUserLocalChangeSinceSyncStart(localRevisionAtStart, localHashAtStart, runId)) {
           const recheck = currentSyncFacts({ persistHash: true });
           return syncBranchMerge({ remote, remotePayload, local: recheck, keepalive, reason: "local_changed_before_merge", runId });
@@ -388,9 +405,12 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   } finally {
     if (!isStaleSyncRun(runId)) {
       markSyncProgress("sync:finalize", runId);
+      var elapsedMs = Date.now() - state.syncStartedAt;
       state.isSyncing = false;
       state.syncStartedAt = 0;
       state.syncLastProgressAt = 0;
+      state.lastSyncFinishedAt = Date.now();
+      appendAuditEvent({ type: "sync:complete", message: "runId=" + runId + " elapsed=" + elapsedMs + "ms reason=" + (reason || "") });
       updateSyncIndicator();
     }
     releaseCrossTabSyncLock();

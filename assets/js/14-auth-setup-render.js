@@ -236,6 +236,7 @@ function renderSyncDiagnostics() {
   lines.push('<div style="margin-top:8px;">');
   lines.push('<button class="btn btn--ghost" id="exportBackupBtn" type="button" style="font-size:12px;">导出本地完整备份 JSON</button>');
   lines.push('<button class="btn btn--ghost" id="exportDiagnosisBtn" type="button" style="font-size:12px;margin-left:4px;">导出诊断摘要</button>');
+  lines.push('<button class="btn btn--ghost" id="exportAuditLogBtn" type="button" style="font-size:12px;margin-left:4px;">导出运行日志</button>');
   lines.push('</div>');
   lines.push('<div style="color:#94a3b8;font-size:11px;margin-top:4px;">诊断版本：' + escapeHtml(APP_VERSION) + ' · ' + escapeHtml(APP_BUILD_ID) + '</div>');
   lines.push('</div></div>');

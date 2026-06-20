@@ -230,7 +230,8 @@ async function classifyGithubResponseError(response, action) {
   else if (status === 403 && remaining === "0") message = "GitHub API 限流，请等待到 " + (reset ? beijingISOString(new Date(Number(reset) * 1000)) : "reset 时间") + " 后重试。";
   else if (status === 403) message = "GitHub API 拒绝访问，可能是 PAT 权限不足、scope 不含 Gist，或触发限流。";
   else if (status === 404) message = "没有找到这个 Gist，或当前 token 无权访问 private gist。";
-  else if (status === 409 || status === 422) message = "GitHub 拒绝 PATCH 内容或请求格式，请导出诊断联系处理。";
+  else if (status === 409) message = "GitHub Gist 并发更新冲突，即将自动重试。";
+  else if (status === 422) message = "GitHub 拒绝 PATCH 内容或请求格式，请导出诊断联系处理。";
   else if (status >= 500) message = "GitHub 服务端异常，请稍后重试。";
   return { message, technical: body ? body.slice(0, 1200) : "HTTP " + status };
 }

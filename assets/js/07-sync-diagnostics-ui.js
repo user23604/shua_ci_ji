@@ -113,6 +113,17 @@ function buildSyncDiagnosisText(extra = {}) {
   if (Object.prototype.hasOwnProperty.call(extra, "readOnly")) lines.push("readOnly=" + String(extra.readOnly === true));  if (extra.remoteSummary) lines.push("云端数据摘要：" + extra.remoteSummary);
   if (extra.code) lines.push("错误代码：" + extra.code);
   if (extra.technical) lines.push("技术细节：" + extra.technical);
+  // 最近 5 条审计事件
+  try {
+    var auditStore = loadJson(SYNC_AUDIT_KEY, { events: [] });
+    var recentEvents = (Array.isArray(auditStore.events) ? auditStore.events : []).slice(-5);
+    if (recentEvents.length) {
+      lines.push("---最近审计事件---");
+      recentEvents.forEach(function(ev) {
+        lines.push("[" + (ev.at || "") + "] " + (ev.type || "") + " | " + String(ev.message || "").slice(0, 200));
+      });
+    }
+  } catch (_) {}
   return lines.join("\n");
 }
 
@@ -161,6 +172,7 @@ function showSyncProblemDialog(problem) {
       </div>
       <div class="sync-problem-dialog__actions">
         <button class="btn btn--ghost" data-sync-dialog-action="copy" type="button">复制诊断信息</button>
+        <button class="btn btn--ghost" data-sync-dialog-action="export_log" type="button">导出完整日志</button>
         <button class="btn btn--ghost" data-sync-dialog-action="retry" type="button">重新同步一次</button>
         <button class="btn btn--ghost" data-sync-dialog-action="rescue" type="button">打开 rescue.html</button>
         ${problem.refreshVersion ? '<button class="btn btn--primary" data-sync-dialog-action="refresh" type="button">刷新到新版</button>' : ""}
@@ -174,6 +186,13 @@ function showSyncProblemDialog(problem) {
     const action = event.target && event.target.getAttribute && event.target.getAttribute("data-sync-dialog-action");
     if (!action) return;
     if (action === "copy") copyTextToClipboard(diagnosis).catch(function() {});
+    if (action === "export_log") {
+      if (typeof window.exportAuditLog === "function") {
+        window.exportAuditLog();
+      } else {
+        alert("日志导出函数未加载，请刷新页面后重试。");
+      }
+    }
     if (action === "retry") {
       state.dismissedSyncProblemDialogKeys[key] = 0;
       closeSyncProblemDialog(key);

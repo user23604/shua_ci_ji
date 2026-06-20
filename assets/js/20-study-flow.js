@@ -98,6 +98,7 @@ function markCurrent(kind) {
   marks[kind].push(word.id);
   saveMarks(book.id, marks);
   appendPendingOp({ type: "word.mark.set", bookId: book.id, wordId: word.id, value: kind });
+  appendAuditEvent({ type: "user:mark", message: "wordId=" + word.id + " kind=" + kind });
   onLocalDataChanged("mark");
 }
 
@@ -109,6 +110,7 @@ function undoMark(wordId) {
   marks.unknown = marks.unknown.filter((id) => id !== wordId);
   saveMarks(book.id, marks);
   appendPendingOp({ type: "word.mark.set", bookId: book.id, wordId: wordId, value: null });
+  appendAuditEvent({ type: "user:undo", message: "wordId=" + wordId });
   onLocalDataChanged("undoMark");
   state.undoWordId = null;
   renderFlashcard();
