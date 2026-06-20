@@ -472,7 +472,7 @@ function recordHashSyncFailure(message, options) {
   updateSyncIndicator();
   if (options.banner === true) showSyncFailureBanner("同步失败", text, { runId: options.runId });
   if (options.dialog === true || options.banner === true) {
-    showSyncProblemDialog({
+    var dialogExtra = {
       severity: options.severity || "error",
       code: options.errorKind || "SYNC_FAILED",
       title: options.title || "同步失败",
@@ -480,7 +480,29 @@ function recordHashSyncFailure(message, options) {
       technical: options.technical || "",
       runId: options.runId,
       candidates: options.candidates
-    });
+    };
+    // 补充风险诊断字段，确保弹窗截图信息完整
+    var remoteForFields = options.remote || null;
+    if (remoteForFields && typeof makeSyncRiskProblemFields === "function") {
+      var riskFields = makeSyncRiskProblemFields(remoteForFields, facts, {
+        remoteHash: options.remoteHash,
+        remoteHasBusinessData: options.remoteHasBusinessData,
+        readOnly: Object.prototype.hasOwnProperty.call(options, "readOnly") ? options.readOnly : (remoteForFields.readOnlyAuthFallback === true),
+        runId: options.runId
+      });
+      Object.keys(riskFields).forEach(function(k) { dialogExtra[k] = riskFields[k]; });
+    } else {
+      dialogExtra.remoteKind = options.remoteKind || "";
+      dialogExtra.remoteHash = options.remoteHash || "";
+      dialogExtra.localHasBusinessData = hasBusinessData(facts.payload);
+      dialogExtra.remoteHasBusinessData = Boolean(options.remoteHasBusinessData);
+      dialogExtra.baseRemoteHash = state.syncHashState.baseRemoteHash || "";
+      dialogExtra.localPayloadHash = facts.localPayloadHash || "";
+      dialogExtra.localDirty = state.syncHashState.localDirty === true;
+      dialogExtra.effectiveDirty = facts.effectiveDirty === true;
+      dialogExtra.readOnly = Boolean(Object.prototype.hasOwnProperty.call(options, "readOnly") ? options.readOnly : (state.syncMeta && state.syncMeta.readOnlyMode));
+    }
+    showSyncProblemDialog(dialogExtra);
   }
   return true;
 }

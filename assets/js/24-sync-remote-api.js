@@ -184,7 +184,29 @@ function currentRemoteHash(remote) {
 
 
 function currentRemotePayload(remote) {
-  return remote && isRemoteValidKind(remote.kind) && remote.snapshot ? normalizeSyncPayload(remote.snapshot) : null;
+  if (!remote) return null;
+  if (remote.kind === "invalid" || remote.kind === "v2_unknown_ops") return null;
+  if (remote.payload && isPlainObject(remote.payload)) return normalizeSyncPayload(remote.payload);
+  if (remote.snapshot && isPlainObject(remote.snapshot)) return normalizeSyncPayload(remote.snapshot);
+  if (remote.parsed && remote.parsed.payload && isPlainObject(remote.parsed.payload)) return normalizeSyncPayload(remote.parsed.payload);
+  if (remote.parsed && remote.parsed.snapshot && isPlainObject(remote.parsed.snapshot)) return normalizeSyncPayload(remote.parsed.snapshot);
+  return null;
+}
+
+
+function remoteHasBusinessPayload(remote) {
+  const payload = currentRemotePayload(remote);
+  return Boolean(payload && hasBusinessData(payload));
+}
+
+
+function remoteIsEmptyPayload(remote) {
+  if (!remote) return true;
+  if (remote.kind === "invalid" || remote.kind === "v2_unknown_ops") return false;
+  if (remote.kind === "missing" || remote.kind === "empty" || remote.kind === "valid_empty") return true;
+  const payload = currentRemotePayload(remote);
+  if (!payload) return false;
+  return !hasBusinessData(payload);
 }
 
 

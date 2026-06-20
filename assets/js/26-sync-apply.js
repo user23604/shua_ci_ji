@@ -174,8 +174,39 @@ function restoreRemotePayloadFromDialog(remotePayload, remoteHash, remote) {
 
 function pullRemotePayload({ remote, remotePayload, remoteHash, reason, runId, localRevisionAtStart, localHashAtStart }) {
   if (isStaleSyncRun(runId)) return false;
+
+  const beforeFacts = currentSyncFacts({ persistHash: true });
+  const normalizedRemotePayload = normalizeSyncPayload(remotePayload);
+  const localHasData = hasBusinessData(beforeFacts.payload);
+  const remoteHasData = remote && remote.kind === "valid_nonempty" && hasBusinessData(normalizedRemotePayload);
+
+  if (!remoteHasData || localHasData) {
+    const message = localHasData
+      ? "已阻止直接 Pull：本地仍有学习数据，不能用云端直接覆盖。"
+      : "已阻止直接 Pull：云端没有可安全拉取的非空学习数据。";
+    if (localHasData) markHashDirty(beforeFacts.localPayloadHash, message, { runId });
+    const fields = typeof makeSyncRiskProblemFields === "function"
+      ? makeSyncRiskProblemFields(remote, beforeFacts, { remoteHash, remoteHasBusinessData: remoteHasData, readOnly: remote && remote.readOnlyAuthFallback, runId })
+      : {};
+    const technical = typeof syncRiskTechnicalText === "function"
+      ? syncRiskTechnicalText(fields)
+      : "remote.kind=" + String(remote && remote.kind || "") + "\nremoteHash=" + String(remoteHash || "");
+    showSyncProblemDialog({
+      severity: "warning",
+      code: localHasData ? "PULL_BLOCKED_LOCAL_HAS_DATA" : "PULL_BLOCKED_REMOTE_EMPTY",
+      title: "已阻止不安全的云端 Pull",
+      message,
+      technical,
+      canCopy: true,
+      canRetry: true,
+      runId,
+      ...fields
+    });
+    return false;
+  }
+
   if (localRevisionAtStart !== undefined && hasUserLocalChangeSinceSyncStart(localRevisionAtStart, localHashAtStart, runId)) return false;
-  const ok = applyRemotePayloadSafely(remotePayload, { source: "remote_pull", expectedHash: remoteHash, runId, reason: reason || "remote_pull" });
+  const ok = applyRemotePayloadSafely(normalizedRemotePayload, { source: "remote_pull", expectedHash: remoteHash, runId, reason: reason || "remote_pull" });
   if (!ok) return false;
   const afterHash = businessPayloadHash(collectSyncPayload());
   if (afterHash !== remoteHash) {
@@ -187,7 +218,6 @@ function pullRemotePayload({ remote, remotePayload, remoteHash, reason, runId, l
   enterSyncInfoMode("已从云端加载");
   return true;
 }
-
 function applySyncPayload(payload) {
   const normalized = normalizeSyncPayload(payload);
   return applyRemotePayloadSafely(normalized, {

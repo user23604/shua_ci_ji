@@ -10,7 +10,7 @@ async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, re
   if (isStaleSyncRun(runId)) return false;
   if (result.preflightChanged) {
     if (rebaseCount >= MAX_PREFLIGHT_REBASE) {
-      recordHashSyncFailure("云端在上传前连续变化，已停止自动上传。本地数据仍保留，请稍后重新同步。", { errorKind: "preflight_remote_changed", banner: true, dialog: true, runId });
+      recordHashSyncFailure("云端在上传前连续变化，已停止自动上传。本地数据仍保留，请稍后重新同步。", { errorKind: "preflight_remote_changed", banner: true, dialog: true, runId, remote: result.remote, remoteHash: currentRemoteHash(result.remote), remoteHasBusinessData: remoteHasBusinessPayload(result.remote), readOnly: result.remote && result.remote.readOnlyAuthFallback === true });
       return false;
     }
     const latestRemote = result.remote;
@@ -29,7 +29,7 @@ async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason
   writeHashBackup("pre_merge", currentLocal.payload, reason);
   const mergedPayload = normalizeSyncPayload(safeMergePayloads(remotePayload, currentLocal.payload));
   if (!validateSyncPayload(mergedPayload)) {
-    recordHashSyncFailure("自动合并后的数据校验失败；本地数据已保留", { errorKind: "merge_failed", banner: true, dialog: true, runId });
+    recordHashSyncFailure("自动合并后的数据校验失败；本地数据已保留", { errorKind: "merge_failed", banner: true, dialog: true, runId, remote, remoteHash: currentRemoteHash(remote), remoteHasBusinessData: remoteHasBusinessPayload(remote), readOnly: remote && remote.readOnlyAuthFallback === true });
     return false;
   }
   const mergedHash = businessPayloadHash(mergedPayload);
@@ -37,7 +37,7 @@ async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason
   if (!applied) return false;
   const localAfterMergeHash = businessPayloadHash(collectSyncPayload());
   if (localAfterMergeHash !== mergedHash) {
-    recordHashSyncFailure("safe merge 写入本地后校验失败，已停止上传", { errorKind: "local_apply_verify_failed", banner: true, dialog: true, runId, technical: "expected=" + mergedHash + ", actual=" + localAfterMergeHash });
+    recordHashSyncFailure("safe merge 写入本地后校验失败，已停止上传", { errorKind: "local_apply_verify_failed", banner: true, dialog: true, runId, remote, remoteHash: currentRemoteHash(remote), remoteHasBusinessData: remoteHasBusinessPayload(remote), readOnly: remote && remote.readOnlyAuthFallback === true, technical: "expected=" + mergedHash + ", actual=" + localAfterMergeHash });
     return false;
   }
   markSyncProgress("merge:done", runId);
@@ -45,7 +45,7 @@ async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason
   if (isStaleSyncRun(runId)) return false;
   if (result.preflightChanged) {
     if (rebaseCount >= MAX_PREFLIGHT_REBASE) {
-      recordHashSyncFailure("云端在上传前连续变化，已停止自动上传。本地数据仍保留，请稍后重新同步。", { errorKind: "preflight_remote_changed", banner: true, dialog: true, runId });
+      recordHashSyncFailure("云端在上传前连续变化，已停止自动上传。本地数据仍保留，请稍后重新同步。", { errorKind: "preflight_remote_changed", banner: true, dialog: true, runId, remote: result.remote, remoteHash: currentRemoteHash(result.remote), remoteHasBusinessData: remoteHasBusinessPayload(result.remote), readOnly: result.remote && result.remote.readOnlyAuthFallback === true });
       return false;
     }
     const latestRemote = result.remote;

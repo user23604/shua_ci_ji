@@ -99,7 +99,18 @@ function buildSyncDiagnosisText(extra = {}) {
   lines.push("备份索引数量：" + loadHashBackupIndex().length);
   lines.push("备份候选摘要：" + backupCandidateSummaryText(extra.candidates));
   lines.push("当前业务数据摘要：progress=" + countProgressRecords(facts.payload) + ", marks=" + countMarkedRecords(facts.payload) + ", activityDays=" + countActivityRecords(facts.payload) + ", studyState=" + countUserStudyStateRecords(facts.payload));
-  if (extra.remoteSummary) lines.push("云端数据摘要：" + extra.remoteSummary);
+  lines.push("APP_VERSION=" + APP_VERSION);
+  lines.push("APP_BUILD_ID=" + APP_BUILD_ID);
+  if (Object.prototype.hasOwnProperty.call(extra, "runId")) lines.push("runId=" + String(extra.runId || ""));
+  if (Object.prototype.hasOwnProperty.call(extra, "remoteKind")) lines.push("remote.kind=" + String(extra.remoteKind || ""));
+  if (Object.prototype.hasOwnProperty.call(extra, "remoteHash")) lines.push("remoteHash=" + String(extra.remoteHash || ""));
+  if (Object.prototype.hasOwnProperty.call(extra, "localHasBusinessData")) lines.push("localHasBusinessData=" + String(extra.localHasBusinessData === true));
+  if (Object.prototype.hasOwnProperty.call(extra, "remoteHasBusinessData")) lines.push("remoteHasBusinessData=" + String(extra.remoteHasBusinessData === true));
+  if (Object.prototype.hasOwnProperty.call(extra, "baseRemoteHash")) lines.push("baseRemoteHash=" + String(extra.baseRemoteHash || ""));
+  if (Object.prototype.hasOwnProperty.call(extra, "localPayloadHash")) lines.push("localPayloadHash=" + String(extra.localPayloadHash || ""));
+  if (Object.prototype.hasOwnProperty.call(extra, "localDirty")) lines.push("localDirty=" + String(extra.localDirty === true));
+  if (Object.prototype.hasOwnProperty.call(extra, "effectiveDirty")) lines.push("effectiveDirty=" + String(extra.effectiveDirty === true));
+  if (Object.prototype.hasOwnProperty.call(extra, "readOnly")) lines.push("readOnly=" + String(extra.readOnly === true));  if (extra.remoteSummary) lines.push("云端数据摘要：" + extra.remoteSummary);
   if (extra.code) lines.push("错误代码：" + extra.code);
   if (extra.technical) lines.push("技术细节：" + extra.technical);
   return lines.join("\n");
@@ -121,7 +132,22 @@ function showSyncProblemDialog(problem) {
   var dialog = document.createElement("div");
   dialog.id = "sync-problem-dialog";
   dialog.className = "sync-problem-dialog";
-  var diagnosis = buildSyncDiagnosisText({ code: problem.code, technical: problem.technical, candidates: problem.candidates, remoteSummary: problem.remoteSummary });
+  var diagnosis = buildSyncDiagnosisText({
+    code: problem.code,
+    technical: problem.technical,
+    candidates: problem.candidates,
+    remoteSummary: problem.remoteSummary,
+    remoteKind: problem.remoteKind,
+    remoteHash: problem.remoteHash,
+    localHasBusinessData: problem.localHasBusinessData,
+    remoteHasBusinessData: problem.remoteHasBusinessData,
+    baseRemoteHash: problem.baseRemoteHash,
+    localPayloadHash: problem.localPayloadHash,
+    localDirty: problem.localDirty,
+    effectiveDirty: problem.effectiveDirty,
+    readOnly: problem.readOnly,
+    runId: problem.runId
+  });
   dialog.innerHTML = `
     <div class="sync-problem-dialog__panel" role="dialog" aria-modal="true">
       <div class="sync-problem-dialog__header">

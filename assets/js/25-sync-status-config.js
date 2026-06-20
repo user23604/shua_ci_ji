@@ -68,12 +68,17 @@ function computeSyncStatus() {
   if (state.isSyncing) return { status: "syncing", detail: "正在同步" };
 
   if (state.syncMeta.readOnlyMode) {
+    if (!facts.hasBusinessData && syncState.lastSyncStatus === "local_only") {
+      return { status: "local_only", detail: "本地和云端都没有学习数据" };
+    }
+    if (!facts.effectiveDirty && syncState.lastSyncStatus === "cloud_loaded") {
+      return { status: "cloud_loaded", detail: syncState.lastSuccessfulPullAt || "已从云端更新" };
+    }
     if (facts.effectiveDirty) {
-      return { status: "dirty_read_only", detail: "\u53ea\u8bfb\u6a21\u5f0f\u00b7\u672c\u5730\u6709\u672a\u4e0a\u4f20\u6570\u636e\uff0c\u65e0\u6cd5\u4e0a\u4f20" };
+      return { status: "dirty_read_only", detail: "只读模式·本地有未上传数据，无法上传" };
     }
     return { status: "read_only", detail: "只读模式·无法上传" };
   }
-
   if (syncState.lastSyncStatus === "conflict") {
     return { status: "conflict", detail: syncState.lastSyncError || "自动合并失败" };
   }

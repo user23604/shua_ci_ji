@@ -1,6 +1,6 @@
 {
-  "appVersion": "2026-06-20-p4-modular1",
-  "buildId": "2026-06-20-p4-modular1",
+  "appVersion": "2026-06-20-p4-modular2",
+  "buildId": "2026-06-20-p4-modular2",
   "deployedAt": "2026-06-20T00:00:00+08:00",
-  "note": "module split only; no business logic changes"
+  "note": "sync empty-remote protection fix"
 }
