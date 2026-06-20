@@ -88,11 +88,16 @@ function computeSyncStatus() {
 
   if (state.isSyncing) return { status: "syncing", detail: "正在同步" };
 
+  // P5: 远端确认过期 → 不能显示绿色，等待下次 GET
+  if (cloud.ok && !facts.effectiveDirty && typeof hasFreshSessionRemoteConfirmation === "function" && !hasFreshSessionRemoteConfirmation()) {
+    return { status: "syncing", detail: "正在检查云端" };
+  }
+
   if (state.syncMeta.readOnlyMode) {
     if (!facts.hasBusinessData && syncState.lastSyncStatus === "local_only") {
       return { status: "local_only", detail: "本地和云端都没有学习数据" };
     }
-    if (!facts.effectiveDirty && syncState.lastSyncStatus === "cloud_loaded") {
+    if (!facts.effectiveDirty && syncState.lastSyncStatus === "cloud_loaded" && canShowConfirmedCloudState(facts, syncState)) {
       return { status: "cloud_loaded", detail: syncState.lastSuccessfulPullAt || "已从云端更新" };
     }
     if (facts.effectiveDirty) {

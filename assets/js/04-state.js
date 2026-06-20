@@ -79,7 +79,9 @@ const state = {
   latestRemoteHashSeen: "",
   latestRemoteKindSeen: "",
   latestRemoteCheckRunId: 0,
-  initialSyncStarted: false
+  initialSyncStarted: false,
+  lastCleanRemotePollAt: 0,
+  lastForcedRemoteCheckAt: 0
 };
 
 

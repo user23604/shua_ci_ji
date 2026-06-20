@@ -117,9 +117,15 @@ function applyRemotePayloadSafely(payload, options = {}) {
     Object.keys(normalized.progress).forEach(function(bookId) {
       saveProgress(bookId, normalized.progress[bookId], { touch: false });
     });
-    Object.keys(normalized.marks).forEach(function(bookId) {
-      saveMarks(bookId, normalized.marks[bookId], { touch: false });
-    });
+    if (normalized.markStates && Object.keys(normalized.markStates).length) {
+      Object.keys(normalized.markStates).forEach(function(bookId) {
+        saveMarkStates(bookId, normalized.markStates[bookId], { touch: false, syncMarks: true });
+      });
+    } else {
+      Object.keys(normalized.marks).forEach(function(bookId) {
+        saveMarks(bookId, normalized.marks[bookId], { touch: false, updateStates: true });
+      });
+    }
     Object.keys(normalized.activity).forEach(function(bookId) {
       saveActivity(bookId, normalized.activity[bookId], { touch: false });
     });
@@ -199,56 +205,66 @@ function restoreRemotePayloadFromDialog(remotePayload, remoteHash, remote) {
     return false;
   }
   renderCurrentView({ touchProgress: false });
-  markHashCleanFromRemote(remote || { kind: "valid_nonempty", payloadHash: computedHash, snapshot: normalized }, computedHash, "cloud_loaded", { remoteVerified: true });
+  markHashCleanFromRemote(remote || { kind: "valid_nonempty", payloadHash: computedHash, snapshot: normalized }, computedHash, "cloud_loaded", { remoteVerified: Boolean(remote) });
   enterSyncInfoMode("已从云端恢复到本机");
   return true;
 }
 
-function pullRemotePayload({ remote, remotePayload, remoteHash, reason, runId, localRevisionAtStart, localHashAtStart }) {
+function pullRemotePayload({ remote, remotePayload, remoteHash, reason, runId, localRevisionAtStart, localHashAtStart, allowCleanLocalOverwrite = false }) {
   if (isStaleSyncRun(runId)) return false;
 
   const beforeFacts = currentSyncFacts({ persistHash: true });
   const normalizedRemotePayload = normalizeSyncPayload(remotePayload);
   const localHasData = hasBusinessData(beforeFacts.payload);
   const remoteHasData = remote && remote.kind === "valid_nonempty" && hasBusinessData(normalizedRemotePayload);
+  const syncState = ensureHashSyncState(state.syncHashState);
 
-  if (!remoteHasData || localHasData) {
-    const message = localHasData
-      ? "已阻止直接 Pull：本地仍有学习数据，不能用云端直接覆盖。"
-      : "已阻止直接 Pull：云端没有可安全拉取的非空学习数据。";
-    if (localHasData) markHashDirty(beforeFacts.localPayloadHash, message, { runId });
-    const fields = typeof makeSyncRiskProblemFields === "function"
-      ? makeSyncRiskProblemFields(remote, beforeFacts, { remoteHash, remoteHasBusinessData: remoteHasData, readOnly: remote && remote.readOnlyAuthFallback, runId })
-      : {};
-    const technical = typeof syncRiskTechnicalText === "function"
-      ? syncRiskTechnicalText(fields)
-      : "remote.kind=" + String(remote && remote.kind || "") + "\nremoteHash=" + String(remoteHash || "");
+  const localIsCleanOldSnapshot =
+    !beforeFacts.effectiveDirty &&
+    syncState.localDirty !== true &&
+    String(beforeFacts.localPayloadHash || "") === String(syncState.baseRemoteHash || "");
+
+  if (!remoteHasData) {
     showSyncProblemDialog({
       severity: "warning",
-      code: localHasData ? "PULL_BLOCKED_LOCAL_HAS_DATA" : "PULL_BLOCKED_REMOTE_EMPTY",
+      code: "PULL_BLOCKED_REMOTE_EMPTY",
       title: "已阻止不安全的云端 Pull",
-      message,
-      technical,
-      canCopy: true,
-      canRetry: true,
-      runId,
-      ...fields
+      message: "云端没有可安全拉取的非空学习数据。",
+      runId
     });
-    return false;
+    return { ok: false, pullBlocked: true, remoteEmpty: true };
+  }
+
+  if (localHasData && !allowCleanLocalOverwrite) {
+    markHashDirty(beforeFacts.localPayloadHash, "已阻止直接 Pull：本地仍有学习数据，不能用云端直接覆盖。", { runId });
+    showSyncProblemDialog({
+      severity: "warning",
+      code: "PULL_BLOCKED_LOCAL_HAS_DATA",
+      title: "已阻止不安全的云端 Pull",
+      message: "本地有学习数据，且本轮不是 clean-local overwrite 场景，因此没有直接覆盖。",
+      runId
+    });
+    return { ok: false, pullBlocked: true, localHasData: true };
+  }
+
+  if (localHasData && allowCleanLocalOverwrite && !localIsCleanOldSnapshot) {
+    markHashDirty(beforeFacts.localPayloadHash, "尝试 Pull 但本地不是 clean 旧快照，已阻止直接覆盖。", { runId });
+    return { ok: false, needMerge: true, localNotClean: true };
   }
 
   if (localRevisionAtStart !== undefined && hasUserLocalChangeSinceSyncStart(localRevisionAtStart, localHashAtStart, runId)) return false;
-  const ok = applyRemotePayloadSafely(normalizedRemotePayload, { source: "remote_pull", expectedHash: remoteHash, runId, reason: reason || "remote_pull" });
-  if (!ok) return false;
+  const ok = applyRemotePayloadSafely(normalizedRemotePayload, { source: "remote_pull", expectedHash: remoteHash, runId, reason: reason || "remote_pull", allowCleanLocalOverwrite: allowCleanLocalOverwrite });
+  if (!ok) return { ok: false, applyFailed: true };
   const afterHash = businessPayloadHash(collectSyncPayload());
   if (afterHash !== remoteHash) {
     recordHashSyncFailure("云端数据应用到本地后校验失败", { errorKind: "local_apply_verify_failed", banner: true, dialog: true, runId, technical: "expected=" + remoteHash + ", actual=" + afterHash });
-    return false;
+    return { ok: false, applyFailed: true };
   }
   renderCurrentView({ touchProgress: false });
   markHashCleanFromRemote(remote, remoteHash, "cloud_loaded", { runId: runId, remoteVerified: true });
   enterSyncInfoMode("已从云端加载");
-  return true;
+  if (typeof refreshCurrentBusinessViewAfterSync === "function") refreshCurrentBusinessViewAfterSync();
+  return { ok: true, pulled: true, hash: remoteHash };
 }
 function applySyncPayload(payload) {
   const normalized = normalizeSyncPayload(payload);

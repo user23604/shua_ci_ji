@@ -1,5 +1,23 @@
 "use strict";
 
+// ── P5 markStates LWW merge ───────────────────────────────────────────
+
+function mergeMarkStatesLww(remoteStates, localStates) {
+  var remote = sanitizeMarkStatesPayload(remoteStates);
+  var local = sanitizeMarkStatesPayload(localStates);
+  var result = {};
+  var ids = new Set([...Object.keys(remote), ...Object.keys(local)]);
+  ids.forEach(function(id) {
+    var r = remote[id];
+    var l = local[id];
+    if (r && !l) { result[id] = r; return; }
+    if (!r && l) { result[id] = l; return; }
+    result[id] = compareMarkState(l, r) >= 0 ? l : r;
+  });
+  return sanitizeMarkStatesPayload(result);
+}
+
+
 function safeMergePayloads(remotePayload, localPayload) {
   const remote = normalizeSyncPayload(cloneJson(remotePayload));
   const local = normalizeSyncPayload(cloneJson(localPayload));
@@ -9,7 +27,8 @@ function safeMergePayloads(remotePayload, localPayload) {
   BOOKS.forEach((book) => {
     merged.progress[book.id] = chooseFurtherProgress(remote.progress[book.id], local.progress[book.id]);
     merged.unknownProgress[book.id] = mergeUnknownProgress(book, remote.unknownProgress[book.id], local.unknownProgress[book.id]);
-    merged.marks[book.id] = mergeMarksLocalPriority(remote.marks[book.id], local.marks[book.id]);
+    merged.markStates[book.id] = mergeMarkStatesLww(remote.markStates[book.id], local.markStates[book.id]);
+    merged.marks[book.id] = deriveMarksFromMarkStates(merged.markStates[book.id]);
     merged.activity[book.id] = mergeActivity(remote.activity[book.id], local.activity[book.id]);
     merged.unitStats[book.id] = mergeUnitStats(remote.unitStats[book.id], local.unitStats[book.id]);
   });

@@ -6,6 +6,7 @@ async function openArchive() {
   state.statsOpen = false;
   state.archiveOpen = true;
   state.archiveStatus = "正在加载归档...";
+  if (typeof requestFreshRemoteCheck === "function") requestFreshRemoteCheck("archive_open");
   renderCurrentView();
   try {
     await ensureWords(currentBook());
@@ -22,6 +23,7 @@ function openStats() {
   clearTimers();
   state.archiveOpen = false;
   state.statsOpen = true;
+  if (typeof requestFreshRemoteCheck === "function") requestFreshRemoteCheck("stats_open");
   renderCurrentView();
 }
 
@@ -109,6 +111,7 @@ function bindArchiveEvents() {
   document.querySelectorAll("[data-archive-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       state.archiveTab = button.dataset.archiveTab;
+      if (typeof requestFreshRemoteCheck === "function") requestFreshRemoteCheck("archive_tab_switch");
       renderCurrentView();
     });
   });

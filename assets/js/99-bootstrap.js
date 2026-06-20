@@ -43,6 +43,7 @@ function init() {
     }
     checkServerVersion({ force: false });
     scheduleVisibleSync();
+    if (typeof requestFreshRemoteCheck === "function") requestFreshRemoteCheck("visibility_resume");
   });
   window.addEventListener("pagehide", function() {
     appendAuditEvent({ type: "app:background" });
@@ -54,6 +55,7 @@ function init() {
   if (isAuthenticated()) {
     renderSetup();
     initializeP0Sync({ reason: "init" });
+    if (typeof requestFreshRemoteCheck === "function") requestFreshRemoteCheck("startup");
   } else {
     renderAuth();
   }

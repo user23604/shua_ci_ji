@@ -225,6 +225,7 @@ function businessPayloadForHash(payload) {
     progress: normalized.progress,
     unknownProgress: normalized.unknownProgress,
     marks: normalized.marks,
+    markStates: normalized.markStates,
     activity: normalized.activity,
     unitStats: normalized.unitStats
   };
@@ -346,7 +347,8 @@ function hasBusinessData(payload) {
   return countProgressRecords(p) > 0 ||
     countMarkedRecords(p) > 0 ||
     countActivityRecords(p) > 0 ||
-    countUserStudyStateRecords(p) > 0;
+    countUserStudyStateRecords(p) > 0 ||
+    (typeof hasMarkStatesBusinessData === "function" && hasMarkStatesBusinessData(p.markStates));
 }
 
 
@@ -460,6 +462,7 @@ function markSessionRemoteChecked(remote, runId, source) {
   var remoteHash = currentRemoteHash(remote);
   state.sessionRemoteCheckDone = true;
   state.sessionRemoteCheckAt = beijingISOString();
+  state.lastCleanRemotePollAt = Date.now();
   state.latestRemoteHashSeen = remoteHash || "";
   state.latestRemoteKindSeen = (remote && remote.kind) || "";
   state.latestRemoteCheckRunId = runId || 0;
@@ -469,8 +472,17 @@ function markSessionRemoteChecked(remote, runId, source) {
   });
 }
 
+function hasFreshSessionRemoteConfirmation() {
+  if (!state.sessionRemoteCheckDone) return false;
+  if (!state.sessionRemoteCheckAt) return false;
+  var checkedAt = Date.parse(state.sessionRemoteCheckAt);
+  if (!Number.isFinite(checkedAt)) return false;
+  return Date.now() - checkedAt <= SYNC_REMOTE_CONFIRM_TTL_MS;
+}
+
 function hasCurrentSessionRemoteConfirmation(facts) {
   if (!state.sessionRemoteCheckDone) return false;
+  if (!hasFreshSessionRemoteConfirmation()) return false;
   if (!state.latestRemoteHashSeen) return false;
   return String(state.latestRemoteHashSeen) === String(facts.localPayloadHash || "");
 }
@@ -557,7 +569,7 @@ function recordHashSyncFailure(message, options) {
   state.syncMeta.lastSyncErrorMessage = text;
   persistSyncMeta();
   persistHashSyncState();
-  appendAuditEvent({ type: "sync:failed", message: "session=" + TAB_ID + " " + text, httpStatus: options.httpStatus || 0 });
+  appendAuditEvent({ type: "sync:failed", message: "session=" + TAB_ID + " runId=" + (options.runId || "") + " errorKind=" + (options.errorKind || "unknown") + " " + text, httpStatus: options.httpStatus || 0 });
   refreshVisibleSyncDiagnostics();
   if (options.banner === true) showSyncFailureBanner("同步失败", text, { runId: options.runId });
   if (options.dialog === true || options.banner === true) {
@@ -600,8 +612,12 @@ function recordHashSyncFailure(message, options) {
 function migrateHashSyncStateIfNeeded() {
   try {
     var existing = loadJson(HASH_SYNC_STATE_KEY, null);
-    if (existing && typeof existing.localPayloadHash === "string" && existing.localPayloadHash.length > 0) {
-      // Already has valid hash sync state; ensure persisted
+    if (
+      existing &&
+      Number(existing.schemaVersion) === 2 &&
+      typeof existing.localPayloadHash === "string" &&
+      existing.localPayloadHash.length > 0
+    ) {
       state.syncHashState = ensureHashSyncState(existing);
       persistHashSyncState();
       return;
@@ -609,14 +625,31 @@ function migrateHashSyncStateIfNeeded() {
   } catch (_) { /* proceed with migration */ }
 
   var local = refreshLocalPayloadHash({ persist: false });
-  var empty = isStrictlyEmptyLocalPayload(local.payload);
+  var hasData = hasBusinessData(local.payload);
+  var now = beijingISOString();
+
   state.syncHashState = ensureHashSyncState({
+    schemaVersion: 2,
     localPayloadHash: local.hash,
-    localDirty: !empty,
+    localDirty: hasData,
     baseRemoteHash: "",
-    dirtySince: empty ? "" : beijingISOString(),
-    lastSyncStatus: empty ? "local_only" : "dirty"
+    dirtySince: hasData ? now : "",
+    lastSyncStatus: hasData ? "dirty" : "local_only",
+    lastSyncError: "",
+    lastSyncErrorAt: "",
+    lastSyncedPayloadHash: "",
+    lastBlockingErrorAt: "",
+    lastBlockingErrorCode: "",
+    lastBlockingErrorText: "",
+    lastBlockingErrorClearedAt: ""
   });
+
+  state.sessionRemoteCheckDone = false;
+  state.sessionRemoteCheckAt = "";
+  state.latestRemoteHashSeen = "";
+  state.latestRemoteKindSeen = "";
+  state.latestRemoteCheckRunId = 0;
+
   persistHashSyncState();
 }
 

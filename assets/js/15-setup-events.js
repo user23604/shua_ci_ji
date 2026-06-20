@@ -266,9 +266,11 @@ function validateAuditSyncOrder(events) {
   Object.keys(byKey).forEach(function(key) {
     var list = byKey[key].slice().sort(function(a, b) { return (Date.parse(a.at || "") || 0) - (Date.parse(b.at || "") || 0); });
     var completeIdx = list.findIndex(function(e) { return e.type === "sync:complete"; });
-    var patchIdx = list.findIndex(function(e) { return e.type === "sync:patch_sent"; });
+    var patchSentIdx = list.findIndex(function(e) { return e.type === "sync:patch_sent"; });
+    var patchSuccessIdx = list.findIndex(function(e) { return e.type === "sync:patch_success"; });
     var verifyIdx = list.findIndex(function(e) { return e.type === "sync:verify_done"; });
-    if (completeIdx >= 0 && patchIdx >= 0 && completeIdx < patchIdx) problems.push(key + " complete before patch_sent");
+    if (completeIdx >= 0 && patchSentIdx >= 0 && completeIdx < patchSentIdx) problems.push(key + " complete before patch_sent");
+    if (completeIdx >= 0 && patchSuccessIdx >= 0 && completeIdx < patchSuccessIdx) problems.push(key + " complete before patch_success");
     if (completeIdx >= 0 && verifyIdx >= 0 && completeIdx < verifyIdx) problems.push(key + " complete before verify_done");
   });
   return problems;

@@ -1,6 +1,6 @@
 {
-  "appVersion": "2026-06-20-p4-modular6",
-  "buildId": "2026-06-20-p4-modular6",
+  "appVersion": "2026-06-20-p5-sync-converge-final",
+  "buildId": "2026-06-20-p5-sync-converge-final",
   "deployedAt": "2026-06-20T00:00:00+08:00",
-  "note": "sync transaction atomicity: await + patch lock + session remote check + blocking error"
+  "note": "sync convergence fix: clean remote pull, markStates LWW merge, clean remote polling, remote confirmation TTL"
 }

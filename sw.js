@@ -1,4 +1,4 @@
-const APP_VERSION = "2026-06-20-p4-modular6";
+const APP_VERSION = "2026-06-20-p5-sync-converge-final";
 
 self.addEventListener("install", function(event) {
   self.skipWaiting();

@@ -1,7 +1,7 @@
 "use strict";
 
-const APP_VERSION = "2026-06-20-p4-modular6";
-const APP_BUILD_ID = "2026-06-20-p4-modular6";
+const APP_VERSION = "2026-06-20-p5-sync-converge-final";
+const APP_BUILD_ID = "2026-06-20-p5-sync-converge-final";
 
 
 const ACCESS_KEY = "ky2027";
@@ -11,7 +11,8 @@ const SETTINGS_KEY = "vocab_machine_settings_v1";
 const CLOUD_KEY = "vocab_machine_cloud_v1";
 
 const SYNC_META_KEY = "vocab_machine_sync_meta_v1";
-const HASH_SYNC_STATE_KEY = "vocab_machine_hash_sync_state_v1";
+const HASH_SYNC_STATE_KEY = "vocab_machine_hash_sync_state_v2";
+const MARK_STATES_PREFIX = "mark_states:";
 
 const PENDING_OPS_KEY = "vocab_machine_pending_ops_v1";
 const LOCAL_SNAPSHOT_KEY = "vocab_machine_local_snapshot_latest_v1";
@@ -50,6 +51,9 @@ const MAX_PREFLIGHT_REBASE = 2;
 const MAX_PATCH_409_RETRIES = 2;
 const SYNC_MIN_INTERVAL_MS = 2000;
 const SYNC_LOCK_KEY = "shua_ci_ji_sync_lock";
+
+const SYNC_CLEAN_REMOTE_POLL_MS = 30000;
+const SYNC_REMOTE_CONFIRM_TTL_MS = 45000;
 
 const TAB_ID = (globalThis.crypto && globalThis.crypto.randomUUID)
   ? globalThis.crypto.randomUUID()

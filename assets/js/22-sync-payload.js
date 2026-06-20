@@ -4,12 +4,14 @@ function collectSyncPayload() {
   const progress = {};
   const unknownProgress = {};
   const marks = {};
+  const markStates = {};
   const activity = {};
   const unitStats = {};
   BOOKS.forEach((book) => {
     progress[book.id] = loadProgress(book.id);
     unknownProgress[book.id] = collectUnknownProgressForBook(book);
-    marks[book.id] = loadMarks(book.id);
+    markStates[book.id] = loadMarkStates(book.id);
+    marks[book.id] = deriveMarksFromMarkStates(markStates[book.id]);
     activity[book.id] = loadActivity(book.id);
     unitStats[book.id] = loadUnitStats(book.id);
   });
@@ -21,6 +23,7 @@ function collectSyncPayload() {
     progress,
     unknownProgress,
     marks,
+    markStates,
     activity,
     unitStats
   };
@@ -72,12 +75,22 @@ function normalizeSyncPayload(payload) {
   const progress = {};
   const unknownProgress = {};
   const marks = {};
+  const markStates = {};
   const activity = {};
   const unitStats = {};
   BOOKS.forEach((book) => {
     progress[book.id] = sanitizeProgressPayload(source.progress?.[book.id] || { lastWordId: null });
     unknownProgress[book.id] = normalizeUnknownProgressPayload(book, source.unknownProgress?.[book.id]);
-    marks[book.id] = sanitizeMarksPayload(source.marks?.[book.id]);
+
+    var sourceMarkStates = sanitizeMarkStatesPayload(source.markStates?.[book.id]);
+    if (Object.keys(sourceMarkStates).length) {
+      markStates[book.id] = sourceMarkStates;
+      marks[book.id] = deriveMarksFromMarkStates(sourceMarkStates);
+    } else {
+      marks[book.id] = sanitizeMarksPayload(source.marks?.[book.id]);
+      markStates[book.id] = deriveMarkStatesFromMarks(book.id, marks[book.id], source.updatedAt || beijingISOString());
+    }
+
     activity[book.id] = sanitizeActivityPayload(source.activity?.[book.id]);
     unitStats[book.id] = sanitizeUnitStatsPayload(source.unitStats?.[book.id]);
   });
@@ -89,6 +102,7 @@ function normalizeSyncPayload(payload) {
     progress,
     unknownProgress,
     marks,
+    markStates,
     activity,
     unitStats
   };
@@ -104,6 +118,7 @@ function validateSyncPayload(payload) {
     validateProgressPayload(payload.progress?.[book.id], book) &&
     validateUnknownProgressPayload(payload.unknownProgress?.[book.id], book) &&
     validateMarksForBook(payload.marks?.[book.id]) &&
+    validateMarkStatesForBook(payload.markStates?.[book.id]) &&
     validateActivityForBook(payload.activity?.[book.id]) &&
     validateUnitStatsForBook(payload.unitStats?.[book.id], book)
   ));
@@ -140,6 +155,35 @@ function validateMarksForBook(marks) {
   if (unknown.length !== (Array.isArray(marks.unknown) ? marks.unknown.length : 0)) return false;
   const unknownSet = new Set(unknown);
   return known.every((id) => !unknownSet.has(id));
+}
+
+
+function validateMarkStatesForBook(markStates) {
+  if (markStates === undefined || markStates === null) return true;
+  if (!isPlainObject(markStates)) return false;
+  return Object.entries(markStates).every(function(entry) {
+    var wordId = entry[0];
+    var item = entry[1];
+    var id = Number(wordId);
+    if (!Number.isFinite(id) || id <= 0) return false;
+    if (!isPlainObject(item)) return false;
+    if (item.value !== "known" && item.value !== "unknown" && item.value !== null) return false;
+    if (typeof item.updatedAt !== "string" || !item.updatedAt) return false;
+    if (Number.isNaN(Date.parse(item.updatedAt))) return false;
+    if (typeof item.clientId !== "string") return false;
+    var seq = Number(item.seq);
+    if (!Number.isFinite(seq) || seq < 0) return false;
+    return true;
+  });
+}
+
+
+function hasMarkStatesBusinessData(markStates) {
+  if (!isPlainObject(markStates)) return false;
+  return Object.keys(markStates).some(function(bookId) {
+    var bookStates = markStates[bookId];
+    return isPlainObject(bookStates) && Object.keys(bookStates).length > 0;
+  });
 }
 
 

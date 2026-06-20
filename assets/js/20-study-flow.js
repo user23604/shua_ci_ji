@@ -92,26 +92,15 @@ function markCurrent(kind) {
   const book = currentBook();
   const word = state.unitWords[state.currentIndex];
   if (!word) return;
-  const marks = loadMarks(book.id);
-  marks.known = marks.known.filter((id) => id !== word.id);
-  marks.unknown = marks.unknown.filter((id) => id !== word.id);
-  marks[kind].push(word.id);
-  saveMarks(book.id, marks);
-  appendPendingOp({ type: "word.mark.set", bookId: book.id, wordId: word.id, value: kind });
+  setWordMarkState(book.id, word.id, kind, { touch: true });
   appendAuditEvent({ type: "user:mark", message: "wordId=" + word.id + " kind=" + kind });
-  onLocalDataChanged("mark");
 }
 
 
 function undoMark(wordId) {
   const book = currentBook();
-  const marks = loadMarks(book.id);
-  marks.known = marks.known.filter((id) => id !== wordId);
-  marks.unknown = marks.unknown.filter((id) => id !== wordId);
-  saveMarks(book.id, marks);
-  appendPendingOp({ type: "word.mark.set", bookId: book.id, wordId: wordId, value: null });
+  setWordMarkState(book.id, wordId, null, { touch: true });
   appendAuditEvent({ type: "user:undo", message: "wordId=" + wordId });
-  onLocalDataChanged("undoMark");
   state.undoWordId = null;
   renderFlashcard();
 }

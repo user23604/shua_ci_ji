@@ -148,6 +148,7 @@ const DEFAULT_SYNC_META = {
 };
 
 const DEFAULT_HASH_SYNC_STATE = {
+  schemaVersion: 2,
   localDirty: false,
   baseRemoteHash: "",
   localPayloadHash: "",

@@ -1,5 +1,33 @@
 "use strict";
 
+// ── P5 merge defense ──────────────────────────────────────────────────
+
+function assertMergeAllowed(local, remote, reason, runId) {
+  var facts = local && local.payload ? local : currentSyncFacts({ persistHash: true });
+  var syncState = ensureHashSyncState(state.syncHashState);
+  var remoteHash = currentRemoteHash(remote);
+
+  var localClean =
+    !facts.effectiveDirty &&
+    syncState.localDirty !== true &&
+    String(facts.localPayloadHash || "") === String(syncState.baseRemoteHash || "");
+
+  var remoteChanged =
+    remoteHash &&
+    String(remoteHash) !== String(syncState.baseRemoteHash || "");
+
+  // ONLY block: clean local + remote changed
+  // Do NOT block: dirty local + remote changed, preflightChanged, verify mismatch
+  if (localClean && remoteChanged) {
+    appendAuditEvent({
+      type: "sync:merge_blocked_clean_local",
+      message: "session=" + TAB_ID + " runId=" + runId + " reason=" + String(reason || "")
+    });
+    return false;
+  }
+  return true;
+}
+
 async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, remoteHashAtDecision, rebaseCount = 0, patch409Retries = 0 }) {
   if (isStaleSyncRun(runId)) return false;
   const currentLocal = local && local.payload ? local : refreshLocalPayloadHash({ persist: true });
@@ -14,7 +42,7 @@ async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, re
       recordHashSyncFailure("GitHub Gist 并发更新冲突，已重试" + MAX_PATCH_409_RETRIES + "次仍失败。本地数据已保留，请稍后重新同步。", { errorKind: "patch_conflict_409", banner: true, dialog: true, runId, httpStatus: 409 });
       return false;
     }
-    appendAuditEvent({ type: "sync:patch_retry", message: "session=" + TAB_ID + " 409 retry " + (patch409Retries + 1) + "/" + MAX_PATCH_409_RETRIES, httpStatus: 409 });
+    appendAuditEvent({ type: "sync:patch_retry", message: "session=" + TAB_ID + " runId=" + runId + " 409 retry " + (patch409Retries + 1) + "/" + MAX_PATCH_409_RETRIES, httpStatus: 409 });
     await delay(1200);
     return await syncBranchPushLocal({ remote, local: currentSyncFacts({ persistHash: true }), keepalive, reason: "patch_409_retry", runId, remoteHashAtDecision, rebaseCount, patch409Retries: patch409Retries + 1 });
   }
@@ -24,7 +52,11 @@ async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, re
       return false;
     }
     const latestRemote = result.remote;
-    return await syncBranchMerge({ remote: latestRemote, remotePayload: currentRemotePayload(latestRemote), local: currentSyncFacts({ persistHash: true }), keepalive, reason: result.verifyMismatch ? "verify_mismatch_rebase" : "preflight_rebase", runId, rebaseCount: rebaseCount + 1 });
+    var mergeResult = await syncBranchMerge({ remote: latestRemote, remotePayload: currentRemotePayload(latestRemote), local: currentSyncFacts({ persistHash: true }), keepalive, reason: result.verifyMismatch ? "verify_mismatch_rebase" : "preflight_rebase", runId, rebaseCount: rebaseCount + 1 });
+    if (mergeResult && mergeResult.needPull) {
+      return await Promise.resolve(pullRemotePayload({ remote: latestRemote, remotePayload: currentRemotePayload(latestRemote), remoteHash: currentRemoteHash(latestRemote), reason: "merge_blocked_clean_local_pull", runId, localRevisionAtStart: state.localBusinessRevision, localHashAtStart: "", allowCleanLocalOverwrite: true }));
+    }
+    return mergeResult;
   }
   if (!result.ok) return false;
   var finalResult = finalizeVerifiedPatch({ uploadedPayload: payload, uploadedHash, verifiedRemote: result.remote, runId });
@@ -37,6 +69,9 @@ async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, re
 
 async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason, runId, rebaseCount = 0, patch409Retries = 0 }) {
   if (isStaleSyncRun(runId)) return false;
+  if (!assertMergeAllowed(local, remote, reason, runId)) {
+    return { ok: false, mergeBlockedCleanLocal: true, needPull: true };
+  }
   markSyncProgress("merge:start", runId);
   if (!remotePayload) remotePayload = normalizeSyncPayload({});
   const currentLocal = local && local.payload ? local : refreshLocalPayloadHash({ persist: true });
@@ -63,9 +98,13 @@ async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason
       recordHashSyncFailure("GitHub Gist 并发更新冲突，已重试" + MAX_PATCH_409_RETRIES + "次仍失败。本地数据已保留，请稍后重新同步。", { errorKind: "patch_conflict_409", banner: true, dialog: true, runId, httpStatus: 409 });
       return false;
     }
-    appendAuditEvent({ type: "sync:patch_retry", message: "session=" + TAB_ID + " 409 retry " + (patch409Retries + 1) + "/" + MAX_PATCH_409_RETRIES, httpStatus: 409 });
+    appendAuditEvent({ type: "sync:patch_retry", message: "session=" + TAB_ID + " runId=" + runId + " 409 retry " + (patch409Retries + 1) + "/" + MAX_PATCH_409_RETRIES, httpStatus: 409 });
     await delay(1200);
-    return await syncBranchMerge({ remote, remotePayload, local: currentSyncFacts({ persistHash: true }), keepalive, reason: "patch_409_retry", runId, rebaseCount, patch409Retries: patch409Retries + 1 });
+    var mergeResult409 = await syncBranchMerge({ remote, remotePayload, local: currentSyncFacts({ persistHash: true }), keepalive, reason: "patch_409_retry", runId, rebaseCount, patch409Retries: patch409Retries + 1 });
+    if (mergeResult409 && mergeResult409.needPull) {
+      return await Promise.resolve(pullRemotePayload({ remote, remotePayload, remoteHash: currentRemoteHash(remote), reason: "merge_blocked_clean_local_pull", runId, localRevisionAtStart: state.localBusinessRevision, localHashAtStart: "", allowCleanLocalOverwrite: true }));
+    }
+    return mergeResult409;
   }
   if (result.preflightChanged) {
     if (rebaseCount >= MAX_PREFLIGHT_REBASE) {
@@ -73,7 +112,11 @@ async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason
       return false;
     }
     const latestRemote = result.remote;
-    return await syncBranchMerge({ remote: latestRemote, remotePayload: currentRemotePayload(latestRemote), local: currentSyncFacts({ persistHash: true }), keepalive, reason: result.verifyMismatch ? "verify_mismatch_rebase" : "preflight_rebase", runId, rebaseCount: rebaseCount + 1 });
+    var mergeResult = await syncBranchMerge({ remote: latestRemote, remotePayload: currentRemotePayload(latestRemote), local: currentSyncFacts({ persistHash: true }), keepalive, reason: result.verifyMismatch ? "verify_mismatch_rebase" : "preflight_rebase", runId, rebaseCount: rebaseCount + 1 });
+    if (mergeResult && mergeResult.needPull) {
+      return await Promise.resolve(pullRemotePayload({ remote: latestRemote, remotePayload: currentRemotePayload(latestRemote), remoteHash: currentRemoteHash(latestRemote), reason: "merge_blocked_clean_local_pull", runId, localRevisionAtStart: state.localBusinessRevision, localHashAtStart: "", allowCleanLocalOverwrite: true }));
+    }
+    return mergeResult;
   }
   if (!result.ok) return false;
   var finalResult = finalizeVerifiedPatch({ uploadedPayload: mergedPayload, uploadedHash: mergedHash, verifiedRemote: result.remote, runId });
@@ -164,7 +207,7 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
     if (!response.ok) {
       // 409 Conflict: GitHub Gist 并发/短时间连续更新冲突，可重试
       if (response.status === 409) {
-        appendAuditEvent({ type: "sync:patch_409", message: "session=" + TAB_ID + " HTTP 409", httpStatus: 409 });
+        appendAuditEvent({ type: "sync:patch_409", message: "session=" + TAB_ID + " runId=" + runId + " HTTP 409", httpStatus: 409 });
         await delay(1000 + Math.floor(Math.random() * 500));
         var recheckRemote;
         try {

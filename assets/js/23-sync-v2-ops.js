@@ -98,16 +98,24 @@ function applyPendingOps(payload, ops) {
 
 
 function applyWordMarkSet(payload, op) {
-  const book = BOOKS.find((item) => item.id === op.bookId);
-  const wordId = Number(op.wordId);
-  if (!book || !Number.isFinite(wordId) || wordId <= 0) return;
-  const marks = payload.marks[book.id] || { known: [], unknown: [] };
-  // 本地 pendingOp 表示用户在本设备上未同步的最后意图；rebase 时它覆盖云端同一词的互斥状态。
-  marks.known = normalizeIdList(marks.known).filter((id) => id !== wordId);
-  marks.unknown = normalizeIdList(marks.unknown).filter((id) => id !== wordId);
-  if (op.value === "known") marks.known.push(wordId);
-  if (op.value === "unknown") marks.unknown.push(wordId);
-  payload.marks[book.id] = sanitizeMarksPayload(marks);
+  var book = BOOKS.find(function(b) { return b.id === op.bookId; });
+  if (!book) return;
+  if (!payload.markStates) payload.markStates = {};
+  if (!payload.markStates[book.id]) payload.markStates[book.id] = {};
+  var states = sanitizeMarkStatesPayload(payload.markStates[book.id]);
+  var existing = states[String(op.wordId)];
+  var next = {
+    value: op.value,
+    updatedAt: op.updatedAt || op.createdAt || beijingISOString(),
+    clientId: op.clientId || "",
+    seq: Number.isFinite(Number(op.seq)) ? Number(op.seq) : 0
+  };
+  if (!existing || compareMarkState(next, existing) >= 0) {
+    states[String(op.wordId)] = next;
+  }
+  payload.markStates[book.id] = states;
+  if (!payload.marks) payload.marks = {};
+  payload.marks[book.id] = deriveMarksFromMarkStates(states);
 }
 
 

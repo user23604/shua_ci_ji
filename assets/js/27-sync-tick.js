@@ -172,6 +172,32 @@ function syncBranchReadOnlyMergeLocal({ remote, remotePayload, local, reason, ru
   return false;
 }
 
+// ── P5 forced remote check ──────────────────────────────────────────────
+
+function isForcedRemoteCheckReason(reason) {
+  return [
+    "manual", "manual_retry", "manual_push", "manual_pull",
+    "config_saved", "startup",
+    "view_open_remote_check", "archive_open", "archive_tab_switch",
+    "stats_open", "visibility_resume"
+  ].includes(reason);
+}
+
+function requestFreshRemoteCheck(reason) {
+  var gate = savedCloudConfigGate();
+  if (!gate.ok) return;
+  scheduleSyncSoon(reason || "view_open_remote_check", 0);
+}
+
+function refreshCurrentBusinessViewAfterSync() {
+  if (state.view === "archive" || state.view === "stats") {
+    if (typeof renderArchiveStats === "function") renderArchiveStats();
+  }
+  if (state.view === "flash") {
+    if (typeof renderFlashcard === "function") renderFlashcard();
+  }
+}
+
 async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff = false } = {}) {
   if (state.isSyncing) {
     if (!releaseStuckSyncLockIfNeeded()) return false;
@@ -195,7 +221,8 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
 
   // P0.7: 自动同步最小间隔。非手动触发的同步，距离上次完成不到 2s 则跳过，但 dirty 会重调度
   var isManualSync = reason === "manual" || reason === "manual_retry" || reason === "manual_push" || reason === "manual_pull" || reason === "ignore_empty_backup" || reason === "config_saved" || reason === "remote_restore_merge";
-  if (!isManualSync && state.lastSyncFinishedAt && Date.now() - state.lastSyncFinishedAt < SYNC_MIN_INTERVAL_MS) {
+  var bypassMinInterval = isManualSync || isForcedRemoteCheckReason(reason);
+  if (!bypassMinInterval && state.lastSyncFinishedAt && Date.now() - state.lastSyncFinishedAt < SYNC_MIN_INTERVAL_MS) {
     var syncStateForSkip = ensureHashSyncState(state.syncHashState);
     appendAuditEvent({ type: "sync:skip_min_interval", message: "session=" + TAB_ID + " reason=" + reason + " remaining=" + (SYNC_MIN_INTERVAL_MS - (Date.now() - state.lastSyncFinishedAt)) });
     if (syncStateForSkip.localDirty) {
@@ -206,7 +233,12 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   }
 
   const preFacts = currentSyncFacts({ persistHash: true });
-  if (reason === "heartbeat" && isIdleForSyncHeartbeat() && !preFacts.effectiveDirty) return false;
+  if (reason === "heartbeat" && !preFacts.effectiveDirty && !isForcedRemoteCheckReason(reason)) {
+    var lastPollAt = Number(state.lastCleanRemotePollAt || 0);
+    if (lastPollAt && Date.now() - lastPollAt < SYNC_CLEAN_REMOTE_POLL_MS) {
+      return false;
+    }
+  }
   if (shouldSkipSyncForBackoff(bypassBackoff)) return false;
   if (!tryAcquireCrossTabSyncLock(reason)) {
     setHashSyncStatus("syncing", "其他标签页正在同步");
@@ -356,9 +388,13 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
             return syncBranchReadOnlyMergeLocal({ remote, remotePayload, local: recheck, reason: "local_changed_before_pull_read_only", runId });
           }
           syncResult = await syncBranchMerge({ remote, remotePayload, local: recheck, keepalive, reason: "local_changed_before_pull", runId });
+          if (syncResult && syncResult.needPull) {
+            syncResult = await Promise.resolve(pullRemotePayload({ remote, remotePayload, remoteHash: currentRemoteHash(remote), reason: "merge_blocked_clean_local_pull", runId, localRevisionAtStart, localHashAtStart, allowCleanLocalOverwrite: true }));
+          }
           return syncResult;
         }
-        return pullRemotePayload({ remote, remotePayload, remoteHash, reason, runId, localRevisionAtStart, localHashAtStart });
+        syncResult = await Promise.resolve(pullRemotePayload({ remote, remotePayload, remoteHash, reason, runId, localRevisionAtStart, localHashAtStart }));
+        return syncResult;
       }
 
       recordHashSyncFailure("云端 sync.json 无法判断为安全可拉取数据，已停止同步", {
@@ -376,20 +412,36 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     }
 
     if (readOnly) {
-      if (remoteHasData && remoteHash !== facts.syncState.baseRemoteHash) {
-        return syncBranchReadOnlyMergeLocal({ remote, remotePayload, local: facts, reason: "read_only_remote_changed_local_has_data", runId });
+      if (remoteHasData && remoteHash !== syncState.baseRemoteHash) {
+        // CLEAN local + remote changed → Pull (readOnly blocks Push, not Pull)
+        if (!effectiveDirty && !syncState.localDirty) {
+          appendAuditEvent({ type: "sync:decision", message: "session=" + TAB_ID + " branch=readonly_pull_remote_changed_local_clean runId=" + runId });
+          syncResult = await Promise.resolve(pullRemotePayload({
+            remote, remotePayload, remoteHash,
+            reason: "readonly_remote_changed_local_clean", runId,
+            localRevisionAtStart, localHashAtStart,
+            allowCleanLocalOverwrite: true
+          }));
+          return syncResult;
+        }
+        // DIRTY local + remote changed → readOnly local merge (can't Push)
+        syncResult = await syncBranchReadOnlyMergeLocal({ remote, remotePayload, local: facts, reason: "read_only_remote_changed_local_dirty", runId });
+        return syncResult;
       }
-      if (facts.effectiveDirty) {
+      if (effectiveDirty) {
         markReadOnlyDirtyState("本地有未上传数据，但 PAT 无效或无写权限，当前无法上传。", facts, { runId });
-      } else {
-        setReadOnlySyncState("PAT 无效或无写权限，当前只读。", { runId });
+        syncResult = { ok: false, readOnlyDirty: true };
+        return syncResult;
       }
-      return false;
+      setReadOnlySyncState("PAT 无效或无写权限，当前只读。", { runId });
+      syncResult = { ok: false, readOnly: true };
+      return syncResult;
     }
 
     if (remoteHash === syncState.baseRemoteHash && !effectiveDirty) {
       markSessionRemoteChecked(remote, runId, "syncTick.noop_same_hash");
-      return true;
+      syncResult = { ok: true, noop: true };
+      return syncResult;
     }
 
     if (remoteHash === syncState.baseRemoteHash && effectiveDirty) {
@@ -399,32 +451,61 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     }
 
     if (remoteHash !== syncState.baseRemoteHash) {
-      if (remoteHasData) {
-        appendAuditEvent({ type: "sync:decision", message: "session=" + TAB_ID + " branch=merge hash_diff remoteHasData=true runId=" + runId });
-        if (hasUserLocalChangeSinceSyncStart(localRevisionAtStart, localHashAtStart, runId)) {
-          const recheck = currentSyncFacts({ persistHash: true });
-          syncResult = await syncBranchMerge({ remote, remotePayload, local: recheck, keepalive, reason: "local_changed_before_merge", runId });
-          return syncResult;
-        }
-        syncResult = await syncBranchMerge({ remote, remotePayload, local: facts, keepalive, reason: "remote_changed_local_has_data", runId });
+      if (!remoteHasData) {
+        recordHashSyncFailure("云端 sync.json 无法安全解析为可合并数据，已停止自动同步", {
+          errorKind: "remote_invalid",
+          banner: true,
+          dialog: true,
+          runId,
+          remote,
+          remoteHash,
+          remoteHasBusinessData: remoteHasData,
+          readOnly,
+          technical: "remote.kind=" + String(remote && remote.kind || "")
+        });
+        syncResult = { ok: false, remoteInvalid: true };
         return syncResult;
       }
 
-      recordHashSyncFailure("云端 sync.json 无法安全解析为可合并数据，已停止自动同步", {
-        errorKind: "remote_invalid",
-        banner: true,
-        dialog: true,
-        runId,
-        remote,
-        remoteHash,
-        remoteHasBusinessData: remoteHasData,
-        readOnly,
-        technical: "remote.kind=" + String(remote && remote.kind || "")
-      });
-      return false;
+      // CLEAN local + remote changed → PULL (not merge!)
+      if (!effectiveDirty && !syncState.localDirty) {
+        appendAuditEvent({ type: "sync:decision", message: "session=" + TAB_ID + " branch=pull_remote_changed_local_clean remoteHash=" + String(remoteHash || "").slice(0, 8) + " baseHash=" + String(syncState.baseRemoteHash || "").slice(0, 8) + " localHash=" + String(facts.localPayloadHash || "").slice(0, 8) + " runId=" + runId });
+        if (hasUserLocalChangeSinceSyncStart(localRevisionAtStart, localHashAtStart, runId)) {
+          const recheck = currentSyncFacts({ persistHash: true });
+          syncResult = await syncBranchMerge({ remote, remotePayload, local: recheck, keepalive, reason: "local_changed_before_clean_pull", runId });
+          if (syncResult && syncResult.needPull) {
+            syncResult = await Promise.resolve(pullRemotePayload({ remote, remotePayload, remoteHash: currentRemoteHash(remote), reason: "merge_blocked_clean_local_pull", runId, localRevisionAtStart, localHashAtStart, allowCleanLocalOverwrite: true }));
+          }
+          return syncResult;
+        }
+        syncResult = await Promise.resolve(pullRemotePayload({
+          remote, remotePayload, remoteHash,
+          reason: "clean_local_remote_changed_pull", runId,
+          localRevisionAtStart, localHashAtStart,
+          allowCleanLocalOverwrite: true
+        }));
+        return syncResult;
+      }
+
+      // DIRTY local + remote changed → MERGE
+      appendAuditEvent({ type: "sync:decision", message: "session=" + TAB_ID + " branch=merge_dirty_local_remote_changed remoteHash=" + String(remoteHash || "").slice(0, 8) + " baseHash=" + String(syncState.baseRemoteHash || "").slice(0, 8) + " localHash=" + String(facts.localPayloadHash || "").slice(0, 8) + " runId=" + runId });
+      if (hasUserLocalChangeSinceSyncStart(localRevisionAtStart, localHashAtStart, runId)) {
+        const recheck = currentSyncFacts({ persistHash: true });
+        syncResult = await syncBranchMerge({ remote, remotePayload, local: recheck, keepalive, reason: "local_changed_before_dirty_merge", runId });
+        if (syncResult && syncResult.needPull) {
+          syncResult = await Promise.resolve(pullRemotePayload({ remote, remotePayload, remoteHash: currentRemoteHash(remote), reason: "merge_blocked_clean_local_pull", runId, localRevisionAtStart, localHashAtStart, allowCleanLocalOverwrite: true }));
+        }
+        return syncResult;
+      }
+      syncResult = await syncBranchMerge({ remote, remotePayload, local: facts, keepalive, reason: "dirty_local_remote_changed_merge", runId });
+      if (syncResult && syncResult.needPull) {
+        syncResult = await Promise.resolve(pullRemotePayload({ remote, remotePayload, remoteHash: currentRemoteHash(remote), reason: "merge_blocked_clean_local_pull", runId, localRevisionAtStart, localHashAtStart, allowCleanLocalOverwrite: true }));
+      }
+      return syncResult;
     }
 
-    syncResult = await syncBranchMerge({ remote, remotePayload, local: facts, keepalive, reason, runId });
+    // Should not reach here with correct branching above
+    syncResult = { ok: false, unknown: true };
     return syncResult;
   } catch (error) {
     if (!isStaleSyncRun(runId)) {
@@ -451,6 +532,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
       state.syncLastProgressAt = 0;
       state.lastSyncFinishedAt = Date.now();
       refreshVisibleSyncDiagnostics();
+      if (typeof refreshCurrentBusinessViewAfterSync === "function") refreshCurrentBusinessViewAfterSync();
     }
 
     releaseCrossTabSyncLock();
