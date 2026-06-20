@@ -143,7 +143,10 @@ function markCurrent(kind) {
   const book = currentBook();
   const word = state.unitWords[state.currentIndex];
   if (!word) return;
-  if (state.view === "flash") state.lastUserStudyActionAt = Date.now();
+  if (state.view === "flash") {
+    state.lastUserStudyActionAt = Date.now();
+    if (typeof touchStudyActivity === "function") touchStudyActivity("mark");
+  }
   setWordMarkState(book.id, word.id, kind, { touch: true });
   appendAuditEvent({ type: "user:mark", message: "wordId=" + word.id + " kind=" + kind });
   updateSyncIndicator();
@@ -152,7 +155,10 @@ function markCurrent(kind) {
 
 function undoMark(wordId) {
   const book = currentBook();
-  if (state.view === "flash") state.lastUserStudyActionAt = Date.now();
+  if (state.view === "flash") {
+    state.lastUserStudyActionAt = Date.now();
+    if (typeof touchStudyActivity === "function") touchStudyActivity("undo");
+  }
   setWordMarkState(book.id, wordId, null, { touch: true });
   appendAuditEvent({ type: "user:undo", message: "wordId=" + wordId });
   updateSyncIndicator();
@@ -163,6 +169,8 @@ function undoMark(wordId) {
 
 function advanceWord(reason) {
   clearTimers();
+  var progressReason = reason === "auto" ? "auto_advance" : reason === "manual" ? "manual_next" : reason ? "advance_" + String(reason) : "advance";
+  if (typeof touchStudyActivity === "function") touchStudyActivity(progressReason);
   const wasRecorded = state.currentWordRecorded;
   const result = reason === "known" || reason === "unknown" ? reason : "";
   commitCurrentCardActivity({ counted: true, result });
@@ -195,12 +203,13 @@ function advanceWord(reason) {
     return;
   }
 
-  renderFlashcard({ touchProgress: true });
+  renderFlashcard({ touchProgress: true, progressReason: progressReason });
 }
 
 
 function finishCurrentGroup() {
   clearTimers();
+  if (typeof touchStudyActivity === "function") touchStudyActivity("finish_group");
   const wasRecorded = state.currentWordRecorded;
   commitCurrentCardActivity({ counted: true });
   if (!wasRecorded) state.groupStats.seen += 1;
@@ -216,6 +225,8 @@ function finishCurrentGroup() {
 
 function goPrevious() {
   clearTimers();
+  var progressReason = "manual_previous";
+  if (typeof touchStudyActivity === "function") touchStudyActivity(progressReason);
   commitCurrentCardActivity();
   if (state.currentIndex <= 0) {
     renderFlashcard();
@@ -228,11 +239,12 @@ function goPrevious() {
   state.showZh = true;
   // 上一个词的新卡片从左侧轻进入；旧卡飞出方向在 triggerCardDirection() 中控制。
   state.cardEnterDirection = "from-left";
-  renderFlashcard({ touchProgress: true });
+  renderFlashcard({ touchProgress: true, progressReason: progressReason });
 }
 
 
 function renderBreak(info) {
+  if (typeof touchStudyActivity === "function") touchStudyActivity(info && info.unitEnd ? "break_unit_end" : "break");
   const enteringBreak = state.view !== "break";
   state.view = "break";
   state.breakInfo = info;
@@ -272,11 +284,13 @@ function renderBreak(info) {
   document.getElementById("continueBtn").addEventListener("click", continueAfterBreak);
   const roundReviewBtn = document.getElementById("roundUnknownReviewBtn");
   if (roundReviewBtn) roundReviewBtn.addEventListener("click", startRoundUnknownReview);
+  if (enteringBreak && typeof flushPendingStudyForBoundary === "function") flushPendingStudyForBoundary("break");
   if (enteringBreak) autoPushToGist();
 }
 
 
 async function continueAfterBreak() {
+  if (typeof touchStudyActivity === "function") touchStudyActivity("continue_after_break");
   const book = currentBook();
   if (state.breakInfo?.reviewEnd && state.reviewMode?.mode === "round-unknown" && state.roundReturn) {
     const ret = state.roundReturn;
@@ -298,7 +312,7 @@ async function continueAfterBreak() {
       return;
     }
     await requestWakeLock();
-    renderFlashcard({ touchProgress: true });
+    renderFlashcard({ touchProgress: true, progressReason: "continue_after_break_return" });
     return;
   }
   if (state.breakInfo?.reviewEnd) {
@@ -336,7 +350,7 @@ async function continueAfterBreak() {
     }
   }
   await requestWakeLock();
-  renderFlashcard({ touchProgress: true });
+  renderFlashcard({ touchProgress: true, progressReason: "continue_after_break" });
 }
 
 
@@ -346,6 +360,7 @@ function getRoundUnknownIds() {
 
 
 async function startRoundUnknownReview() {
+  if (typeof touchStudyActivity === "function") touchStudyActivity("round_unknown_review");
   const ids = getRoundUnknownIds();
   if (!ids.length) return;
   const idSet = new Set(ids);
@@ -368,7 +383,7 @@ async function startRoundUnknownReview() {
   state.playbackPaused = false;
   state.reviewMode = { mode: "round-unknown", label: "本轮重难点复习", wordIds: ids };
   await requestWakeLock();
-  renderFlashcard({ touchProgress: true });
+  renderFlashcard({ touchProgress: true, progressReason: "round_unknown_review" });
 }
 
 

@@ -13,26 +13,32 @@ function preloadSpeechVoices() {
 
 function pausePlaybackForBackground() {
   if (state.view !== "flash" || state.playbackPaused) return;
+  if (typeof touchStudyActivity === "function") touchStudyActivity("pause_background");
   commitCurrentCardActivity();
   clearTimers();
   releaseWakeLock();
   state.playbackPaused = true;
+  if (typeof flushPendingStudyForBoundary === "function") flushPendingStudyForBoundary("pause_background");
   renderFlashcard({ touchProgress: false });
 }
 
 
 function pausePlaybackFromCard() {
   if (state.view !== "flash" || state.playbackPaused) return;
+  if (typeof touchStudyActivity === "function") touchStudyActivity("pause");
   commitCurrentCardActivity();
   clearTimers();
   releaseWakeLock();
   state.playbackPaused = true;
+  if (typeof flushPendingStudyForBoundary === "function") flushPendingStudyForBoundary("pause");
+  if (typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload(1500);
   renderFlashcard({ touchProgress: false });
 }
 
 
 async function resumePlayback() {
   if (state.view !== "flash") return;
+  if (typeof touchStudyActivity === "function") touchStudyActivity("resume");
   state.playbackPaused = false;
   state.resumeFeedback = true;
   await requestWakeLock();
@@ -42,7 +48,12 @@ async function resumePlayback() {
 
 function toggleManualModeFromFlash() {
   state.settings.manualMode = !state.settings.manualMode;
+  if (typeof touchStudyActivity === "function") touchStudyActivity(state.settings.manualMode ? "manual_mode_on" : "manual_mode_off");
   persistSettings();
+  if (state.settings.manualMode && typeof flushPendingStudyForBoundary === "function") {
+    flushPendingStudyForBoundary("manual_mode_on");
+    if (typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload(1500);
+  }
   renderFlashcard({ touchProgress: false });
 }
 

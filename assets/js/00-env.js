@@ -1,7 +1,7 @@
 "use strict";
 
-const APP_VERSION = "2026-06-20-p9-stable-clean-after-sync";
-const APP_BUILD_ID = "2026-06-20-p9-stable-clean-after-sync";
+const APP_VERSION = "2026-06-20-p10-active-study-progress-batch-sync";
+const APP_BUILD_ID = "2026-06-20-p10-active-study-progress-batch-sync";
 
 
 const ACCESS_KEY = "ky2027";
@@ -22,6 +22,10 @@ const HASH_BACKUP_PREFIX = "vocab_machine_backup:";
 
 const HASH_BACKUP_INDEX_KEY = "vocab_machine_backup_index_v1";
 const SYNC_AUDIT_KEY = "vocab_machine_sync_audit_v1";
+const PROGRESS_CURSOR_KEY = "vocab_machine_progress_cursor_v1";
+const UNKNOWN_PROGRESS_CURSOR_KEY = "vocab_machine_unknown_progress_cursor_v1";
+const PROGRESS_PENDING_KEY = "vocab_machine_progress_pending_v1";
+const ACTIVITY_DRAFT_KEY = "vocab_machine_activity_draft_v1";
 
 const SYNC_FILE_NAME = "sync.json";
 const SYNC_BACKUP_FILE_NAME = "sync.prev.json";

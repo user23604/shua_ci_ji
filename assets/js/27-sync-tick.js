@@ -1,16 +1,32 @@
 "use strict";
 
+
+function pauseFlashPlaybackForManualSync(reason) {
+  if (state.view !== "flash") return false;
+  if (typeof touchStudyActivity === "function") touchStudyActivity(reason || "manual_sync");
+  try { commitCurrentCardActivity(); } catch (_) {}
+  try { clearTimers(); } catch (_) {}
+  try { releaseWakeLock(); } catch (_) {}
+  state.playbackPaused = true;
+  if (typeof flushPendingStudyForBoundary === "function") flushPendingStudyForBoundary(reason || "manual_sync");
+  if (typeof renderFlashcard === "function") renderFlashcard({ touchProgress: false });
+  appendAuditEvent({ type: "sync:manual_paused_flash_playback", message: "reason=" + String(reason || "manual_sync") });
+  return true;
+}
+
 async function autoPullFromGist() {
   return syncTick({ reason: "manual_pull", bypassBackoff: true });
 }
 
 
 async function autoPushToGist({ keepalive = false } = {}) {
+  pauseFlashPlaybackForManualSync("manual_push");
   return syncTick({ reason: "manual_push", keepalive, bypassBackoff: true });
 }
 
 
 async function syncWithGist({ keepalive = false } = {}) {
+  pauseFlashPlaybackForManualSync("manual");
   return syncTick({ reason: "manual", keepalive, bypassBackoff: true });
 }
 
@@ -211,30 +227,17 @@ function canRunWhileHidden(reason) {
 
 function shouldDeferForActiveStudy(reason) {
   if (state.view !== "flash") return false;
-  var last = Number(state.lastUserStudyActionAt || 0);
-  if (!last) return false;
-  var elapsed = Date.now() - last;
+  if (isHardForcedSyncReason(reason)) return false;
+  var last = typeof lastActiveStudyAt === "function" ? Number(lastActiveStudyAt() || 0) : Number(state.lastUserStudyActionAt || 0);
+  var elapsed = last ? Date.now() - last : Infinity;
   var inWindow = elapsed < ACTIVE_STUDY_SYNC_DEBOUNCE_MS;
+  var moving = typeof isStudyMoving === "function" && isStudyMoving();
 
   if (isActiveStudyIdleUploadReason(reason)) {
-    if (inWindow) {
-      var delay = Math.max(0, ACTIVE_STUDY_SYNC_DEBOUNCE_MS - elapsed);
-      if (state.activeStudySyncTimer) {
-        clearTimeout(state.activeStudySyncTimer);
-        state.activeStudySyncTimer = null;
-      }
-      state.activeStudySyncTimer = setTimeout(function() {
-        state.activeStudySyncTimer = null;
-        state.pendingActiveStudyUpload = true;
-        var hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
-        syncTick({ reason: "active_study_idle_upload", bypassBackoff: true, keepalive: hidden });
-      }, delay);
-      return true;
-    }
-    return false;
+    return Boolean(moving || inWindow);
   }
 
-  if (!inWindow) return false;
+  if (!moving && !inWindow) return false;
   return [
     "heartbeat",
     "local_change",
@@ -251,9 +254,10 @@ function shouldDeferForActiveStudy(reason) {
 function shouldAbortAutoPatchForActiveStudy(reason) {
   if (state.view !== "flash") return false;
   if (isHardForcedSyncReason(reason)) return false;
-  var last = Number(state.lastUserStudyActionAt || 0);
-  if (!last) return false;
-  return Date.now() - last < ACTIVE_STUDY_SYNC_DEBOUNCE_MS;
+  var last = typeof lastActiveStudyAt === "function" ? Number(lastActiveStudyAt() || 0) : Number(state.lastUserStudyActionAt || 0);
+  var inWindow = Boolean(last && Date.now() - last < ACTIVE_STUDY_SYNC_DEBOUNCE_MS);
+  var moving = typeof isStudyMoving === "function" && isStudyMoving();
+  return Boolean(moving || inWindow);
 }
 
 
@@ -331,10 +335,9 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   reason = String(reason || "heartbeat");
   if (state.isSyncing) {
     if (!releaseStuckSyncLockIfNeeded()) {
-      if (reason === "active_study_idle_upload" && typeof scheduleActiveStudyUpload === "function") {
+      if (reason === "active_study_idle_upload") {
         state.pendingActiveStudyUpload = true;
-        scheduleActiveStudyUpload();
-        appendAuditEvent({ type: "sync:active_study_idle_upload_rescheduled", message: "session=" + TAB_ID + " reason=isSyncing" });
+        appendAuditEvent({ type: "sync:active_study_idle_upload_pending", message: "session=" + TAB_ID + " reason=isSyncing" });
       }
       return false;
     }
@@ -352,7 +355,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   if (!isHardForcedSyncReason(reason) && shouldDeferForActiveStudy(reason)) {
     appendAuditEvent({
       type: "sync:defer_active_study",
-      message: "session=" + TAB_ID + " reason=" + reason + " elapsedSinceStudyAction=" + String(Date.now() - Number(state.lastUserStudyActionAt || 0))
+      message: "session=" + TAB_ID + " reason=" + reason + " elapsedSinceStudyAction=" + String(Date.now() - (typeof lastActiveStudyAt === "function" ? Number(lastActiveStudyAt() || 0) : Number(state.lastUserStudyActionAt || 0)))
     });
     if (typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload();
     updateSyncIndicator();
@@ -361,7 +364,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
 
   if (shouldDeferFlashAutoSync(reason)) {
     var flashSkipState = ensureHashSyncState(state.syncHashState);
-    if (flashSkipState.localDirty || state.pendingActiveStudyUpload) {
+    if (flashSkipState.localDirty || state.pendingActiveStudyUpload || (typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists())) {
       if (typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload();
       setHashSyncStatus("dirty", "本地已保存，稍后自动同步");
       appendAuditEvent({
@@ -380,8 +383,9 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   // P0.8: PATCH 事务锁 — 同一页面会话内不并发 PATCH
   if (hasActivePatchTransaction()) {
     appendAuditEvent({ type: "sync:skip_patch_in_flight", message: "session=" + TAB_ID + " reason=" + reason });
-    if (reason === "active_study_idle_upload" && typeof scheduleActiveStudyUpload === "function") {
-      scheduleActiveStudyUpload();
+    if (reason === "active_study_idle_upload") {
+      state.pendingActiveStudyUpload = true;
+      appendAuditEvent({ type: "sync:active_study_idle_upload_pending", message: "session=" + TAB_ID + " reason=patch_in_flight" });
     } else {
       scheduleSyncSoon("patch_in_flight_reschedule", 1500);
     }
@@ -409,6 +413,9 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     return false;
   }
 
+  if (typeof preparePendingStudyFlushForSync === "function") {
+    preparePendingStudyFlushForSync(reason); // pre_facts_prepare_marker
+  }
   const preFacts = currentSyncFacts({ persistHash: true });
   if (reason === "heartbeat" && !preFacts.effectiveDirty && !isForcedRemoteCheckReason(reason)) {
     var lastPollAt = Number(state.lastCleanRemotePollAt || 0);
@@ -424,8 +431,8 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     appendAuditEvent({ type: "sync:skip_cross_tab_lock", message: "session=" + TAB_ID + " reason=" + reason + " owner=" + String(lockInfo && lockInfo.owner || "") + " lockReason=" + String(lockInfo && lockInfo.reason || "") + " expiresIn=" + String(lockInfo && lockInfo.expiresAt ? lockInfo.expiresAt - Date.now() : "") });
     if (reason === "active_study_idle_upload" && typeof scheduleActiveStudyUpload === "function") {
       state.pendingActiveStudyUpload = true;
-      scheduleActiveStudyUpload();
-      appendAuditEvent({ type: "sync:active_study_idle_upload_rescheduled", message: "session=" + TAB_ID + " reason=cross_tab_lock" });
+      scheduleActiveStudyUpload(3000);
+      appendAuditEvent({ type: "sync:active_study_idle_upload_rescheduled", message: "session=" + TAB_ID + " reason=cross_tab_lock delay=3000" });
     }
     return false;
   }
@@ -439,6 +446,9 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   appendAuditEvent({ type: "sync:start", message: "session=" + TAB_ID + " reason=" + reason + " runId=" + runId });
   state.syncActuallyStarted = true;
   state.syncStartedAtMs = Date.now();
+  if (typeof preparePendingStudyFlushForSync === "function") {
+    preparePendingStudyFlushForSync(reason);
+  }
   const localRevisionAtStart = state.localBusinessRevision || 0;
   const localHashAtStart = businessPayloadHash(collectSyncPayload());
   setSyncStatus("syncing");
@@ -737,6 +747,12 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
       if (typeof clearActiveStudyTimerIfClean === "function") clearActiveStudyTimerIfClean();
       refreshVisibleSyncDiagnostics();
       if (typeof refreshCurrentBusinessViewAfterSync === "function") refreshCurrentBusinessViewAfterSync();
+      var finalSyncState = ensureHashSyncState(state.syncHashState);
+      if ((state.pendingActiveStudyUpload || (typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()) || finalSyncState.localDirty) && typeof scheduleActiveStudyUpload === "function") {
+        if (state.view === "flash" && !state.activeStudySyncTimer) {
+          scheduleActiveStudyUpload(3000);
+        }
+      }
     } else {
       state.syncActuallyStarted = false;
       state.syncStartedAtMs = 0;

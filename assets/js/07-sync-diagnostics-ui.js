@@ -280,6 +280,15 @@ function auditSyncStatusRender(info) {
         " latestRemoteHashSeen=" + String(state.latestRemoteHashSeen || "").slice(0, 8) +
         " lastSyncStatus=" + String(syncState.lastSyncStatus || "") +
         " lastDirtyReason=" + String(state.lastDirtyReason || "") +
+        " pendingProgressSync=" + String(typeof hasPendingProgressSync === "function" && hasPendingProgressSync()) +
+        " activityDirtyPending=" + String(typeof hasPendingActivityDraft === "function" && hasPendingActivityDraft()) +
+        " lastStudyActivityAgo=" + String((typeof lastActiveStudyAt === "function" && lastActiveStudyAt()) ? Date.now() - Number(lastActiveStudyAt()) : -1) +
+        " playbackActive=" + String(typeof isFlashPlaybackActive === "function" && isFlashPlaybackActive()) +
+        " studyMoving=" + String(typeof isStudyMoving === "function" && isStudyMoving()) +
+        " transitioning=" + String(!!state.transitioning) +
+        " speechSpeaking=" + String(typeof isSpeechSpeakingNow === "function" && isSpeechSpeakingNow()) +
+        " timersActive=" + String(Array.isArray(state.timers) && state.timers.length > 0) +
+        " indicatorClass=is-" + String(info && info.status || "") +
         " blockingCode=" + String(syncState.lastBlockingErrorCode || "") +
         " hashSchema=" + String(syncState.businessHashSchemaVersion || "") +
         " schemaNeedsRemoteCheck=" + String(!!syncState.hashSchemaNeedsRemoteCheck)

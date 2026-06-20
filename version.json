@@ -1,6 +1,6 @@
 {
-  "appVersion": "2026-06-20-p9-stable-clean-after-sync",
-  "buildId": "2026-06-20-p9-stable-clean-after-sync",
+  "appVersion": "2026-06-20-p10-active-study-progress-batch-sync",
+  "buildId": "2026-06-20-p10-active-study-progress-batch-sync",
   "deployedAt": "2026-06-20T00:00:00+08:00",
-  "note": "P8: hidden active-study idle upload, visibility-resume dirty flush, and stale sync-lock recovery fixes"
+  "note": "P10: active-study cursor/draft progress batching, no autoplay sync loop, no 0ms active upload storm"
 }

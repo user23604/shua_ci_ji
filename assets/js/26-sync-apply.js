@@ -144,6 +144,9 @@ function applyRemotePayloadSafely(payload, options = {}) {
     Object.keys(normalized.unknownProgress).forEach(function(bookId) {
       applyUnknownProgressPayload(bookId, normalized.unknownProgress[bookId]);
     });
+    if (typeof syncProgressCursorFromCloudPayload === "function") syncProgressCursorFromCloudPayload(normalized);
+    if (typeof clearProgressPending === "function") clearProgressPending();
+    if (typeof clearActivityDraftPending === "function") clearActivityDraftPending();
     state.syncMeta.localUpdatedAt = normalized.updatedAt || beijingISOString();
     persistSyncMeta();
     bumpLocalBusinessRevision(options.reason || options.source || "remote_apply", { source: options.source === "rescue" ? "rescue" : "sync", runId: options.runId || null });

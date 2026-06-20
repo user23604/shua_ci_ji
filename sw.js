@@ -1,4 +1,4 @@
-const APP_VERSION = "2026-06-20-p9-stable-clean-after-sync";
+const APP_VERSION = "2026-06-20-p10-active-study-progress-batch-sync";
 
 self.addEventListener("install", function(event) {
   self.skipWaiting();

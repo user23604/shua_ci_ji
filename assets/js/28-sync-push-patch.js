@@ -31,8 +31,8 @@ function assertMergeAllowed(local, remote, reason, runId) {
 async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, remoteHashAtDecision, rebaseCount = 0, patch409Retries = 0 }) {
   if (isStaleSyncRun(runId)) return false;
   if (typeof shouldAbortAutoPatchForActiveStudy === "function" && shouldAbortAutoPatchForActiveStudy(reason)) {
-    appendAuditEvent({ type: "sync:defer_active_study_before_patch", message: "session=" + TAB_ID + " runId=" + runId + " reason=" + String(reason || "") + " elapsedSinceStudyAction=" + String(Date.now() - Number(state.lastUserStudyActionAt || 0)) });
-    if (typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload();
+    appendAuditEvent({ type: "sync:defer_active_study_before_patch", message: "session=" + TAB_ID + " runId=" + runId + " reason=" + String(reason || "") + " elapsedSinceStudyAction=" + String(Date.now() - (typeof lastActiveStudyAt === "function" ? Number(lastActiveStudyAt() || 0) : Number(state.lastUserStudyActionAt || 0))) });
+    if (typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload(3000);
     return { ok: false, deferredActiveStudy: true };
   }
   const currentLocal = local && local.payload ? local : refreshLocalPayloadHash({ persist: true });
@@ -75,8 +75,8 @@ async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, re
 async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason, runId, rebaseCount = 0, patch409Retries = 0 }) {
   if (isStaleSyncRun(runId)) return false;
   if (typeof shouldAbortAutoPatchForActiveStudy === "function" && shouldAbortAutoPatchForActiveStudy(reason)) {
-    appendAuditEvent({ type: "sync:defer_active_study_before_patch", message: "session=" + TAB_ID + " runId=" + runId + " reason=" + String(reason || "") + " stage=merge_before_apply elapsedSinceStudyAction=" + String(Date.now() - Number(state.lastUserStudyActionAt || 0)) });
-    if (typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload();
+    appendAuditEvent({ type: "sync:defer_active_study_before_patch", message: "session=" + TAB_ID + " runId=" + runId + " reason=" + String(reason || "") + " stage=merge_before_apply elapsedSinceStudyAction=" + String(Date.now() - (typeof lastActiveStudyAt === "function" ? Number(lastActiveStudyAt() || 0) : Number(state.lastUserStudyActionAt || 0))) });
+    if (typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload(3000);
     return { ok: false, deferredActiveStudy: true };
   }
   if (!assertMergeAllowed(local, remote, reason, runId)) {
@@ -160,8 +160,8 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
   }
 
   if (typeof shouldAbortAutoPatchForActiveStudy === "function" && shouldAbortAutoPatchForActiveStudy(reason)) {
-    appendAuditEvent({ type: "sync:defer_active_study_before_patch", message: "session=" + TAB_ID + " runId=" + runId + " reason=" + String(reason || "") + " stage=patch_start elapsedSinceStudyAction=" + String(Date.now() - Number(state.lastUserStudyActionAt || 0)) });
-    if (typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload();
+    appendAuditEvent({ type: "sync:defer_active_study_before_patch", message: "session=" + TAB_ID + " runId=" + runId + " reason=" + String(reason || "") + " stage=patch_start elapsedSinceStudyAction=" + String(Date.now() - (typeof lastActiveStudyAt === "function" ? Number(lastActiveStudyAt() || 0) : Number(state.lastUserStudyActionAt || 0))) });
+    if (typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload(3000);
     return { ok: false, deferredActiveStudy: true };
   }
 
@@ -194,6 +194,21 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
     const latestRemoteHash = currentRemoteHash(latestRemote);
     if (String(latestRemoteHash || "") !== String(remoteHashAtDecision || "")) {
       return { ok: false, preflightChanged: true, remote: latestRemote };
+    }
+
+    if (typeof shouldAbortAutoPatchForActiveStudy === "function" && shouldAbortAutoPatchForActiveStudy(reason)) {
+      appendAuditEvent({
+        type: "sync:defer_study_still_moving_before_patch",
+        message:
+          "session=" + TAB_ID +
+          " runId=" + runId +
+          " reason=" + String(reason || "") +
+          " lastStudyActivityAgo=" + String(Date.now() - (typeof lastActiveStudyAt === "function" ? Number(lastActiveStudyAt() || 0) : Number(state.lastUserStudyActionAt || 0))) +
+          " playbackActive=" + String(typeof isFlashPlaybackActive === "function" && isFlashPlaybackActive())
+      });
+      state.pendingActiveStudyUpload = true;
+      if (typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload(3000);
+      return { ok: false, deferredActiveStudy: true };
     }
 
     const envelope = buildSyncEnvelope(normalized);
@@ -369,7 +384,7 @@ function finalizeVerifiedPatch({ uploadedPayload, uploadedHash, verifiedRemote, 
     });
 
     if (typeof scheduleActiveStudyUpload === "function" && state.view === "flash") {
-      scheduleActiveStudyUpload();
+      scheduleActiveStudyUpload(3000);
     } else {
       scheduleSyncSoon("local_changed_during_verify", Math.max(2500, ACTIVE_STUDY_SYNC_DEBOUNCE_MS));
     }

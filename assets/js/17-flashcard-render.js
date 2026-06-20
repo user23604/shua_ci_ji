@@ -1,6 +1,6 @@
 "use strict";
 
-function renderFlashcard({ touchProgress = false } = {}) {
+function renderFlashcard({ touchProgress = false, progressReason = "render" } = {}) {
   state.view = "flash";
   clearTimers();
   const book = currentBook();
@@ -11,9 +11,9 @@ function renderFlashcard({ touchProgress = false } = {}) {
     return;
   }
   if (state.reviewMode?.mode === "unknown-archive") {
-    saveUnknownProgress(book.id, state.reviewMode.scope || currentUnknownScope(), { lastWordId: word.id, unit: word.unit, updatedAt: beijingISOString() }, { touch: touchProgress });
+    saveUnknownProgressCursor(book.id, state.reviewMode.scope || currentUnknownScope(), { lastWordId: word.id, unit: word.unit, updatedAt: beijingISOString() }, { queue: touchProgress, reason: progressReason });
   } else if (!state.reviewMode) {
-    saveProgress(book.id, { lastWordId: word.id, unit: word.unit, updatedAt: beijingISOString() }, { touch: touchProgress });
+    saveProgressCursor(book.id, { lastWordId: word.id, unit: word.unit, updatedAt: beijingISOString() }, { queue: touchProgress, reason: progressReason });
   }
   const marks = loadMarks(book.id);
   const markedKind = marks.known.includes(word.id) ? "known" : marks.unknown.includes(word.id) ? "unknown" : "";

@@ -114,19 +114,125 @@ function isStrictlyEmptyLocalPayload(payload) {
 }
 
 
+function touchStudyActivity(reason = "study") {
+  state.lastStudyActivityAt = Date.now();
+  if (typeof appendAuditEvent === "function") {
+    appendAuditEvent({
+      type: "study:activity_touch",
+      message:
+        "reason=" + String(reason || "") +
+        " view=" + String(state.view || "") +
+        " index=" + String(state.currentIndex || 0)
+    });
+  }
+}
+
+
+function lastActiveStudyAt() {
+  return Math.max(
+    Number(state.lastUserStudyActionAt || 0),
+    Number(state.lastStudyActivityAt || 0)
+  );
+}
+
+
+function currentFlashWord() {
+  return state.unitWords && state.unitWords[state.currentIndex] || null;
+}
+
+
+function isFlashPlaybackActive() {
+  return Boolean(
+    state.view === "flash" &&
+    !state.archiveOpen &&
+    !state.statsOpen &&
+    currentFlashWord() &&
+    state.settings &&
+    state.settings.manualMode !== true &&
+    state.playbackPaused !== true
+  );
+}
+
+
+function isSpeechSpeakingNow() {
+  try {
+    return Boolean(typeof window !== "undefined" && window.speechSynthesis && window.speechSynthesis.speaking);
+  } catch (_) {
+    return false;
+  }
+}
+
+
+function isStudyMoving() {
+  return Boolean(
+    state.view === "flash" &&
+    (
+      isFlashPlaybackActive() ||
+      state.transitioning === true ||
+      Boolean(state.pointer) ||
+      isSpeechSpeakingNow() ||
+      (Array.isArray(state.timers) && state.timers.length > 0)
+    )
+  );
+}
+
+
+function pendingStudyFlushExists() {
+  return Boolean(
+    (typeof hasPendingProgressSync === "function" && hasPendingProgressSync()) ||
+    (typeof hasPendingActivityDraft === "function" && hasPendingActivityDraft())
+  );
+}
+
+
+function flushPendingStudyForBoundary(reason = "boundary") {
+  var progressFlushed = typeof flushProgressForCloud === "function" ? flushProgressForCloud(reason) : false;
+  var activityFlushed = typeof flushActivityForCloud === "function" ? flushActivityForCloud(reason) : false;
+  return Boolean(progressFlushed || activityFlushed);
+}
+
+
+function shouldFlushPendingBeforeSync(reason) {
+  return [
+    "active_study_idle_upload",
+    "manual",
+    "manual_push",
+    "manual_retry",
+    "pagehide_flush",
+    "visibility_hidden_flush",
+    "visibility_resume_dirty_flush",
+    "visibility_resume",
+    "archive_open",
+    "archive_tab_switch",
+    "stats_open",
+    "setup_open",
+    "config_saved"
+  ].includes(String(reason || ""));
+}
+
+
+function preparePendingStudyFlushForSync(reason) {
+  if (!shouldFlushPendingBeforeSync(reason)) return false;
+  var changed = flushPendingStudyForBoundary(reason || "sync");
+  if (changed && typeof appendAuditEvent === "function") {
+    appendAuditEvent({ type: "sync:pending_study_flushed_before_facts", message: "reason=" + String(reason || "") });
+  }
+  return changed;
+}
+
 function shouldUseActiveStudyDebounce() {
   if (state.view !== "flash") return false;
-  var last = Number(state.lastUserStudyActionAt || 0);
+  var last = typeof lastActiveStudyAt === "function" ? Number(lastActiveStudyAt() || 0) : Number(state.lastUserStudyActionAt || 0);
   if (!last) return false;
-  return Date.now() - last < ACTIVE_STUDY_SYNC_DEBOUNCE_MS;
+  return Date.now() - last < ACTIVE_STUDY_SYNC_DEBOUNCE_MS || (typeof isStudyMoving === "function" && isStudyMoving());
 }
 
 
 function activeStudyIdleDelayMs(delayOverride) {
-  if (Number.isFinite(Number(delayOverride)) && Number(delayOverride) >= 0) return Number(delayOverride);
-  var last = Number(state.lastUserStudyActionAt || 0);
+  if (Number.isFinite(Number(delayOverride)) && Number(delayOverride) >= 0) return Math.max(1000, Number(delayOverride));
+  var last = typeof lastActiveStudyAt === "function" ? Number(lastActiveStudyAt() || 0) : Number(state.lastUserStudyActionAt || 0);
   if (!last || state.view !== "flash") return ACTIVE_STUDY_SYNC_DEBOUNCE_MS;
-  return Math.max(0, ACTIVE_STUDY_SYNC_DEBOUNCE_MS - (Date.now() - last));
+  return Math.max(1000, ACTIVE_STUDY_SYNC_DEBOUNCE_MS - (Date.now() - last));
 }
 
 
@@ -143,7 +249,7 @@ function scheduleActiveStudyUpload(delayOverride) {
     appendAuditEvent({ type: "sync:active_study_idle_upload", message: "session=" + TAB_ID + " hidden=" + String(!!hidden) + " delay=" + String(delay) });
     Promise.resolve(syncTick({ reason: "active_study_idle_upload", bypassBackoff: true, keepalive: hidden })).then(function(result) {
       var syncState = ensureHashSyncState(state.syncHashState);
-      if (result && syncState && !syncState.localDirty) {
+      if (result && syncState && !syncState.localDirty && !(typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists())) {
         state.pendingActiveStudyUpload = false;
       }
     }).catch(function(error) {
@@ -156,7 +262,7 @@ function scheduleActiveStudyUpload(delayOverride) {
 
 function clearActiveStudyTimerIfClean() {
   var syncState = ensureHashSyncState(state.syncHashState);
-  if (!syncState.localDirty) {
+  if (!syncState.localDirty && !pendingStudyFlushExists()) {
     state.pendingActiveStudyUpload = false;
     if (state.activeStudySyncTimer) {
       clearTimeout(state.activeStudySyncTimer);

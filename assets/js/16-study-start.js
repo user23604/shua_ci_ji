@@ -23,7 +23,7 @@ async function startStudy() {
         : `${unitDisplayLabel(book, state.settings.unit)} 没有未斩词条`);
     }
     state.currentIndex = unknownMode
-      ? getStartIndexFromProgress(loadUnknownProgress(book.id, scope))
+      ? getStartIndexFromProgress(loadUnknownProgressForResume(book.id, scope))
       : getStartIndex(book.id);
     state.groupStats = createGroupStats();
     state.undoWordId = null;
@@ -37,7 +37,8 @@ async function startStudy() {
     state.playbackPaused = false;
     state.setupStatus = "";
     await requestWakeLock();
-    renderFlashcard({ touchProgress: true });
+    if (typeof touchStudyActivity === "function") touchStudyActivity("start_study");
+    renderFlashcard({ touchProgress: true, progressReason: "start_study" });
   } catch (error) {
     setSetupStatus(error.message || "词库加载失败", "error");
   }
@@ -74,7 +75,8 @@ async function startReview(mode) {
     state.statsOpen = false;
     state.archiveOpen = false;
     await requestWakeLock();
-    renderFlashcard({ touchProgress: true });
+    if (typeof touchStudyActivity === "function") touchStudyActivity("start_review");
+    renderFlashcard({ touchProgress: true, progressReason: "start_review" });
   } catch (error) {
     state.setupStatus = { message: error.message || "复盘启动失败", type: "error" };
     renderSetup();
@@ -84,7 +86,7 @@ async function startReview(mode) {
 
 function getStartIndex(bookId) {
   if (state.settings.mode !== "resume") return 0;
-  return getStartIndexFromProgress(loadProgress(bookId));
+  return getStartIndexFromProgress(loadProgressForResume(bookId));
 }
 
 

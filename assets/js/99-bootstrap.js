@@ -4,12 +4,9 @@
 function flushDirtyOnPageHide(reason) {
   try {
     if (typeof markPageHiddenDuringSync === "function") markPageHiddenDuringSync();
+    if (typeof flushPendingStudyForBoundary === "function") flushPendingStudyForBoundary(reason || "pagehide_flush");
     var syncState = ensureHashSyncState(state.syncHashState);
-    if (state.activityDirtyPending && !syncState.localDirty && typeof markLocalDirtyLight === "function") {
-      markLocalDirtyLight("activity_pagehide");
-      syncState = ensureHashSyncState(state.syncHashState);
-    }
-    if (!syncState || !syncState.localDirty) return;
+    if (!syncState || (!syncState.localDirty && !(typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()))) return;
     appendAuditEvent({ type: "sync:pagehide_flush_start", message: "session=" + TAB_ID + " reason=" + reason });
     syncTick({ reason: reason, bypassBackoff: true, keepalive: true }).then(function(result) {
       if (!result) {
@@ -29,12 +26,9 @@ function flushDirtyOnPageHide(reason) {
 
 function flushPendingDirtyAfterVisible(reason) {
   try {
+    if (typeof flushPendingStudyForBoundary === "function") flushPendingStudyForBoundary(reason || "visibility_resume_dirty_flush");
     var syncState = ensureHashSyncState(state.syncHashState);
-    if (state.activityDirtyPending && !syncState.localDirty && typeof markLocalDirtyLight === "function") {
-      markLocalDirtyLight("activity_visibility_resume");
-      syncState = ensureHashSyncState(state.syncHashState);
-    }
-    var shouldFlush = Boolean((syncState && syncState.localDirty) || state.pendingActiveStudyUpload);
+    var shouldFlush = Boolean((syncState && syncState.localDirty) || state.pendingActiveStudyUpload || (typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()));
     if (!shouldFlush) {
       if (typeof requestFreshRemoteCheck === "function") requestFreshRemoteCheck(reason || "visibility_resume");
       return;
@@ -62,6 +56,8 @@ function init() {
   appendAuditEvent({ type: "app:startup", message: APP_VERSION + "/" + APP_BUILD_ID });
   state.syncMeta = ensureSyncMeta(state.syncMeta);
   state.syncHashState = ensureHashSyncState(state.syncHashState);
+  if (typeof restoreProgressPending === "function") restoreProgressPending();
+  if (typeof restoreActivityDraftPending === "function") restoreActivityDraftPending();
   persistSyncMeta();
   persistHashSyncState();
   migrateHashSyncStateIfNeeded();

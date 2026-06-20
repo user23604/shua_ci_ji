@@ -54,6 +54,7 @@ function cachedSyncFactsForStatus(syncState) {
 
 function canShowCloudOk(facts, syncState) {
   syncState = ensureHashSyncState(syncState || state.syncHashState);
+  if (typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()) return false;
   if (state.isSyncing) return false;
   if (!facts) return false;
   if (syncState.localDirty) return false;
@@ -77,7 +78,8 @@ function canShowConfirmedCloudState(facts, syncState) {
 function activeStudyDirtyDetail() {
   if (state.lastDirtyFromVerify) return "本地已保存，稍后继续同步";
   if (state.view === "flash") {
-    var last = Number(state.lastUserStudyActionAt || 0);
+    if (typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()) return "学习中，本地已保存，稍后同步";
+    var last = typeof lastActiveStudyAt === "function" ? Number(lastActiveStudyAt() || 0) : Number(state.lastUserStudyActionAt || 0);
     if (last && Date.now() - last < ACTIVE_STUDY_SYNC_DEBOUNCE_MS) return "本地已保存，待同步";
   }
   return "本地待上传";
@@ -151,6 +153,10 @@ function computeSyncStatus() {
       return { status: "dirty_read_only", detail: "只读模式·本地已保存，待更换可写 PAT 后上传" };
     }
     return { status: "dirty", detail: activeStudyDirtyDetail() };
+  }
+
+  if (typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()) {
+    return { status: "dirty", detail: state.view === "flash" ? "学习中，本地已保存，稍后同步" : "本地已保存，待同步" };
   }
 
   if (canShowCloudOk(facts, syncState)) {

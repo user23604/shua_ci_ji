@@ -10,6 +10,7 @@ function bindGesturePanelControls() {
         state.playbackPaused = false;
         requestWakeLock();
       }
+      if (typeof touchStudyActivity === "function") touchStudyActivity("gesture_" + String(direction || ""));
       triggerCardDirection(direction);
     });
   });
@@ -58,6 +59,7 @@ function bindCardGesture() {
     // 点击热区本身也允许作为滑动起点，否则从左右边缘起手的滑动会失效。
     if (interactiveTarget && !interactiveTarget.matches("[data-card-tap]")) return;
     clearTimers();
+    if (typeof touchStudyActivity === "function") touchStudyActivity("pointer_down");
     stack.setPointerCapture(event.pointerId);
     state.pointer = {
       id: event.pointerId,

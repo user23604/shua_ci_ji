@@ -36,6 +36,190 @@ function loadProgress(bookId) {
 }
 
 
+function loadProgressCursorStore() {
+  var store = loadJson(PROGRESS_CURSOR_KEY, { byBook: {} });
+  return { byBook: isPlainObject(store.byBook) ? store.byBook : {} };
+}
+
+
+function saveProgressCursorStore(store) {
+  saveJson(PROGRESS_CURSOR_KEY, { byBook: isPlainObject(store && store.byBook) ? store.byBook : {} }, { priority: "local_cursor" });
+}
+
+
+function loadProgressCursor(bookId) {
+  var store = loadProgressCursorStore();
+  return sanitizeProgressPayload(store.byBook && store.byBook[bookId] || { lastWordId: null });
+}
+
+
+function saveProgressCursor(bookId, progress, options = {}) {
+  var store = loadProgressCursorStore();
+  var previous = sanitizeProgressPayload(store.byBook && store.byBook[bookId] || { lastWordId: null });
+  var sanitized = sanitizeProgressPayload(progress);
+  if (sameProgressPosition(previous, sanitized)) return false;
+  store.byBook[bookId] = sanitized;
+  saveProgressCursorStore(store);
+  if (typeof appendAuditEvent === "function") {
+    appendAuditEvent({
+      type: "progress:cursor_saved",
+      message: "bookId=" + String(bookId || "") + " unit=" + String(sanitized.unit || "") + " lastWordId=" + String(sanitized.lastWordId || "") + " reason=" + String(options.reason || "")
+    });
+  }
+  if (options.queue !== false && typeof queueProgressCloudSync === "function") {
+    queueProgressCloudSync(options.reason || "cursor_saved");
+  }
+  return true;
+}
+
+
+function loadProgressForResume(bookId) {
+  var cursor = loadProgressCursor(bookId);
+  return Number(cursor.lastWordId || 0) > 0 ? cursor : loadProgress(bookId);
+}
+
+
+function loadUnknownProgressCursorStore() {
+  var store = loadJson(UNKNOWN_PROGRESS_CURSOR_KEY, { byBook: {} });
+  return { byBook: isPlainObject(store.byBook) ? store.byBook : {} };
+}
+
+
+function saveUnknownProgressCursorStore(store) {
+  saveJson(UNKNOWN_PROGRESS_CURSOR_KEY, { byBook: isPlainObject(store && store.byBook) ? store.byBook : {} }, { priority: "local_cursor" });
+}
+
+
+function normalizeUnknownProgressCursorBook(item) {
+  var source = isPlainObject(item) ? item : {};
+  return {
+    book: sanitizeProgressPayload(source.book || { lastWordId: null }),
+    units: isPlainObject(source.units) ? source.units : {}
+  };
+}
+
+
+function loadUnknownProgressCursor(bookId, scope = currentUnknownScope()) {
+  var store = loadUnknownProgressCursorStore();
+  var item = normalizeUnknownProgressCursorBook(store.byBook && store.byBook[bookId]);
+  if (scope.scope === "book") return sanitizeProgressPayload(item.book || { lastWordId: null });
+  return sanitizeProgressPayload(item.units && item.units[String(Number(scope.unit) || 0)] || { lastWordId: null });
+}
+
+
+function saveUnknownProgressCursor(bookId, scope, progress, options = {}) {
+  var store = loadUnknownProgressCursorStore();
+  var item = normalizeUnknownProgressCursorBook(store.byBook && store.byBook[bookId]);
+  var key = scope && scope.scope === "book" ? "book" : String(Number(scope && scope.unit) || 0);
+  var previous = scope && scope.scope === "book" ? item.book : sanitizeProgressPayload(item.units[key] || { lastWordId: null });
+  var sanitized = sanitizeProgressPayload(progress);
+  if (sameProgressPosition(previous, sanitized)) return false;
+  if (scope && scope.scope === "book") item.book = sanitized;
+  else item.units[key] = sanitized;
+  store.byBook[bookId] = item;
+  saveUnknownProgressCursorStore(store);
+  if (typeof appendAuditEvent === "function") {
+    appendAuditEvent({
+      type: "unknown_progress:cursor_saved",
+      message: "bookId=" + String(bookId || "") + " scope=" + String(scope && scope.scope || "") + " unit=" + String(scope && scope.unit || "") + " lastWordId=" + String(sanitized.lastWordId || "") + " reason=" + String(options.reason || "")
+    });
+  }
+  if (options.queue !== false && typeof queueProgressCloudSync === "function") {
+    queueProgressCloudSync(options.reason || "unknown_cursor_saved");
+  }
+  return true;
+}
+
+
+function loadUnknownProgressForResume(bookId, scope = currentUnknownScope()) {
+  var cursor = loadUnknownProgressCursor(bookId, scope);
+  return Number(cursor.lastWordId || 0) > 0 ? cursor : loadUnknownProgress(bookId, scope);
+}
+
+
+function queueProgressCloudSync(reason = "progress_cursor") {
+  var wasPending = state.pendingProgressSync === true;
+  state.pendingProgressSync = true;
+  saveJson(PROGRESS_PENDING_KEY, { pending: true, reason: String(reason || ""), updatedAt: beijingISOString() }, { priority: "local_cursor" });
+  if (!wasPending && typeof appendAuditEvent === "function") {
+    appendAuditEvent({ type: "sync:progress_pending", message: "reason=" + String(reason || "") });
+  }
+  if (typeof updateSyncIndicator === "function") updateSyncIndicator();
+}
+
+
+function restoreProgressPending() {
+  var meta = loadJson(PROGRESS_PENDING_KEY, { pending: false });
+  state.pendingProgressSync = meta && meta.pending === true;
+  return state.pendingProgressSync;
+}
+
+
+function clearProgressPending() {
+  state.pendingProgressSync = false;
+  saveJson(PROGRESS_PENDING_KEY, { pending: false, updatedAt: beijingISOString() }, { priority: "local_cursor" });
+}
+
+
+function hasPendingProgressSync() {
+  if (state.pendingProgressSync === true) return true;
+  var meta = loadJson(PROGRESS_PENDING_KEY, { pending: false });
+  return meta && meta.pending === true;
+}
+
+
+function syncProgressCursorFromCloudPayload(payload) {
+  var normalized = normalizeSyncPayload(payload || {});
+  Object.keys(normalized.progress || {}).forEach(function(bookId) {
+    saveProgressCursor(bookId, normalized.progress[bookId], { queue: false, reason: "cloud_apply" });
+  });
+  Object.keys(normalized.unknownProgress || {}).forEach(function(bookId) {
+    var item = normalized.unknownProgress[bookId] || {};
+    if (item.book) saveUnknownProgressCursor(bookId, { scope: "book" }, item.book, { queue: false, reason: "cloud_apply" });
+    Object.keys(item.units || {}).forEach(function(unit) {
+      saveUnknownProgressCursor(bookId, { scope: "unit", unit: Number(unit) }, item.units[unit], { queue: false, reason: "cloud_apply" });
+    });
+  });
+}
+
+
+function flushProgressForCloud(reason = "flush") {
+  if (!hasPendingProgressSync()) return false;
+  var changed = false;
+  var progressStore = loadProgressCursorStore();
+  Object.keys(progressStore.byBook || {}).forEach(function(bookId) {
+    var cursor = sanitizeProgressPayload(progressStore.byBook[bookId]);
+    if (!Number(cursor.lastWordId || 0)) return;
+    if (!sameProgressPosition(loadProgress(bookId), cursor)) {
+      saveProgress(bookId, cursor, { touch: true });
+      changed = true;
+    }
+  });
+  var unknownStore = loadUnknownProgressCursorStore();
+  Object.keys(unknownStore.byBook || {}).forEach(function(bookId) {
+    var item = normalizeUnknownProgressCursorBook(unknownStore.byBook[bookId]);
+    if (Number(item.book && item.book.lastWordId || 0) && !sameProgressPosition(loadUnknownProgress(bookId, { scope: "book" }), item.book)) {
+      saveUnknownProgress(bookId, { scope: "book" }, item.book, { touch: true });
+      changed = true;
+    }
+    Object.keys(item.units || {}).forEach(function(unit) {
+      var cursor = sanitizeProgressPayload(item.units[unit]);
+      if (!Number(cursor.lastWordId || 0)) return;
+      var scope = { scope: "unit", unit: Number(unit) };
+      if (!sameProgressPosition(loadUnknownProgress(bookId, scope), cursor)) {
+        saveUnknownProgress(bookId, scope, cursor, { touch: true });
+        changed = true;
+      }
+    });
+  });
+  clearProgressPending();
+  if (typeof appendAuditEvent === "function") {
+    appendAuditEvent({ type: "sync:flush_progress_for_cloud", message: "reason=" + String(reason || "") + " changed=" + String(changed) });
+  }
+  if (typeof updateSyncIndicator === "function") updateSyncIndicator();
+  return changed;
+}
+
 function sameProgressPosition(a, b) {
   var oldItem = sanitizeProgressPayload(a || { lastWordId: null });
   var nextItem = sanitizeProgressPayload(b || { lastWordId: null });
@@ -299,6 +483,96 @@ function saveActivity(bookId, activity, { touch = true } = {}) {
   if (touch) touchLocalSync();
 }
 
+
+function loadActivityDraftStore() {
+  var store = loadJson(ACTIVITY_DRAFT_KEY, { byBook: {}, pending: false });
+  return {
+    byBook: isPlainObject(store.byBook) ? store.byBook : {},
+    pending: store.pending === true,
+    reason: typeof store.reason === "string" ? store.reason : "",
+    updatedAt: typeof store.updatedAt === "string" ? store.updatedAt : ""
+  };
+}
+
+
+function saveActivityDraftStore(store) {
+  saveJson(ACTIVITY_DRAFT_KEY, {
+    byBook: isPlainObject(store && store.byBook) ? store.byBook : {},
+    pending: store && store.pending === true,
+    reason: String(store && store.reason || ""),
+    updatedAt: beijingISOString()
+  }, { priority: "local_cursor" });
+}
+
+
+function loadActivityDraft(bookId) {
+  var store = loadActivityDraftStore();
+  if (store.byBook && store.byBook[bookId]) return sanitizeActivityPayload(store.byBook[bookId]);
+  return loadActivity(bookId);
+}
+
+
+function saveActivityDraft(bookId, activity, reason = "activity") {
+  var store = loadActivityDraftStore();
+  var wasPending = store.pending === true || state.activityDirtyPending === true;
+  store.byBook[bookId] = sanitizeActivityPayload(activity);
+  store.pending = true;
+  store.reason = String(reason || "activity");
+  saveActivityDraftStore(store);
+  state.activityDirtyPending = true;
+  state.activityDraftPending = true;
+  if (!wasPending && typeof appendAuditEvent === "function") {
+    appendAuditEvent({ type: "sync:activity_draft_pending", message: "reason=" + String(reason || "") });
+  }
+  if (typeof updateSyncIndicator === "function") updateSyncIndicator();
+}
+
+
+function restoreActivityDraftPending() {
+  var store = loadActivityDraftStore();
+  state.activityDirtyPending = store.pending === true;
+  state.activityDraftPending = store.pending === true;
+  return state.activityDirtyPending;
+}
+
+
+function clearActivityDraftPending() {
+  state.activityDirtyPending = false;
+  state.activityDraftPending = false;
+  saveActivityDraftStore({ byBook: {}, pending: false, reason: "" });
+}
+
+
+function hasPendingActivityDraft() {
+  if (state.activityDirtyPending === true || state.activityDraftPending === true) return true;
+  var store = loadActivityDraftStore();
+  return store.pending === true;
+}
+
+
+function flushActivityForCloud(reason = "activity_flush") {
+  if (!hasPendingActivityDraft()) return false;
+  var store = loadActivityDraftStore();
+  var changed = false;
+  Object.keys(store.byBook || {}).forEach(function(bookId) {
+    var draft = sanitizeActivityPayload(store.byBook[bookId]);
+    var cloud = loadActivity(bookId);
+    if (stableStringifyHash(draft) !== stableStringifyHash(cloud)) {
+      saveActivity(bookId, draft, { touch: false });
+      changed = true;
+    }
+  });
+  clearActivityDraftPending();
+  if (changed) {
+    touchLocalSync();
+    onLocalDataChanged("activity:" + String(reason || "flush"));
+  }
+  if (typeof appendAuditEvent === "function") {
+    appendAuditEvent({ type: "sync:flush_activity_for_cloud", message: "reason=" + String(reason || "") + " changed=" + String(changed) });
+  }
+  if (typeof updateSyncIndicator === "function") updateSyncIndicator();
+  return changed;
+}
 
 function loadUnitStats(bookId) {
   return sanitizeUnitStatsPayload(loadJson(unitStatsKey(bookId), { units: {} }), { priority: "snapshot" });

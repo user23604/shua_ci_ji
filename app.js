@@ -1,7 +1,7 @@
 (function() {
   "use strict";
 
-  var BUILD_ID = "2026-06-20-p9-stable-clean-after-sync";
+  var BUILD_ID = "2026-06-20-p10-active-study-progress-batch-sync";
 
   window.__SHUA_APP_VERSION__ = BUILD_ID;
   window.__SHUA_BUILD_ID__ = BUILD_ID;
@@ -21,6 +21,7 @@
     "11-word-data.js",
     "12-formatting.js",
     "13-activity.js",
+    "13-activity-p10.js",
     "14-auth-setup-render.js",
     "15-setup-events.js",
     "16-study-start.js",
