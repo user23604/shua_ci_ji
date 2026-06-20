@@ -20,6 +20,25 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
   }
 }
 
+// ── P0.6: 移动端网络恢复 ──────────────────────────────────────────────
+
+function isFetchNetworkFailure(error) {
+  if (!error) return false;
+  if (error.name === "TypeError" && String(error.message || "").indexOf("Failed to fetch") !== -1) return true;
+  return false;
+}
+
+var visibleSyncTimer = 0;
+
+function scheduleVisibleSync() {
+  clearTimeout(visibleSyncTimer);
+  visibleSyncTimer = setTimeout(function() {
+    if (document.visibilityState !== "visible") return;
+    if (state.isSyncing) return;
+    syncTick({ reason: "visible_delayed", bypassBackoff: true });
+  }, 1000);
+}
+
 // ── P0.6: runId 过期保护 ──────────────────────────────────────────────
 
 function isStaleSyncRun(runId) {

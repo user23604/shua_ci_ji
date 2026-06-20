@@ -123,7 +123,7 @@ function showSyncProblemDialog(problem) {
   const key = makeSyncProblemKey(problem);
   const now = Date.now();
   if (state.activeSyncProblemDialogKey === key) return false;
-  if (state.dismissedSyncProblemDialogKeys && state.dismissedSyncProblemDialogKeys[key] && now - state.dismissedSyncProblemDialogKeys[key] < 600000 && !problem.force) return false;
+  if (state.dismissedSyncProblemDialogKeys && state.dismissedSyncProblemDialogKeys[key] && now - state.dismissedSyncProblemDialogKeys[key] < 60000 && !problem.force) return false;
   state.activeSyncProblemDialogKey = key;
   state.lastSyncProblemDialogKey = key;
   state.lastSyncProblemDialogShownAt = now;

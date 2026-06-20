@@ -382,7 +382,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     return syncBranchMerge({ remote, remotePayload, local: facts, keepalive, reason, runId });
   } catch (error) {
     if (!isStaleSyncRun(runId)) {
-      recordHashSyncFailure(syncErrorMessage(error), { errorKind: "remote_get_failed", banner: true, dialog: true, runId, technical: error && (error.stack || error.message) });
+      recordHashSyncFailure(syncErrorMessage(error), { errorKind: "remote_get_failed", title: "云同步请求失败", banner: true, dialog: true, runId, technical: error && (error.stack || error.message) });
     }
     return false;
   } finally {

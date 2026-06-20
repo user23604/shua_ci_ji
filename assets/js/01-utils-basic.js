@@ -1,5 +1,12 @@
 "use strict";
 
+function delay(ms) {
+  return new Promise(function(resolve) {
+    setTimeout(resolve, ms || 0);
+  });
+}
+
+
 function copyTextToClipboard(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
   var ta = document.createElement("textarea");

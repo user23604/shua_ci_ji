@@ -41,7 +41,7 @@ function init() {
       return;
     }
     checkServerVersion({ force: false });
-    syncTick({ reason: "visible", bypassBackoff: true });
+    scheduleVisibleSync();
   });
   window.addEventListener("pagehide", function() {
     pausePlaybackForBackground();

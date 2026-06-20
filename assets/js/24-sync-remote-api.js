@@ -82,7 +82,16 @@ function wrapLegacyV1Payload() {
 
 
 async function fetchGistSyncPayload() {
-  const { gist, readOnlyAuthFallback, authStatus } = await fetchGistMetadata();
+  var metadataResult;
+  try {
+    metadataResult = await fetchGistMetadata();
+  } catch (err) {
+    // 移动端切回前台时网络栈可能尚未恢复，仅对 TypeError: Failed to fetch 做一次快速重试
+    if (!isFetchNetworkFailure(err)) throw err;
+    await delay(1000);
+    metadataResult = await fetchGistMetadata();
+  }
+  const { gist, readOnlyAuthFallback, authStatus } = metadataResult;
   // P0: remoteVersion 仅用于 audit/诊断，不得参与业务同步决策。空值不阻断同步。
   var remoteVersion = (gist.history && gist.history[0] && gist.history[0].version) || "";
   const remoteUpdatedAt = gist.updated_at || "";
@@ -231,6 +240,7 @@ function syncErrorMessage(error) {
   if (/401/.test(raw)) return "云同步失败：GitHub PAT 无效、已过期，或粘贴的不是完整 token。请重新生成带 Gist 写入权限的 PAT。";
   if (/403/.test(raw)) return "云同步失败：GitHub API 拒绝访问，可能是 PAT 没有 Gist 写入权限、频率限制，或短时间内多次使用无效 token 被临时限制。";
   if (/404/.test(raw)) return "云同步失败：没有找到这个 Gist。请检查 Gist ID 是否正确，以及 Token 是否能访问它。";
+  if (/Failed to fetch/i.test(raw)) return "当前网络请求 GitHub Gist 失败，可能是移动端刚切回前台、网络暂未恢复或网络不稳定。你的本地学习数据仍保留在本机，稍后会自动重试同步。";
   return raw;
 }
 
