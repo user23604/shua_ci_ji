@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>刷词机本地数据救援工具</title>
+  <link rel="stylesheet" href="assets/rescue/rescue.css?v=2026-06-20-p4-modular1" />
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>刷词机本地数据救援工具</h1>
+    <p class="danger">本页面会读取并可写入当前浏览器的刷词机 localStorage。恢复操作前会先下载完整备份，并需要二次确认。</p>
+    <p>请用仍保留刷词机数据的同一个浏览器打开本页，且必须来自同一个 GitHub Pages 域名，不能用 <code>file://</code> 打开。</p>
+    <p class="ok">默认诊断和复制内容会脱敏 GitHub Token。完整本地数据备份可能包含 Token，请勿发给陌生人。</p>
+  </div>
+
+  <div class="card">
+    <h2>操作</h2>
+    <button id="scanBtn">扫描本机数据</button>
+    <button id="downloadSafeBtn" class="secondary" disabled>下载脱敏诊断包（可发给程序员）</button>
+    <button id="downloadFullBtn" class="danger-btn" disabled>下载完整本地数据备份（可能包含 GitHub Token）</button>
+    <button id="copyBtn" class="secondary" disabled>复制诊断摘要</button>
+    <p id="status" class="big-status warn">尚未开始。</p>
+  </div>
+
+  <div class="card">
+    <h2>快速判断</h2>
+    <div id="quick" class="grid"></div>
+  </div>
+
+  <div class="card">
+    <h2>备份候选</h2>
+    <div id="candidateTable" class="table-wrap">点击扫描后显示。</div>
+  </div>
+
+  <div class="card">
+    <h2>诊断摘要</h2>
+    <textarea id="summary" readonly></textarea>
+  </div>
+</div>
+<script src="assets/rescue/rescue.js?v=2026-06-20-p4-modular1" defer></script>
+</body>
+</html>

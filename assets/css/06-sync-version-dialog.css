@@ -1,0 +1,222 @@
+/* ── Cloud sync indicator (fixed dot) ── */
+.cloud-sync-indicator {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 80;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px) scale(0.92);
+  transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.cloud-sync-indicator__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #7edc94;
+  box-shadow: 0 0 0 5px rgba(126, 220, 148, 0.14), 0 0 18px rgba(22, 128, 60, 0.34);
+}
+
+.cloud-sync-indicator.is-syncing,
+.cloud-sync-indicator.is-ok,
+.cloud-sync-indicator.is-error {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.cloud-sync-indicator.is-syncing .cloud-sync-indicator__dot {
+  animation: syncPulse 1.25s ease-in-out infinite;
+}
+
+.cloud-sync-indicator.is-error .cloud-sync-indicator__dot {
+  background: #f1b35e;
+  box-shadow: 0 0 0 5px rgba(241, 179, 94, 0.16), 0 0 18px rgba(161, 92, 7, 0.28);
+}
+
+@keyframes syncPulse {
+  0%,
+  100% {
+    transform: scale(0.76);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+}
+
+/* ── Cloud sync indicator pill/badge (from index.html inline style) ── */
+/* The JS renders a pill-shaped indicator with label and time text.
+   These styles supplement/override the dot-only indicator above. */
+.cloud-sync-indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(12px);
+  border-radius: 20px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e2e8f0;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  white-space: nowrap;
+  pointer-events: auto;
+  z-index: 9999;
+  top: calc(10px + env(safe-area-inset-top, 0px));
+  right: calc(8px + env(safe-area-inset-right, 0px));
+}
+
+.cloud-sync-indicator__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--sync-color, #94a3b8);
+  flex-shrink: 0;
+}
+
+.cloud-sync-indicator__label {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.cloud-sync-indicator__time {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+.cloud-sync-indicator.is-syncing .cloud-sync-indicator__dot {
+  animation: sync-pulse 0.8s ease-in-out infinite;
+}
+
+@keyframes sync-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ── App version badge ── */
+.app-version-badge {
+  position: fixed;
+  right: calc(10px + env(safe-area-inset-right, 0px));
+  bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  z-index: 9997;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.86);
+  color: #e5e7eb;
+  font-size: 11px;
+  line-height: 1.3;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.24);
+}
+
+.app-version-badge.is-stale {
+  background: #b42318;
+  color: #fff;
+}
+
+/* ── Sync problem dialog ── */
+.sync-problem-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.64);
+}
+
+.sync-problem-dialog__panel {
+  width: min(720px, 100%);
+  max-height: min(86vh, 760px);
+  overflow: auto;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.36);
+}
+
+.sync-problem-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 10px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.sync-problem-dialog__header strong {
+  font-size: 17px;
+  line-height: 1.35;
+}
+
+.sync-problem-dialog__header span {
+  flex: 0 0 auto;
+  color: #b42318;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sync-problem-dialog__body {
+  padding: 14px 18px;
+}
+
+.sync-problem-dialog__body p {
+  margin: 0 0 12px;
+  line-height: 1.6;
+}
+
+.sync-problem-dialog__body pre,
+.sync-problem-dialog__body textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.sync-problem-dialog__body pre {
+  max-height: 140px;
+  overflow: auto;
+  padding: 10px;
+}
+
+.sync-problem-dialog__body textarea {
+  min-height: 220px;
+  resize: vertical;
+  padding: 10px;
+}
+
+.sync-problem-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 12px 18px 16px;
+  border-top: 1px solid #e5e7eb;
+}
+
+@media (max-width: 640px) {
+  .sync-problem-dialog {
+    align-items: flex-end;
+    padding: 8px;
+  }
+  .sync-problem-dialog__panel {
+    max-height: 92vh;
+  }
+  .sync-problem-dialog__actions .btn {
+    flex: 1 1 calc(50% - 8px);
+  }
+}

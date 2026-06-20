@@ -1,0 +1,6 @@
+{
+  "appVersion": "2026-06-20-p4-modular1",
+  "buildId": "2026-06-20-p4-modular1",
+  "deployedAt": "2026-06-20T00:00:00+08:00",
+  "note": "module split only; no business logic changes"
+}
