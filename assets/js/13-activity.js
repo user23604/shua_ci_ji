@@ -14,6 +14,24 @@ function getActivityDay(activity, key) {
 }
 
 
+function scheduleActivityDirty(reason = "activity") {
+  if (state.view === "flash") {
+    state.activityDirtyPending = true;
+    if (state.activityDirtyTimer) return;
+    state.activityDirtyTimer = setTimeout(function() {
+      state.activityDirtyTimer = null;
+      state.lastActivityDirtyAt = Date.now();
+      // P9: activity 高频字段不单独抢同步；只标轻量 dirty，等待 active study / pagehide / 离开 flash 批量上传。
+      if (state.activityDirtyPending && typeof markLocalDirtyLight === "function") {
+        markLocalDirtyLight(reason || "activity_batch");
+      }
+    }, 30000);
+    return;
+  }
+  onLocalDataChanged(reason || "activity");
+}
+
+
 function recordStudyActivity({ seconds = 0, wordId = null, counted = false, result = "" } = {}) {
   const book = currentBook();
   const activity = loadActivity(book.id);
@@ -23,9 +41,10 @@ function recordStudyActivity({ seconds = 0, wordId = null, counted = false, resu
   if (result === "known") day.known += 1;
   if (result === "unknown") day.unknown += 1;
   if (wordId) day.wordIds = Array.from(new Set([...day.wordIds, Number(wordId)])).sort((a, b) => a - b);
-  saveActivity(book.id, activity);
+  // P9: 本地统计即时保存，但 flash 场景不因 seconds 高频变化立即触发全量 hash / push。
+  saveActivity(book.id, activity, { touch: false });
   appendPendingOp({ type: "activity.day.set", bookId: book.id, date: localDateKey(), day: { ...day, wordIds: [...day.wordIds] } });
-  onLocalDataChanged("activity");
+  if (counted || result === "known" || result === "unknown") scheduleActivityDirty("activity");
 }
 
 

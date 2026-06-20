@@ -253,9 +253,45 @@ function setSyncStatus(status) {
 }
 
 
+function auditSyncStatusRender(info) {
+  try {
+    var syncState = ensureHashSyncState(state.syncHashState);
+    var key = [
+      info && info.status || "",
+      info && info.detail || "",
+      syncState.localDirty === true,
+      syncState.lastSyncStatus || "",
+      syncState.lastBlockingErrorCode || "",
+      state.lastDirtyReason || ""
+    ].join("|");
+    var now = Date.now();
+    if (state.lastStatusRenderAuditKey === key && now - Number(state.lastStatusRenderAuditAt || 0) < 3000) return;
+    state.lastStatusRenderAuditKey = key;
+    state.lastStatusRenderAuditAt = now;
+    appendAuditEvent({
+      type: "sync:status_render",
+      message:
+        "status=" + String(info && info.status || "") +
+        " detail=" + String(info && info.detail || "") +
+        " view=" + String(state.view || "") +
+        " localDirty=" + String(!!syncState.localDirty) +
+        " localHash=" + String(syncState.localPayloadHash || "").slice(0, 8) +
+        " baseHash=" + String(syncState.baseRemoteHash || "").slice(0, 8) +
+        " latestRemoteHashSeen=" + String(state.latestRemoteHashSeen || "").slice(0, 8) +
+        " lastSyncStatus=" + String(syncState.lastSyncStatus || "") +
+        " lastDirtyReason=" + String(state.lastDirtyReason || "") +
+        " blockingCode=" + String(syncState.lastBlockingErrorCode || "") +
+        " hashSchema=" + String(syncState.businessHashSchemaVersion || "") +
+        " schemaNeedsRemoteCheck=" + String(!!syncState.hashSchemaNeedsRemoteCheck)
+    });
+  } catch (_) {}
+}
+
+
 function updateSyncIndicator() {
   const info = computeSyncStatus();
   state.syncStatus = info.status;
+  if (typeof auditSyncStatusRender === "function") auditSyncStatusRender(info);
   updateSyncIndicatorDOM(info);
 }
 

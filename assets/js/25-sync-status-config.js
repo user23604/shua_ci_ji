@@ -36,6 +36,20 @@ function buildStatusDetail(status, baseMessage, opsCount) {
 }
 
 
+function cachedSyncFactsForStatus(syncState) {
+  syncState = ensureHashSyncState(syncState || state.syncHashState);
+  var localHash = String(syncState.localPayloadHash || "");
+  var baseHash = String(syncState.baseRemoteHash || "");
+  return {
+    payload: null,
+    localPayloadHash: localHash,
+    syncState: syncState,
+    effectiveDirty: syncState.localDirty === true || Boolean(baseHash && localHash && localHash !== baseHash),
+    hasBusinessData: Boolean(localHash)
+  };
+}
+
+
 // ── P0.8: green confirmation gate ────────────────────────────────────
 
 function canShowCloudOk(facts, syncState) {
@@ -130,7 +144,7 @@ function computeSyncStatus() {
     return { status: "dirty", detail: activeStudyDirtyDetail() };
   }
 
-  const facts = currentSyncFacts({ persistHash: false });
+  const facts = cachedSyncFactsForStatus(syncState);
 
   if (facts.effectiveDirty) {
     if (state.syncMeta.readOnlyMode) {

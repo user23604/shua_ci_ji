@@ -17,7 +17,7 @@ function pausePlaybackForBackground() {
   clearTimers();
   releaseWakeLock();
   state.playbackPaused = true;
-  renderFlashcard();
+  renderFlashcard({ touchProgress: false });
 }
 
 
@@ -36,7 +36,7 @@ async function resumePlayback() {
   state.playbackPaused = false;
   state.resumeFeedback = true;
   await requestWakeLock();
-  renderFlashcard();
+  renderFlashcard({ touchProgress: false });
 }
 
 

@@ -1,7 +1,7 @@
 "use strict";
 
-const APP_VERSION = "2026-06-20-p8-hidden-idle-sync-lock-fix";
-const APP_BUILD_ID = "2026-06-20-p8-hidden-idle-sync-lock-fix";
+const APP_VERSION = "2026-06-20-p9-stable-clean-after-sync";
+const APP_BUILD_ID = "2026-06-20-p9-stable-clean-after-sync";
 
 
 const ACCESS_KEY = "ky2027";
@@ -47,7 +47,7 @@ const GITHUB_PATCH_TIMEOUT_MS = 20000;
 const VERSION_CHECK_TIMEOUT_MS = 8000;
 
 const SYNC_NO_PROGRESS_TIMEOUT_MS = 45000;
-const CROSS_TAB_LOCK_LEASE_MS = 90000;
+const CROSS_TAB_LOCK_LEASE_MS = 20000;
 
 const MAX_PREFLIGHT_REBASE = 2;
 const MAX_PATCH_409_RETRIES = 2;

@@ -29,6 +29,7 @@ const RETENTION_PAUSE_DEFAULT = 850;
 
 const SHANGUO_BOOK_ID = "27ky-shanguo-gaopin";
 const SYNC_SCHEMA_VERSION = 2;
+const BUSINESS_HASH_SCHEMA_VERSION = 3;
 
 
 const SYNC_STATUS_LABELS = {
@@ -151,6 +152,9 @@ const DEFAULT_SYNC_META = {
 
 const DEFAULT_HASH_SYNC_STATE = {
   schemaVersion: 2,
+  businessHashSchemaVersion: BUSINESS_HASH_SCHEMA_VERSION,
+  hashSchemaNeedsRemoteCheck: false,
+  schemaMigrationPreviousDirty: false,
   localDirty: false,
   baseRemoteHash: "",
   localPayloadHash: "",

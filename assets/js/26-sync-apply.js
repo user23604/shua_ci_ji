@@ -32,6 +32,9 @@ function markHashCleanFromRemote(remote, payloadHash, status, options = {}) {
   state.syncHashState.baseRemoteHash = payloadHash || "";
   state.syncHashState.localPayloadHash = payloadHash || "";
   state.syncHashState.lastSyncedPayloadHash = payloadHash || "";
+  state.syncHashState.businessHashSchemaVersion = BUSINESS_HASH_SCHEMA_VERSION;
+  state.syncHashState.hashSchemaNeedsRemoteCheck = false;
+  state.syncHashState.schemaMigrationPreviousDirty = false;
   state.syncHashState.localDirty = false;
   state.syncHashState.dirtySince = "";
   state.syncHashState.localRecoveryRequired = false;
@@ -39,6 +42,7 @@ function markHashCleanFromRemote(remote, payloadHash, status, options = {}) {
   state.syncHashState.lastSyncError = "";
   state.lastDirtyReason = "";
   state.lastDirtyFromVerify = false;
+  state.lastMarkCleanAtMs = Date.now();
   state.syncHashState.consecutiveSyncFailures = 0;
   state.syncHashState.nextRetryAt = "";
   // P0.8: 清 blocking error
@@ -75,6 +79,7 @@ function markHashCleanFromRemote(remote, payloadHash, status, options = {}) {
 
 function markHashDirty(localHash, reason, options = {}) {
   if (isStaleSyncRun(options.runId)) return false;
+  if (typeof auditLocalDirtySet === "function") auditLocalDirtySet(reason || "markHashDirty");
   var wasDirty = state.syncHashState && state.syncHashState.localDirty === true;
   state.syncHashState = ensureHashSyncState(state.syncHashState);
   state.syncHashState.localPayloadHash = localHash || state.syncHashState.localPayloadHash || "";

@@ -187,6 +187,9 @@ function ensureHashSyncState(sourceState = state.syncHashState) {
   return {
     ...DEFAULT_HASH_SYNC_STATE,
     ...source,
+    businessHashSchemaVersion: Math.max(0, Number(source.businessHashSchemaVersion) || 0),
+    hashSchemaNeedsRemoteCheck: source.hashSchemaNeedsRemoteCheck === true,
+    schemaMigrationPreviousDirty: source.schemaMigrationPreviousDirty === true,
     localDirty: source.localDirty === true,
     baseRemoteHash: typeof source.baseRemoteHash === "string" ? source.baseRemoteHash : "",
     localPayloadHash: typeof source.localPayloadHash === "string" ? source.localPayloadHash : "",
@@ -218,15 +221,95 @@ function persistHashSyncState() {
 }
 
 
+function progressPayloadForBusinessHash(progress) {
+  const item = sanitizeProgressPayload(progress);
+  const out = { lastWordId: item.lastWordId || null };
+  if (Number.isFinite(Number(item.unit)) && Number(item.unit) > 0) out.unit = Number(item.unit);
+  return out;
+}
+
+
+function progressMapForBusinessHash(progressMap) {
+  const source = isPlainObject(progressMap) ? progressMap : {};
+  const out = {};
+  BOOKS.forEach(function(book) {
+    out[book.id] = progressPayloadForBusinessHash(source[book.id]);
+  });
+  return out;
+}
+
+
+function unknownProgressForBusinessHash(unknownProgressMap) {
+  const source = isPlainObject(unknownProgressMap) ? unknownProgressMap : {};
+  const out = {};
+  BOOKS.forEach(function(book) {
+    var normalized = normalizeUnknownProgressPayload(book, source[book.id]);
+    var units = {};
+    Object.keys(normalized.units || {}).forEach(function(unit) {
+      units[unit] = progressPayloadForBusinessHash(normalized.units[unit]);
+    });
+    out[book.id] = {
+      book: progressPayloadForBusinessHash(normalized.book),
+      units: units
+    };
+  });
+  return out;
+}
+
+
+function unitStatsForBusinessHash(unitStatsMap) {
+  const source = isPlainObject(unitStatsMap) ? unitStatsMap : {};
+  const out = {};
+  BOOKS.forEach(function(book) {
+    var stats = sanitizeUnitStatsPayload(source[book.id]);
+    var units = {};
+    Object.keys(stats.units || {}).forEach(function(unit) {
+      units[unit] = { completed: Math.max(0, Number(stats.units[unit] && stats.units[unit].completed) || 0) };
+    });
+    out[book.id] = { units: units };
+  });
+  return out;
+}
+
+
+function activityPayloadForBusinessHash(activity) {
+  // P9: activity.seconds is a high-frequency local-only field. It can be synced opportunistically
+  // when a real business sync happens, but it must not keep the flash screen dirty by itself.
+  const normalized = sanitizeActivityPayload(activity);
+  const days = {};
+  Object.keys(normalized.days || {}).forEach(function(date) {
+    const day = normalized.days[date] || {};
+    days[date] = {
+      words: Math.max(0, Number(day.words) || 0),
+      known: Math.max(0, Number(day.known) || 0),
+      unknown: Math.max(0, Number(day.unknown) || 0),
+      wordIds: normalizeIdList(day.wordIds)
+    };
+  });
+  return { days: days };
+}
+
+
+function activityMapForBusinessHash(activityMap) {
+  const source = isPlainObject(activityMap) ? activityMap : {};
+  const out = {};
+  BOOKS.forEach(function(book) {
+    out[book.id] = activityPayloadForBusinessHash(source[book.id]);
+  });
+  return out;
+}
+
+
 function businessPayloadForHash(payload) {
   const normalized = normalizeSyncPayload(payload);
   return {
-    progress: normalized.progress,
-    unknownProgress: normalized.unknownProgress,
+    hashSchemaVersion: BUSINESS_HASH_SCHEMA_VERSION,
+    progress: progressMapForBusinessHash(normalized.progress),
+    unknownProgress: unknownProgressForBusinessHash(normalized.unknownProgress),
     marks: normalized.marks,
     markStates: normalized.markStates,
-    activity: normalized.activity,
-    unitStats: normalized.unitStats
+    activity: activityMapForBusinessHash(normalized.activity),
+    unitStats: unitStatsForBusinessHash(normalized.unitStats)
   };
 }
 
@@ -387,6 +470,71 @@ function currentSyncFacts({ persistHash = false } = {}) {
 }
 
 
+function auditLocalDirtySet(reason, extra = {}) {
+  try {
+    var syncState = ensureHashSyncState(state.syncHashState);
+    var now = Date.now();
+    var lastStudy = Number(state.lastUserStudyActionAt || 0);
+    var lastClean = Number(state.lastMarkCleanAtMs || 0);
+    var stack = String((new Error()).stack || "").split("\n").slice(2, 7).join(" | ");
+    appendAuditEvent({
+      type: "sync:local_dirty_set",
+      message:
+        "reason=" + String(reason || "") +
+        " view=" + String(state.view || "") +
+        " beforeLocalDirty=" + String(!!syncState.localDirty) +
+        " lastUserStudyActionAgo=" + String(lastStudy ? now - lastStudy : -1) +
+        " lastMarkCleanAgo=" + String(lastClean ? now - lastClean : -1) +
+        " localHash=" + String(syncState.localPayloadHash || "").slice(0, 8) +
+        " baseHash=" + String(syncState.baseRemoteHash || "").slice(0, 8) +
+        " caller=" + stack
+    });
+  } catch (_) {}
+}
+
+
+function appendHashDiffSummary(payload, runId, reason) {
+  try {
+    var p = normalizeSyncPayload(payload || collectSyncPayload());
+    var summary = [];
+    BOOKS.forEach(function(book) {
+      var pr = p.progress && p.progress[book.id] || {};
+      var ms = p.markStates && p.markStates[book.id] || {};
+      var act = p.activity && p.activity[book.id] || { days: {} };
+      summary.push(book.id + ":progress=" + String(pr.unit || "") + "/" + String(pr.lastWordId || "") + ",markStates=" + Object.keys(ms).length + ",activityDays=" + Object.keys(act.days || {}).length);
+    });
+    appendAuditEvent({
+      type: "sync:hash_diff_summary",
+      message:
+        "session=" + TAB_ID +
+        " runId=" + String(runId || "") +
+        " reason=" + String(reason || "") +
+        " settingsExcluded=true activitySecondsExcluded=true " +
+        summary.join("; ")
+    });
+  } catch (error) {
+    appendAuditEvent({ type: "sync:hash_diff_summary_failed", message: String(error && error.message || error || "") });
+  }
+}
+
+
+function markBusinessHashSchemaForRemoteCheck(previousDirty) {
+  state.syncHashState = ensureHashSyncState(state.syncHashState);
+  state.syncHashState.businessHashSchemaVersion = BUSINESS_HASH_SCHEMA_VERSION;
+  state.syncHashState.hashSchemaNeedsRemoteCheck = true;
+  state.syncHashState.schemaMigrationPreviousDirty = previousDirty === true;
+  state.syncHashState.lastSyncStatus = "local_only";
+  state.syncHashState.lastSyncError = "";
+  state.sessionRemoteCheckDone = false;
+  state.sessionRemoteCheckAt = "";
+  state.latestRemoteHashSeen = "";
+  state.latestRemoteKindSeen = "";
+  persistHashSyncState();
+}
+
+
+
+
 function setHashSyncStatus(status, message = "", options = {}) {
   if (isStaleSyncRun(options.runId)) return false;
   state.syncHashState = ensureHashSyncState(state.syncHashState);
@@ -488,8 +636,20 @@ function hasCurrentSessionRemoteConfirmation(facts) {
 
 // ── P0.8 blocking error ───────────────────────────────────────────────
 
-function isBlockingSyncErrorKind(errorKind) {
-  return ["verify_failed","remote_invalid","remote_v2_unknown_ops","patch_failed_422","patch_conflict_409","preflight_remote_changed","merge_failed","local_apply_verify_failed","apply_failed"].indexOf(errorKind || "") !== -1;
+function isBlockingSyncErrorKind(errorKind, options = {}) {
+  var reason = String(options.reason || "");
+  if (options.retryable === true) return false;
+  if (errorKind === "verify_failed" && [
+    "heartbeat",
+    "local_change",
+    "min_interval_reschedule",
+    "active_study_idle_upload",
+    "visibility_resume",
+    "visibility_resume_dirty_flush",
+    "verify_mismatch_retry"
+  ].includes(reason)) return false;
+  if (typeof shouldDowngradeFailureForBackground === "function" && shouldDowngradeFailureForBackground(reason)) return false;
+  return ["remote_invalid","remote_v2_unknown_ops","patch_failed_422","patch_conflict_409","merge_failed","local_apply_verify_failed","apply_failed","invalid_config","auth_failed"].indexOf(errorKind || "") !== -1;
 }
 
 function hasUnclearedBlockingSyncError(syncState) {
@@ -549,11 +709,16 @@ function recordHashSyncFailure(message, options) {
       syncState.localDirty = shouldMarkDirtyOnFailure(options.errorKind || "unknown", facts);
     }
     if (syncState.localDirty && !syncState.dirtySince) syncState.dirtySince = beijingISOString(now);
-    syncState.lastSyncStatus = options.status || "error";
+    var blockingFailure = isBlockingSyncErrorKind(options.errorKind, options);
+    if (!blockingFailure && (options.retryable === true || options.errorKind === "verify_failed" || options.errorKind === "remote_get_failed" || options.errorKind === "patch_failed_network")) {
+      syncState.lastSyncStatus = syncState.localDirty ? "dirty" : "local_only";
+    } else {
+      syncState.lastSyncStatus = options.status || "error";
+    }
     syncState.lastSyncError = text;
     syncState.lastSyncErrorAt = beijingISOString();
-    // P0.8: 写 blocking error
-    if (isBlockingSyncErrorKind(options.errorKind)) {
+    // P0.8/P9: 只有真正 blocking 的错误才写 blocking error，retryable verify/network 不让红灯长驻。
+    if (blockingFailure) {
       syncState.lastBlockingErrorAt = beijingISOString();
       syncState.lastBlockingErrorCode = options.errorKind || "SYNC_FAILED";
       syncState.lastBlockingErrorText = text;
@@ -618,6 +783,17 @@ function migrateHashSyncStateIfNeeded() {
       existing.localPayloadHash.length > 0
     ) {
       state.syncHashState = ensureHashSyncState(existing);
+      if (state.syncHashState.businessHashSchemaVersion !== BUSINESS_HASH_SCHEMA_VERSION) {
+        var previousDirty = state.syncHashState.localDirty === true;
+        var localForSchema = refreshLocalPayloadHash({ persist: false });
+        state.syncHashState.localPayloadHash = localForSchema.hash;
+        state.syncHashState.localDirty = false;
+        state.syncHashState.dirtySince = "";
+        state.syncHashState.lastSyncError = "";
+        markBusinessHashSchemaForRemoteCheck(previousDirty);
+        appendAuditEvent({ type: "sync:business_hash_schema_changed", message: "session=" + TAB_ID + " old=" + String(existing.businessHashSchemaVersion || "") + " new=" + BUSINESS_HASH_SCHEMA_VERSION + " previousDirty=" + String(previousDirty) });
+        return;
+      }
       persistHashSyncState();
       return;
     }
@@ -644,6 +820,7 @@ function migrateHashSyncStateIfNeeded() {
   if (hasData && oldV1Clean) {
     state.syncHashState = ensureHashSyncState({
       schemaVersion: 2,
+      businessHashSchemaVersion: BUSINESS_HASH_SCHEMA_VERSION,
       localPayloadHash: local.hash,
       localDirty: false,
       baseRemoteHash: local.hash,
@@ -661,6 +838,7 @@ function migrateHashSyncStateIfNeeded() {
   } else {
     state.syncHashState = ensureHashSyncState({
       schemaVersion: 2,
+      businessHashSchemaVersion: BUSINESS_HASH_SCHEMA_VERSION,
       localPayloadHash: local.hash,
       localDirty: hasData,
       baseRemoteHash: "",

@@ -195,7 +195,7 @@ function advanceWord(reason) {
     return;
   }
 
-  renderFlashcard();
+  renderFlashcard({ touchProgress: true });
 }
 
 
@@ -228,7 +228,7 @@ function goPrevious() {
   state.showZh = true;
   // 上一个词的新卡片从左侧轻进入；旧卡飞出方向在 triggerCardDirection() 中控制。
   state.cardEnterDirection = "from-left";
-  renderFlashcard();
+  renderFlashcard({ touchProgress: true });
 }
 
 
@@ -298,7 +298,7 @@ async function continueAfterBreak() {
       return;
     }
     await requestWakeLock();
-    renderFlashcard();
+    renderFlashcard({ touchProgress: true });
     return;
   }
   if (state.breakInfo?.reviewEnd) {
@@ -336,7 +336,7 @@ async function continueAfterBreak() {
     }
   }
   await requestWakeLock();
-  renderFlashcard();
+  renderFlashcard({ touchProgress: true });
 }
 
 
@@ -368,7 +368,7 @@ async function startRoundUnknownReview() {
   state.playbackPaused = false;
   state.reviewMode = { mode: "round-unknown", label: "本轮重难点复习", wordIds: ids };
   await requestWakeLock();
-  renderFlashcard();
+  renderFlashcard({ touchProgress: true });
 }
 
 

@@ -36,9 +36,25 @@ function loadProgress(bookId) {
 }
 
 
+function sameProgressPosition(a, b) {
+  var oldItem = sanitizeProgressPayload(a || { lastWordId: null });
+  var nextItem = sanitizeProgressPayload(b || { lastWordId: null });
+  return Number(oldItem.unit || 0) === Number(nextItem.unit || 0) &&
+    Number(oldItem.lastWordId || 0) === Number(nextItem.lastWordId || 0);
+}
+
+
 function saveProgress(bookId, progress, _ref) {
   var touch = (_ref && _ref.touch) !== false;
   var sanitized = sanitizeProgressPayload(progress);
+  var previous = loadProgress(bookId);
+  if (sameProgressPosition(previous, sanitized)) {
+    // P9: 同一学习位置的 updatedAt 重写不能制造 business dirty。
+    var preserved = { ...sanitized };
+    if (previous.updatedAt) preserved.updatedAt = previous.updatedAt;
+    saveJson(progressKey(bookId), preserved);
+    return;
+  }
   saveJson(progressKey(bookId), sanitized);
   if (touch) {
     touchLocalSync();
@@ -56,6 +72,13 @@ function loadUnknownProgress(bookId, scope = currentUnknownScope()) {
 function saveUnknownProgress(bookId, scope, progress, _ref) {
   var touch = (_ref && _ref.touch) !== false;
   var sanitized = sanitizeProgressPayload(progress);
+  var previous = loadUnknownProgress(bookId, scope);
+  if (sameProgressPosition(previous, sanitized)) {
+    var preserved = { ...sanitized };
+    if (previous.updatedAt) preserved.updatedAt = previous.updatedAt;
+    saveJson(unknownProgressKey(bookId, scope), preserved);
+    return;
+  }
   saveJson(unknownProgressKey(bookId, scope), sanitized);
   if (touch) {
     touchLocalSync();

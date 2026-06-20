@@ -37,7 +37,7 @@ async function startStudy() {
     state.playbackPaused = false;
     state.setupStatus = "";
     await requestWakeLock();
-    renderFlashcard();
+    renderFlashcard({ touchProgress: true });
   } catch (error) {
     setSetupStatus(error.message || "词库加载失败", "error");
   }
@@ -74,7 +74,7 @@ async function startReview(mode) {
     state.statsOpen = false;
     state.archiveOpen = false;
     await requestWakeLock();
-    renderFlashcard();
+    renderFlashcard({ touchProgress: true });
   } catch (error) {
     state.setupStatus = { message: error.message || "复盘启动失败", type: "error" };
     renderSetup();

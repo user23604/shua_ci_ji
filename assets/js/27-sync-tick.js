@@ -256,6 +256,43 @@ function shouldAbortAutoPatchForActiveStudy(reason) {
   return Date.now() - last < ACTIVE_STUDY_SYNC_DEBOUNCE_MS;
 }
 
+
+function shouldDeferFlashAutoSync(reason) {
+  if (state.view !== "flash") return false;
+  return [
+    "heartbeat",
+    "local_change",
+    "min_interval_reschedule",
+    "cross_tab_lock_retry",
+    "verify_mismatch_retry",
+    "patch_in_flight_reschedule"
+  ].includes(String(reason || ""));
+}
+
+
+function handleBusinessHashSchemaRemoteCheck(remote, localFacts, runId) {
+  var syncState = ensureHashSyncState(state.syncHashState);
+  if (!syncState.hashSchemaNeedsRemoteCheck) return null;
+  var remoteHash = currentRemoteHash(remote);
+  var localHash = localFacts && localFacts.localPayloadHash || "";
+  var remoteHasData = remoteHasBusinessPayload(remote);
+  syncState.businessHashSchemaVersion = BUSINESS_HASH_SCHEMA_VERSION;
+  syncState.hashSchemaNeedsRemoteCheck = false;
+  if (remoteHash && remoteHash === localHash) {
+    markHashCleanFromRemote(remote, remoteHash, "cloud_loaded", { runId: runId, remoteVerified: true });
+    appendAuditEvent({ type: "sync:business_hash_schema_remote_equal", message: "session=" + TAB_ID + " runId=" + runId + " hash=" + String(remoteHash || "").slice(0, 8) });
+    return { ok: true, schemaRefreshedClean: true };
+  }
+  persistHashSyncState();
+  appendAuditEvent({ type: "sync:business_hash_schema_remote_diff", message: "session=" + TAB_ID + " runId=" + runId + " previousDirty=" + String(!!syncState.schemaMigrationPreviousDirty) + " localHash=" + String(localHash || "").slice(0, 8) + " remoteHash=" + String(remoteHash || "").slice(0, 8) + " remoteHasData=" + String(!!remoteHasData) });
+  if (syncState.schemaMigrationPreviousDirty) {
+    markHashDirty(localHash, "business_hash_schema_changed_remote_diff", { runId: runId });
+  }
+  return null;
+}
+
+
+
 function markPageHiddenDuringSync() {
   state.pageHiddenDuringSyncAt = Date.now();
 }
@@ -322,6 +359,24 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     return false;
   }
 
+  if (shouldDeferFlashAutoSync(reason)) {
+    var flashSkipState = ensureHashSyncState(state.syncHashState);
+    if (flashSkipState.localDirty || state.pendingActiveStudyUpload) {
+      if (typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload();
+      setHashSyncStatus("dirty", "本地已保存，稍后自动同步");
+      appendAuditEvent({
+        type: "sync:defer_flash_auto_sync",
+        message:
+          "session=" + TAB_ID +
+          " reason=" + String(reason || "") +
+          " dirty=" + String(!!flashSkipState.localDirty) +
+          " pendingActiveStudyUpload=" + String(!!state.pendingActiveStudyUpload) +
+          " idleRemaining=" + String(typeof activeStudyIdleDelayMs === "function" ? activeStudyIdleDelayMs() : ACTIVE_STUDY_SYNC_DEBOUNCE_MS)
+      });
+      return false;
+    }
+  }
+
   // P0.8: PATCH 事务锁 — 同一页面会话内不并发 PATCH
   if (hasActivePatchTransaction()) {
     appendAuditEvent({ type: "sync:skip_patch_in_flight", message: "session=" + TAB_ID + " reason=" + reason });
@@ -348,7 +403,8 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     appendAuditEvent({ type: "sync:skip_min_interval", message: "session=" + TAB_ID + " reason=" + reason + " remaining=" + (SYNC_MIN_INTERVAL_MS - (Date.now() - state.lastSyncFinishedAt)) });
     if (syncStateForSkip.localDirty) {
       var remainingMs = SYNC_MIN_INTERVAL_MS - (Date.now() - state.lastSyncFinishedAt) + 300;
-      scheduleSyncSoon("min_interval_reschedule", remainingMs);
+      if (state.view === "flash" && typeof scheduleActiveStudyUpload === "function") scheduleActiveStudyUpload();
+      else scheduleSyncSoon("min_interval_reschedule", remainingMs);
     }
     return false;
   }
@@ -362,8 +418,10 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   }
   if (shouldSkipSyncForBackoff(bypassBackoff || shouldBypassMinInterval(reason))) return false;
   if (!tryAcquireCrossTabSyncLock(reason)) {
-    setHashSyncStatus("syncing", "其他标签页正在同步");
-    appendAuditEvent({ type: "sync:skip_cross_tab_lock", message: "session=" + TAB_ID + " reason=" + reason });
+    var lockInfo = typeof readCrossTabSyncLock === "function" ? readCrossTabSyncLock() : null;
+    var lockState = ensureHashSyncState(state.syncHashState);
+    setHashSyncStatus(lockState.localDirty ? "dirty" : "local_only", lockState.localDirty ? "本地已保存，等待上一轮同步锁释放后上传" : "本地可用，等待上一轮同步锁释放");
+    appendAuditEvent({ type: "sync:skip_cross_tab_lock", message: "session=" + TAB_ID + " reason=" + reason + " owner=" + String(lockInfo && lockInfo.owner || "") + " lockReason=" + String(lockInfo && lockInfo.reason || "") + " expiresIn=" + String(lockInfo && lockInfo.expiresAt ? lockInfo.expiresAt - Date.now() : "") });
     if (reason === "active_study_idle_upload" && typeof scheduleActiveStudyUpload === "function") {
       state.pendingActiveStudyUpload = true;
       scheduleActiveStudyUpload();
@@ -441,6 +499,15 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
 
     let local = refreshLocalPayloadHash({ persist: true });
     let facts = currentSyncFacts({ persistHash: false });
+
+    var schemaCheckResult = handleBusinessHashSchemaRemoteCheck(remote, facts, runId);
+    if (schemaCheckResult) {
+      syncResult = schemaCheckResult;
+      return syncResult;
+    }
+    if (ensureHashSyncState(state.syncHashState).localDirty) {
+      facts = currentSyncFacts({ persistHash: false });
+    }
 
     if (!hasBusinessData(facts.payload)) {
       const recovery = tryRestoreFromBackupIfPayloadEmpty({ runId });
@@ -574,6 +641,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     }
 
     if (remoteHash === syncState.baseRemoteHash && effectiveDirty) {
+      if (typeof appendHashDiffSummary === "function") appendHashDiffSummary(facts.payload, runId, reason);
       appendAuditEvent({ type: "sync:decision", message: "session=" + TAB_ID + " branch=push_local hash_match dirty=true runId=" + runId });
       syncResult = await syncBranchPushLocal({ remote, local: facts, keepalive, reason, runId, remoteHashAtDecision: remoteHash });
       return syncResult;

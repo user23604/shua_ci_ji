@@ -1,4 +1,4 @@
-const APP_VERSION = "2026-06-20-p8-hidden-idle-sync-lock-fix";
+const APP_VERSION = "2026-06-20-p9-stable-clean-after-sync";
 
 self.addEventListener("install", function(event) {
   self.skipWaiting();

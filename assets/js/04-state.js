@@ -92,7 +92,14 @@ const state = {
   lastCleanRemotePollAt: 0,
   lastForcedRemoteCheckAt: 0,
   pageHiddenDuringSyncAt: 0,
-  pendingActiveStudyUpload: false
+  pendingActiveStudyUpload: false,
+  activityDirtyTimer: null,
+  lastActivityDirtyAt: 0,
+  activityDirtyPending: false,
+  lastMarkCleanAtMs: 0,
+  minIntervalRescheduleTimer: null,
+  lastStatusRenderAuditKey: "",
+  lastStatusRenderAuditAt: 0
 };
 
 

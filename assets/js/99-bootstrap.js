@@ -5,6 +5,10 @@ function flushDirtyOnPageHide(reason) {
   try {
     if (typeof markPageHiddenDuringSync === "function") markPageHiddenDuringSync();
     var syncState = ensureHashSyncState(state.syncHashState);
+    if (state.activityDirtyPending && !syncState.localDirty && typeof markLocalDirtyLight === "function") {
+      markLocalDirtyLight("activity_pagehide");
+      syncState = ensureHashSyncState(state.syncHashState);
+    }
     if (!syncState || !syncState.localDirty) return;
     appendAuditEvent({ type: "sync:pagehide_flush_start", message: "session=" + TAB_ID + " reason=" + reason });
     syncTick({ reason: reason, bypassBackoff: true, keepalive: true }).then(function(result) {
@@ -26,6 +30,10 @@ function flushDirtyOnPageHide(reason) {
 function flushPendingDirtyAfterVisible(reason) {
   try {
     var syncState = ensureHashSyncState(state.syncHashState);
+    if (state.activityDirtyPending && !syncState.localDirty && typeof markLocalDirtyLight === "function") {
+      markLocalDirtyLight("activity_visibility_resume");
+      syncState = ensureHashSyncState(state.syncHashState);
+    }
     var shouldFlush = Boolean((syncState && syncState.localDirty) || state.pendingActiveStudyUpload);
     if (!shouldFlush) {
       if (typeof requestFreshRemoteCheck === "function") requestFreshRemoteCheck(reason || "visibility_resume");

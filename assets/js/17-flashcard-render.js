@@ -1,6 +1,6 @@
 "use strict";
 
-function renderFlashcard({ touchProgress = true } = {}) {
+function renderFlashcard({ touchProgress = false } = {}) {
   state.view = "flash";
   clearTimers();
   const book = currentBook();

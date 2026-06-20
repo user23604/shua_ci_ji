@@ -280,12 +280,12 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
         appendAuditEvent({ type: "sync:pagehide_flush_deferred", message: "session=" + TAB_ID + " runId=" + runId + " reason=" + reason + " stage=verify dirty_preserved=true error=" + String(error && error.message || error || "") });
         return { ok: false, pagehideDeferred: true, verifyInterrupted: true };
       }
-      recordHashSyncFailure("PATCH 成功但 GET 校验失败：" + (error && error.message || "unknown"), { errorKind: "verify_failed", banner: true, dialog: true, runId });
+      recordHashSyncFailure("PATCH 成功但 GET 校验失败：" + (error && error.message || "unknown"), { errorKind: "verify_failed", reason: reason, banner: true, dialog: true, runId });
       return { ok: false };
     }
 
     if (!isRemoteValidKind(verified.kind)) {
-      recordHashSyncFailure("PATCH 成功但云端 sync.json 无法通过校验", { errorKind: "verify_failed", banner: true, dialog: true, runId, technical: verified.reason || verified.kind || "" });
+      recordHashSyncFailure("PATCH 成功但云端 sync.json 无法通过校验", { errorKind: "verify_failed", reason: reason, banner: true, dialog: true, runId, technical: verified.reason || verified.kind || "" });
       return { ok: false };
     }
     const verifiedHash = currentRemoteHash(verified);
@@ -320,7 +320,7 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
         scheduleSyncSoon("verify_mismatch_retry", 3000);
         return { ok: false, verifyDeferred: true };
       }
-      recordHashSyncFailure("PATCH 成功但云端内容 hash 不匹配", { errorKind: "verify_failed", banner: true, dialog: true, runId, technical: "expected=" + uploadedHash + ", actual=" + (recheck && currentRemoteHash(recheck) || String(verifiedHash)) });
+      recordHashSyncFailure("PATCH 成功但云端内容 hash 不匹配", { errorKind: "verify_failed", reason: reason, banner: true, dialog: true, runId, technical: "expected=" + uploadedHash + ", actual=" + (recheck && currentRemoteHash(recheck) || String(verifiedHash)) });
       return { ok: false, verifyFailed: true };
     }
     return { ok: true, remote: verified, uploadedHash };

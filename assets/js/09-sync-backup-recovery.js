@@ -122,16 +122,25 @@ function shouldUseActiveStudyDebounce() {
 }
 
 
-function scheduleActiveStudyUpload() {
+function activeStudyIdleDelayMs(delayOverride) {
+  if (Number.isFinite(Number(delayOverride)) && Number(delayOverride) >= 0) return Number(delayOverride);
+  var last = Number(state.lastUserStudyActionAt || 0);
+  if (!last || state.view !== "flash") return ACTIVE_STUDY_SYNC_DEBOUNCE_MS;
+  return Math.max(0, ACTIVE_STUDY_SYNC_DEBOUNCE_MS - (Date.now() - last));
+}
+
+
+function scheduleActiveStudyUpload(delayOverride) {
   state.pendingActiveStudyUpload = true;
   if (state.activeStudySyncTimer) {
     clearTimeout(state.activeStudySyncTimer);
     state.activeStudySyncTimer = null;
   }
+  var delay = activeStudyIdleDelayMs(delayOverride);
   state.activeStudySyncTimer = setTimeout(function() {
     state.activeStudySyncTimer = null;
     var hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
-    appendAuditEvent({ type: "sync:active_study_idle_upload", message: "session=" + TAB_ID + " hidden=" + String(!!hidden) });
+    appendAuditEvent({ type: "sync:active_study_idle_upload", message: "session=" + TAB_ID + " hidden=" + String(!!hidden) + " delay=" + String(delay) });
     Promise.resolve(syncTick({ reason: "active_study_idle_upload", bypassBackoff: true, keepalive: hidden })).then(function(result) {
       var syncState = ensureHashSyncState(state.syncHashState);
       if (result && syncState && !syncState.localDirty) {
@@ -141,7 +150,7 @@ function scheduleActiveStudyUpload() {
       state.pendingActiveStudyUpload = true;
       appendAuditEvent({ type: "sync:active_study_idle_upload_deferred", message: "session=" + TAB_ID + " dirty_preserved=true error=" + String(error && error.message || error || "") });
     });
-  }, ACTIVE_STUDY_SYNC_DEBOUNCE_MS);
+  }, delay);
 }
 
 
@@ -153,12 +162,22 @@ function clearActiveStudyTimerIfClean() {
       clearTimeout(state.activeStudySyncTimer);
       state.activeStudySyncTimer = null;
     }
+    if (state.autoPushDebounceTimer) {
+      clearTimeout(state.autoPushDebounceTimer);
+      state.autoPushDebounceTimer = null;
+    }
+    if (state.minIntervalRescheduleTimer) {
+      clearTimeout(state.minIntervalRescheduleTimer);
+      state.minIntervalRescheduleTimer = null;
+    }
+    appendAuditEvent({ type: "sync:pending_timers_cleared_after_clean", message: "session=" + TAB_ID });
   }
 }
 
 
 function markLocalDirtyLight(reason = "change") {
   if (state.applyingRemotePayload || state.suppressDirty) return;
+  if (typeof auditLocalDirtySet === "function") auditLocalDirtySet(reason);
   state.syncHashState = ensureHashSyncState(state.syncHashState);
   state.syncHashState.localDirty = true;
   if (!state.syncHashState.dirtySince) state.syncHashState.dirtySince = beijingISOString();
@@ -181,6 +200,7 @@ function markLocalDirtyLight(reason = "change") {
 
 function markLocalDirtyAfterBusinessWrite(reason = "change") {
   if (state.applyingRemotePayload || state.suppressDirty) return;
+  if (typeof auditLocalDirtySet === "function") auditLocalDirtySet(reason);
   if (shouldUseActiveStudyDebounce()) {
     markLocalDirtyLight(reason);
     return;
@@ -210,9 +230,10 @@ function markLocalDirtyAfterBusinessWrite(reason = "change") {
 
 
 function scheduleSyncSoon(reason = "local_change", delayMs = AUTO_PUSH_DEBOUNCE_MS) {
-  if (state.autoPushDebounceTimer) clearTimeout(state.autoPushDebounceTimer);
-  state.autoPushDebounceTimer = setTimeout(function() {
-    state.autoPushDebounceTimer = null;
+  var timerName = String(reason || "") === "min_interval_reschedule" ? "minIntervalRescheduleTimer" : "autoPushDebounceTimer";
+  if (state[timerName]) clearTimeout(state[timerName]);
+  state[timerName] = setTimeout(function() {
+    state[timerName] = null;
     syncTick({ reason, bypassBackoff: true });
   }, delayMs);
 }
