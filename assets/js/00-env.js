@@ -1,7 +1,7 @@
 "use strict";
 
-const APP_VERSION = "2026-06-20-p10-active-study-progress-batch-sync";
-const APP_BUILD_ID = "2026-06-20-p10-active-study-progress-batch-sync";
+const APP_VERSION = "2026-06-21-p11-study-queued-status-fix";
+const APP_BUILD_ID = "2026-06-21-p11-study-queued-status-fix";
 
 
 const ACCESS_KEY = "ky2027";

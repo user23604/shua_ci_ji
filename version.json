@@ -1,6 +1,6 @@
 {
-  "appVersion": "2026-06-20-p10-active-study-progress-batch-sync",
-  "buildId": "2026-06-20-p10-active-study-progress-batch-sync",
+  "appVersion": "2026-06-21-p11-study-queued-status-fix",
+  "buildId": "2026-06-21-p11-study-queued-status-fix",
   "deployedAt": "2026-06-20T00:00:00+08:00",
   "note": "P10: active-study cursor/draft progress batching, no autoplay sync loop, no 0ms active upload storm"
 }

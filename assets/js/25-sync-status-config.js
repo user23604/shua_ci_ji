@@ -75,6 +75,21 @@ function canShowConfirmedCloudState(facts, syncState) {
 }
 
 
+
+function hasQueuedStudyLocalState() {
+  if (typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()) return true;
+  if (state.view !== "flash") return false;
+  var last = typeof lastActiveStudyAt === "function" ? Number(lastActiveStudyAt() || 0) : Number(state.lastUserStudyActionAt || 0);
+  if (last && Date.now() - last < ACTIVE_STUDY_SYNC_DEBOUNCE_MS) return true;
+  if (typeof isStudyMoving === "function" && isStudyMoving()) return true;
+  return false;
+}
+
+function queuedStudyDetail() {
+  if (state.view === "flash") return "学习中，本地已保存，稍后同步";
+  return "本地已保存，待同步";
+}
+
 function activeStudyDirtyDetail() {
   if (state.lastDirtyFromVerify) return "本地已保存，稍后继续同步";
   if (state.view === "flash") {
@@ -143,6 +158,9 @@ function computeSyncStatus() {
     if (state.syncMeta.readOnlyMode) {
       return { status: "dirty_read_only", detail: "只读模式·本地已保存，待更换可写 PAT 后上传" };
     }
+    if (hasQueuedStudyLocalState()) {
+      return { status: "study_queued", detail: queuedStudyDetail() };
+    }
     return { status: "dirty", detail: activeStudyDirtyDetail() };
   }
 
@@ -152,11 +170,14 @@ function computeSyncStatus() {
     if (state.syncMeta.readOnlyMode) {
       return { status: "dirty_read_only", detail: "只读模式·本地已保存，待更换可写 PAT 后上传" };
     }
+    if (hasQueuedStudyLocalState()) {
+      return { status: "study_queued", detail: queuedStudyDetail() };
+    }
     return { status: "dirty", detail: activeStudyDirtyDetail() };
   }
 
   if (typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()) {
-    return { status: "dirty", detail: state.view === "flash" ? "学习中，本地已保存，稍后同步" : "本地已保存，待同步" };
+    return { status: "study_queued", detail: queuedStudyDetail() };
   }
 
   if (canShowCloudOk(facts, syncState)) {

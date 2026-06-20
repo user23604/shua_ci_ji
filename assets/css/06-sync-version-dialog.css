@@ -25,6 +25,7 @@
 .cloud-sync-indicator.is-syncing,
 .cloud-sync-indicator.is-error,
 .cloud-sync-indicator.is-dirty,
+.cloud-sync-indicator.is-study_queued,
 .cloud-sync-indicator.is-dirty_read_only,
 .cloud-sync-indicator.is-cloud_saved,
 .cloud-sync-indicator.is-cloud_loaded,
@@ -50,6 +51,12 @@
 .cloud-sync-indicator.is-dirty_read_only .cloud-sync-indicator__dot {
   background: #f59e0b;
   box-shadow: 0 0 0 5px rgba(245, 158, 11, 0.14), 0 0 18px rgba(180, 83, 9, 0.28);
+}
+
+
+.cloud-sync-indicator.is-study_queued .cloud-sync-indicator__dot {
+  background: #0f766e;
+  box-shadow: 0 0 0 5px rgba(15, 118, 110, 0.14), 0 0 18px rgba(15, 118, 110, 0.26);
 }
 
 @keyframes syncPulse {

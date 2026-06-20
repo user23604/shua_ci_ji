@@ -1,4 +1,4 @@
-const APP_VERSION = "2026-06-20-p10-active-study-progress-batch-sync";
+const APP_VERSION = "2026-06-21-p11-study-queued-status-fix";
 
 self.addEventListener("install", function(event) {
   self.skipWaiting();
