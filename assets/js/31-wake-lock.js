@@ -20,9 +20,6 @@ function releaseWakeLock() {
   }
 }
 
-init();
-
-
 
 
 
