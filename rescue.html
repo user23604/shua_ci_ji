@@ -5,79 +5,47 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>刷词机本地数据救援工具</title>
   <style>
-    :root {
-      color-scheme: light;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #f5f6f8;
-      color: #141821;
-    }
-    body { margin: 0; padding: 20px; }
-    .wrap { max-width: 960px; margin: 0 auto; }
-    .card {
-      background: #fff;
-      border: 1px solid #e5e7eb;
-      border-radius: 16px;
-      padding: 18px;
-      margin: 14px 0;
-      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
-    }
+    :root { color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; background: #f6f7f9; }
+    body { margin: 0; padding: 18px; }
+    .wrap { max-width: 1120px; margin: 0 auto; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 12px 0; box-shadow: 0 6px 20px rgba(15,23,42,0.05); }
     h1 { font-size: 24px; margin: 0 0 8px; }
     h2 { font-size: 18px; margin: 0 0 10px; }
     p { line-height: 1.65; margin: 8px 0; }
     .danger { color: #b42318; font-weight: 700; }
-    .ok { color: #057a55; font-weight: 700; }
-    .warn { color: #b54708; font-weight: 700; }
-    .sanitized { color: #057a55; font-weight: 700; }
-    button {
-      border: 0;
-      border-radius: 12px;
-      padding: 12px 16px;
-      margin: 8px 8px 8px 0;
-      font-weight: 700;
-      cursor: pointer;
-      background: #0f766e;
-      color: #fff;
-      font-size: 15px;
-    }
+    .ok { color: #047857; font-weight: 700; }
+    .warn { color: #b45309; font-weight: 700; }
+    .small { color: #64748b; font-size: 13px; }
+    button { border: 0; border-radius: 6px; padding: 10px 12px; margin: 6px 6px 6px 0; font-weight: 700; cursor: pointer; background: #0f766e; color: #fff; font-size: 14px; }
     button.secondary { background: #334155; }
     button.danger-btn { background: #b42318; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-    pre, textarea {
-      width: 100%;
-      box-sizing: border-box;
-      border: 1px solid #d1d5db;
-      border-radius: 12px;
-      background: #0b1020;
-      color: #e5e7eb;
-      padding: 12px;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 12px;
-      line-height: 1.55;
-    }
-    textarea { min-height: 260px; resize: vertical; }
-    .small { color: #64748b; font-size: 13px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+    textarea, pre { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 6px; background: #0b1020; color: #e5e7eb; padding: 10px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; }
+    textarea { min-height: 240px; resize: vertical; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
     .pill { background: #f1f5f9; border-radius: 999px; padding: 7px 10px; display: inline-block; margin: 3px; font-size: 13px; }
-    .big-status { font-size: 18px; padding: 10px 0; }
+    .big-status { font-size: 16px; padding: 8px 0; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }
+    th { background: #f8fafc; color: #475569; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
   </style>
 </head>
 <body>
 <div class="wrap">
   <div class="card">
     <h1>刷词机本地数据救援工具</h1>
-    <p class="danger">这个页面只读取本机浏览器数据，不连接 GitHub，不上传，不覆盖，不清理。不要点击浏览器"清理网站数据/垃圾桶"。</p>
-    <p>请用仍显示"已存储数据"的同一个浏览器打开本页面，地址应类似：<strong>https://user23604.github.io/shua_ci_ji/rescue.html</strong></p>
-    <p class="small">如果把这个文件直接从本地文件管理器打开，地址会是 file://，那就读不到网站数据。必须部署到同一个 GitHub Pages 域名下再打开。</p>
-    <p class="sanitized">🔒 本工具已自动脱敏：GitHub Token、密码等敏感字段在导出时已替换为 [已脱敏]。下载备份 JSON 前会再次执行全局脱敏。</p>
+    <p class="danger">本页面会读取并可写入当前浏览器的刷词机 localStorage。恢复操作前会先下载完整备份，并需要二次确认。</p>
+    <p>请用仍保留刷词机数据的同一个浏览器打开本页，且必须来自同一个 GitHub Pages 域名，不能用 <code>file://</code> 打开。</p>
+    <p class="ok">默认诊断和复制内容会脱敏 GitHub Token。完整本地数据备份可能包含 Token，请勿发给陌生人。</p>
   </div>
 
   <div class="card">
     <h2>操作</h2>
-    <button id="scanBtn">生成诊断并读取本机数据</button>
-    <button id="downloadBtn" class="secondary" disabled>下载完整备份 JSON</button>
+    <button id="scanBtn">扫描本机数据</button>
+    <button id="downloadSafeBtn" class="secondary" disabled>下载脱敏诊断包（可发给程序员）</button>
+    <button id="downloadFullBtn" class="danger-btn" disabled>下载完整本地数据备份（可能包含 GitHub Token）</button>
     <button id="copyBtn" class="secondary" disabled>复制诊断摘要</button>
     <p id="status" class="big-status warn">尚未开始。</p>
   </div>
@@ -88,539 +56,332 @@
   </div>
 
   <div class="card">
-    <h2>诊断摘要</h2>
-    <textarea id="summary" readonly placeholder="点击"生成诊断并读取本机数据"后，这里会显示摘要。"></textarea>
+    <h2>备份候选</h2>
+    <div id="candidateTable" class="table-wrap">点击扫描后显示。</div>
   </div>
 
   <div class="card">
-    <h2>发现的关键片段</h2>
-    <pre id="snippets">暂无。</pre>
+    <h2>诊断摘要</h2>
+    <textarea id="summary" readonly></textarea>
   </div>
 </div>
-
 <script>
-(() => {
+(function() {
   "use strict";
-
-  const TARGET_DATES = ["2026-06-18", "2026-06-19", "2026-06-15", "2026-06-11", "2026-06-10"];
-
-  // ── P0: 业务 localStorage key 白名单 ────────────────────────────────────
-  const BUSINESS_KEY_PREFIXES = [
-    "vocab_machine_settings_v1",
-    "vocab_machine_sync_meta_v1",
-    "vocab_machine_hash_sync_state_v1",
-    "vocab_machine_backup:",
-    "vocab_machine_daily_backup_",
-    "vocab_machine_sync_audit_v1",
-    "progress:",
-    "unknown_progress:",
-    "marks:",
-    "activity:",
-    "unit_stats:",
-    "vocab_machine_local_snapshot_latest_v1"
-  ];
-
-  // ── P0: 全局敏感信息脱敏 ──────────────────────────────────────────────
-  const SENSITIVE_FIELD_PATTERNS = [
-    /^token$/i, /^authorization$/i, /^password$/i, /^secret$/i,
-    /^access_key$/i, /^api_key$/i, /^pat$/i, /^personal_access_token$/i,
-    /^bearer$/i, /^credential$/i, /^auth$/i
-  ];
-
-  const PAT_STRING_PATTERNS = [
-    { re: /ghp_[a-zA-Z0-9]{36,}/g, replacement: "ghp_[已脱敏]" },
-    { re: /github_pat_[a-zA-Z0-9_]{40,}/g, replacement: "github_pat_[已脱敏]" },
-    { re: /gho_[a-zA-Z0-9]{36,}/g, replacement: "gho_[已脱敏]" },
-    { re: /ghu_[a-zA-Z0-9]{36,}/g, replacement: "ghu_[已脱敏]" },
-    { re: /ghs_[a-zA-Z0-9]{36,}/g, replacement: "ghs_[已脱敏]" },
-    { re: /ghr_[a-zA-Z0-9]{36,}/g, replacement: "ghr_[已脱敏]" }
-  ];
-
-  function isSensitiveFieldName(key) {
-    return SENSITIVE_FIELD_PATTERNS.some(function(p) { return p.test(key); });
-  }
-
-  function sanitizeForExport(obj) {
-    if (obj === null || obj === undefined) return obj;
-    if (typeof obj === "string") {
-      var s = obj;
-      PAT_STRING_PATTERNS.forEach(function(p) {
-        s = s.replace(p.re, p.replacement);
-      });
-      return s;
-    }
-    if (Array.isArray(obj)) return obj.map(sanitizeForExport);
-    if (typeof obj !== "object") return obj;
-    var out = {};
-    Object.keys(obj).forEach(function(key) {
-      if (isSensitiveFieldName(key)) {
-        out[key] = "[已脱敏]";
-      } else {
-        out[key] = sanitizeForExport(obj[key]);
-      }
-    });
-    return out;
-  }
-
-  // ── 业务 key 分类 ──────────────────────────────────────────────────────
-  function classifyKey(key) {
-    if (/^progress:/.test(key)) return "progress";
-    if (/^unknown_progress:/.test(key)) return "unknownProgress";
-    if (/^marks:/.test(key)) return "marks";
-    if (/^activity:/.test(key)) return "activity";
-    if (/^unit_stats:/.test(key)) return "unitStats";
-    if (/^vocab_machine_backup:/.test(key)) return "backup";
-    if (/^vocab_machine_daily_backup_/.test(key)) return "backup";
-    if (/^vocab_machine_settings_v1$/.test(key)) return "settings";
-    if (/^vocab_machine_sync_meta_v1$/.test(key)) return "syncState";
-    if (/^vocab_machine_hash_sync_state_v1$/.test(key)) return "syncState";
-    if (/^vocab_machine_sync_audit_v1$/.test(key)) return "audit";
-    if (/^vocab_machine_local_snapshot_latest_v1$/.test(key)) return "snapshot";
-    return "other";
-  }
-
-  function isBusinessKey(key) {
-    return BUSINESS_KEY_PREFIXES.some(function(prefix) {
-      return key === prefix || key.indexOf(prefix) === 0;
-    });
-  }
-
-  // ── helpers ────────────────────────────────────────────────────────────
+  const SETTINGS_KEY = "vocab_machine_settings_v1";
+  const HASH_SYNC_STATE_KEY = "vocab_machine_hash_sync_state_v1";
+  const HASH_BACKUP_PREFIX = "vocab_machine_backup:";
+  const HASH_BACKUP_INDEX_KEY = "vocab_machine_backup_index_v1";
+  const DAILY_BACKUP_PREFIX = "vocab_machine_daily_backup_";
+  const LOCAL_SNAPSHOT_KEY = "vocab_machine_local_snapshot_latest_v1";
+  const BUSINESS_PREFIXES = [SETTINGS_KEY, "vocab_machine_sync_meta_v1", HASH_SYNC_STATE_KEY, HASH_BACKUP_PREFIX, DAILY_BACKUP_PREFIX, "vocab_machine_sync_audit_v1", "progress:", "unknown_progress:", "marks:", "activity:", "unit_stats:", LOCAL_SNAPSHOT_KEY, "shua_ci_ji_sync_lock"];
   let lastBundle = null;
-  let lastSummaryText = "";
+  let lastSafeBundle = null;
+  let lastSummary = "";
+  let lastCandidates = [];
 
-  const $ = (id) => document.getElementById(id);
+  function $(id) { return document.getElementById(id); }
+  function isPlainObject(v) { return v && typeof v === "object" && !Array.isArray(v); }
+  function nowStamp() { return new Date().toISOString().replace(/[:.]/g, "-"); }
+  function byteSize(text) { return new Blob([String(text || "")]).size; }
+  function localDateKey(d = new Date()) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 
-  function safeJsonParse(value) {
-    if (typeof value !== "string") return null;
-    try { return JSON.parse(value); } catch (_) { return null; }
+  function sanitizeText(s) {
+    return String(s || "")
+      .replace(/github_pat_[A-Za-z0-9_]{30,}/g, "github_pat_[已脱敏]")
+      .replace(/gh[pousr]_[A-Za-z0-9]{30,}/g, "gh*_ [已脱敏]");
   }
-
-  function byteSize(str) {
-    try { return new Blob([String(str)]).size; } catch (_) { return String(str || "").length; }
-  }
-
-  function isLikelySyncPayload(obj) {
-    return !!(
-      obj && typeof obj === "object" &&
-      (obj.version === 1 || obj.progress || obj.marks || obj.activity || obj.unitStats) &&
-      (obj.settings || obj.progress || obj.activity)
-    );
-  }
-
-  function summarizePayload(payload) {
-    if (!payload || typeof payload !== "object") return null;
-    const activityDates = [];
-    const progress = {};
-    const markCounts = {};
-
-    if (payload.progress && typeof payload.progress === "object") {
-      Object.entries(payload.progress).forEach(([bookId, p]) => {
-        progress[bookId] = {
-          unit: p && p.unit,
-          lastWordId: p && p.lastWordId,
-          updatedAt: p && p.updatedAt
-        };
-      });
-    }
-
-    if (payload.activity && typeof payload.activity === "object") {
-      Object.entries(payload.activity).forEach(([bookId, book]) => {
-        const days = book && book.days && typeof book.days === "object" ? book.days : {};
-        Object.keys(days).forEach((date) => activityDates.push(bookId + ":" + date));
-      });
-    }
-
-    if (payload.marks && typeof payload.marks === "object") {
-      Object.entries(payload.marks).forEach(([bookId, marks]) => {
-        markCounts[bookId] = {
-          known: Array.isArray(marks && marks.known) ? marks.known.length : 0,
-          unknown: Array.isArray(marks && marks.unknown) ? marks.unknown.length : 0
-        };
-      });
-    }
-
-    return {
-      version: payload.version,
-      updatedAt: payload.updatedAt,
-      activeBookId: payload.activeBookId,
-      settingsBookId: payload.settings && payload.settings.bookId,
-      settingsUnit: payload.settings && payload.settings.unit,
-      progress: progress,
-      activityDates: activityDates.sort(),
-      markCounts: markCounts
-    };
-  }
-
-  // ── P0: 日期命中标注来源 key ──────────────────────────────────────────
-  function findSnippets(text, sourceKey) {
-    const out = [];
-    const lower = text.toLowerCase();
-    const needles = ["2026-06-18", "vocab_machine", "pending_ops", "activity", "lastWordId", "wordIds"];
-    needles.forEach((needle) => {
-      const idx = lower.indexOf(String(needle).toLowerCase());
-      if (idx >= 0) {
-        const start = Math.max(0, idx - 200);
-        const end = Math.min(text.length, idx + String(needle).length + 300);
-        out.push("--- 命中：" + needle + " | 来源：localStorage:" + sourceKey + " ---\n" + text.slice(start, end));
-      }
+  function sanitize(obj) {
+    if (obj == null) return obj;
+    if (typeof obj === "string") return sanitizeText(obj);
+    if (Array.isArray(obj)) return obj.map(sanitize);
+    if (typeof obj !== "object") return obj;
+    const out = {};
+    Object.keys(obj).forEach(function(k) {
+      if (/token|authorization|password|secret|pat|credential|auth/i.test(k)) out[k] = "[已脱敏]";
+      else out[k] = sanitize(obj[k]);
     });
     return out;
   }
 
-  // ── P0: 白名单扫描 localStorage ───────────────────────────────────────
-  function collectLocalStorage() {
-    const result = { supported: true, totalBytes: 0, keys: [], items: {}, parsed: {}, skippedCount: 0 };
-    try {
-      for (let i = 0; i < localStorage.length; i += 1) {
-        const key = localStorage.key(i);
-        if (!isBusinessKey(key)) {
-          result.skippedCount += 1;
-          continue;
-        }
-        const value = localStorage.getItem(key);
-        result.keys.push(key);
-        result.items[key] = value;
-        result.totalBytes += byteSize(key) + byteSize(value || "");
-        const parsed = safeJsonParse(value);
-        if (parsed !== null) result.parsed[key] = parsed;
-      }
-      result.keys.sort();
-    } catch (error) {
-      result.supported = false;
-      result.error = error && error.message || String(error);
-    }
-    return result;
+  function parseJson(raw, fallback) { try { return JSON.parse(raw); } catch (_) { return fallback; } }
+  function stableStringify(value) {
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) return "[" + value.map(stableStringify).join(",") + "]";
+    return "{" + Object.keys(value).sort().map(k => stableStringify(k) + ":" + stableStringify(value[k])).join(",") + "}";
+  }
+  function shortHash(obj) {
+    const json = stableStringify(obj || {});
+    let hash = 5381;
+    for (let i = 0; i < json.length; i += 1) hash = ((hash << 5) + hash + json.charCodeAt(i)) | 0;
+    return hash.toString(36);
   }
 
-  // ── sessionStorage：只取非敏感的少量 key ──────────────────────────────
-  function collectSessionStorage() {
-    const result = { supported: true, totalBytes: 0, keys: [], items: {} };
-    try {
-      for (let i = 0; i < sessionStorage.length; i += 1) {
-        const key = sessionStorage.key(i);
-        const value = sessionStorage.getItem(key);
-        result.keys.push(key);
-        result.items[key] = value;
-        result.totalBytes += byteSize(key) + byteSize(value || "");
-      }
-      result.keys.sort();
-    } catch (error) {
-      result.supported = false;
-      result.error = error && error.message || String(error);
+  function isBusinessKey(key) { return BUSINESS_PREFIXES.some(p => key === p || key.startsWith(p)); }
+  function collectLocalStorage(full) {
+    const items = {};
+    const parsed = {};
+    const keys = [];
+    let skipped = 0;
+    let totalBytes = 0;
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      const value = localStorage.getItem(key);
+      if (!isBusinessKey(key)) { skipped += 1; continue; }
+      keys.push(key);
+      items[key] = value;
+      totalBytes += byteSize(value || "");
+      parsed[key] = parseJson(value, null);
     }
-    return result;
+    return { keys, items, parsed, skippedCount: skipped, totalBytes };
   }
 
-  // ── P0: Cache Storage 只报名称 + 条目数，不读 body ────────────────────
-  async function collectCaches() {
-    const result = { supported: "caches" in window, caches: [] };
-    if (!result.supported) return result;
-    try {
-      const names = await caches.keys();
-      for (const name of names) {
-        const cache = await caches.open(name);
-        const requests = await cache.keys();
-        result.caches.push({ name: name, entryCount: requests.length });
-      }
-    } catch (error) {
-      result.error = error && error.message || String(error);
+  function extractPayload(obj) {
+    if (!isPlainObject(obj)) return null;
+    const candidates = [obj.payload, obj.snapshot, obj.data, obj.businessPayload, obj.syncPayload, obj.payload && obj.payload.payload, obj.snapshot && obj.snapshot.payload, obj];
+    for (const item of candidates) {
+      if (!isPlainObject(item)) continue;
+      if (item.progress || item.marks || item.activity || item.unitStats || item.unknownProgress || item.settings) return normalizePayload(item);
     }
-    return result;
+    return null;
   }
-
-  // ── P0: IndexedDB 只报名称 + store 名称 + 记录数，不读记录值 ──────────
-  function idbRequest(request) {
-    return new Promise((resolve, reject) => {
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error || new Error("IndexedDB request failed"));
+  function normalizePayload(p) {
+    const src = isPlainObject(p) ? p : {};
+    return {
+      version: 1,
+      updatedAt: typeof src.updatedAt === "string" ? src.updatedAt : new Date().toISOString(),
+      activeBookId: src.activeBookId || src.bookId || "",
+      settings: isPlainObject(src.settings) ? src.settings : {},
+      progress: isPlainObject(src.progress) ? src.progress : {},
+      unknownProgress: isPlainObject(src.unknownProgress) ? src.unknownProgress : {},
+      marks: isPlainObject(src.marks) ? src.marks : {},
+      activity: isPlainObject(src.activity) ? src.activity : {},
+      unitStats: isPlainObject(src.unitStats) ? src.unitStats : {}
+    };
+  }
+  function countProgress(p) {
+    let n = 0;
+    Object.values(p.progress || {}).forEach(v => { if (v && Number(v.lastWordId) > 0) n += 1; });
+    Object.values(p.unknownProgress || {}).forEach(v => {
+      if (v && v.book && Number(v.book.lastWordId) > 0) n += 1;
+      Object.values((v && v.units) || {}).forEach(u => { if (u && Number(u.lastWordId) > 0) n += 1; });
     });
+    return n;
   }
-
-  function openIndexedDb(name) {
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open(name);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error || new Error("open " + name + " failed"));
-      req.onblocked = () => reject(new Error("open " + name + " blocked"));
-      req.onupgradeneeded = () => {
-        try { req.transaction.abort(); } catch (_) {}
-        reject(new Error("open " + name + " would create/upgrade database, aborted for safety"));
-      };
-    });
+  function countMarks(p) {
+    let n = 0;
+    Object.values(p.marks || {}).forEach(v => { n += (Array.isArray(v.known) ? v.known.length : 0) + (Array.isArray(v.unknown) ? v.unknown.length : 0); });
+    return n;
   }
-
-  async function readObjectStoreMeta(db, storeName) {
-    const storeMeta = { name: storeName, count: null, error: null };
-    try {
-      const tx = db.transaction(storeName, "readonly");
-      const store = tx.objectStore(storeName);
-      try { storeMeta.count = await idbRequest(store.count()); } catch (_) {}
-    } catch (error) {
-      storeMeta.error = error && error.message || String(error);
-    }
-    return storeMeta;
-  }
-
-  async function collectIndexedDB() {
-    const result = { supported: "indexedDB" in window, hasDatabasesApi: false, databases: [] };
-    if (!result.supported) return result;
-    if (typeof indexedDB.databases !== "function") {
-      result.error = "当前浏览器不支持 indexedDB.databases()，无法自动枚举数据库名。";
-      return result;
-    }
-    result.hasDatabasesApi = true;
-    try {
-      const dbs = await indexedDB.databases();
-      for (const info of dbs) {
-        if (!info || !info.name) continue;
-        const dbDump = { name: info.name, version: info.version, objectStores: [], error: null };
-        let db = null;
-        try {
-          db = await openIndexedDb(info.name);
-          dbDump.version = db.version;
-          const storeNames = Array.from(db.objectStoreNames || []);
-          for (const storeName of storeNames) {
-            dbDump.objectStores.push(await readObjectStoreMeta(db, storeName));
-          }
-        } catch (error) {
-          dbDump.error = error && error.message || String(error);
-        } finally {
-          try { if (db) db.close(); } catch (_) {}
-        }
-        result.databases.push(dbDump);
-      }
-    } catch (error) {
-      result.error = error && error.message || String(error);
-    }
-    return result;
-  }
-
-  // ── analysis ───────────────────────────────────────────────────────────
-  function analyzeBundle(bundle) {
-    const jsonText = JSON.stringify(bundle);
-    const foundDates = TARGET_DATES.filter((date) => jsonText.includes(date));
-    const allDates = Array.from(new Set(jsonText.match(/20\d{2}-\d{2}-\d{2}/g) || [])).sort();
-
-    const keyCategories = {};
-    (bundle.localStorage.keys || []).forEach(function(key) {
-      var cat = classifyKey(key);
-      if (!keyCategories[cat]) keyCategories[cat] = [];
-      keyCategories[cat].push(key);
-    });
-
-    // P0: 日期命中标注来源 key
-    const dateSources = {};
-    Object.entries(bundle.localStorage.items || {}).forEach(function(_ref) {
-      var key = _ref[0], value = _ref[1];
-      TARGET_DATES.forEach(function(date) {
-        if (value && value.indexOf(date) !== -1) {
-          if (!dateSources[date]) dateSources[date] = [];
-          dateSources[date].push("localStorage:" + key);
-        }
+  function countActivity(p) {
+    let n = 0;
+    Object.values(p.activity || {}).forEach(v => {
+      Object.values((v && v.days) || {}).forEach(day => {
+        if (day && (Number(day.seconds) > 0 || Number(day.words) > 0 || Number(day.known) > 0 || Number(day.unknown) > 0 || (Array.isArray(day.wordIds) && day.wordIds.length))) n += 1;
       });
     });
+    return n;
+  }
+  function countStudyState(p) {
+    let n = 0;
+    Object.values(p.unitStats || {}).forEach(v => { Object.values((v && v.units) || {}).forEach(u => { if (u && Number(u.completed) > 0) n += 1; }); });
+    return n;
+  }
+  function hasBusinessData(p) { return countProgress(p) > 0 || countMarks(p) > 0 || countActivity(p) > 0 || countStudyState(p) > 0; }
 
-    const likelyPayloads = [];
-    Object.entries(bundle.localStorage.parsed || {}).forEach(function(_ref2) {
-      var key = _ref2[0], value = _ref2[1];
-      if (isLikelySyncPayload(value)) likelyPayloads.push({ source: "localStorage:" + key + " [" + classifyKey(key) + "]", summary: summarizePayload(value) });
-      if (value && typeof value === "object") {
-        Object.entries(value).forEach(function(_ref3) {
-          var subKey = _ref3[0], subValue = _ref3[1];
-          if (isLikelySyncPayload(subValue)) likelyPayloads.push({ source: "localStorage:" + key + "." + subKey + " [" + classifyKey(key) + "]", summary: summarizePayload(subValue) });
-        });
-      }
-    });
+  function loadBackupIndex() {
+    const raw = localStorage.getItem(HASH_BACKUP_INDEX_KEY);
+    const parsed = parseJson(raw || "{}", {});
+    return Array.isArray(parsed.items) ? parsed.items.filter(isPlainObject) : [];
+  }
+  function collectBackupCandidates() {
+    const keys = new Map();
+    const today = localDateKey();
+    const yesterday = localDateKey(new Date(Date.now() - 86400000));
+    function add(key, meta) { if (key && !keys.has(key)) keys.set(key, meta || {}); }
+    add(HASH_BACKUP_PREFIX + "latest", { kind: "latest" });
+    add(HASH_BACKUP_PREFIX + "daily:" + today + ":latest", { kind: "daily" });
+    add(HASH_BACKUP_PREFIX + "daily:" + today + ":first_non_empty", { kind: "daily:first_non_empty" });
+    add(HASH_BACKUP_PREFIX + "daily:" + yesterday + ":latest", { kind: "daily" });
+    add(HASH_BACKUP_PREFIX + "daily:" + yesterday + ":first_non_empty", { kind: "daily:first_non_empty" });
+    loadBackupIndex().forEach(item => add(item.key, item));
+    add(LOCAL_SNAPSHOT_KEY, { kind: "snapshot" });
+    add(DAILY_BACKUP_PREFIX + today, { kind: "legacy_daily" });
+    add(DAILY_BACKUP_PREFIX + yesterday, { kind: "legacy_daily" });
+    const out = [];
+    keys.forEach((meta, key) => out.push({ key, meta, raw: localStorage.getItem(key) }));
+    return out;
+  }
+  function classifyCandidate(item) {
+    const c = { key: item.key, kind: "missing", savedAt: item.meta.savedAt || "", payloadHash: "", parseOk: false, validateOk: false, nonEmpty: false, progressCount: 0, marksCount: 0, activityDayCount: 0, reason: "", payload: null, raw: item.raw };
+    if (item.raw == null) { c.reason = "missing"; return c; }
+    let parsed;
+    try { parsed = JSON.parse(item.raw); c.parseOk = true; } catch (e) { c.kind = item.meta.nonEmpty === true ? "broken_high_confidence_nonempty" : "broken_unknown"; c.reason = e.message; return c; }
+    const payload = extractPayload(parsed);
+    if (!payload) { c.kind = "invalid_shape"; c.reason = "未找到 payload"; return c; }
+    c.payload = payload;
+    c.savedAt = parsed.savedAt || parsed.timestamp || item.meta.savedAt || "";
+    c.payloadHash = shortHash({ settings: payload.settings, progress: payload.progress, unknownProgress: payload.unknownProgress, marks: payload.marks, activity: payload.activity, unitStats: payload.unitStats });
+    c.progressCount = countProgress(payload);
+    c.marksCount = countMarks(payload);
+    c.activityDayCount = countActivity(payload);
+    c.nonEmpty = hasBusinessData(payload);
+    c.validateOk = true;
+    c.kind = c.nonEmpty ? "valid_nonempty" : "valid_empty";
+    c.reason = c.kind;
+    return c;
+  }
 
-    const snippets = [];
-    Object.entries(bundle.localStorage.items || {}).forEach(function(_ref4) {
-      var key = _ref4[0], value = _ref4[1];
-      snippets.push.apply(snippets, findSnippets(value, key));
-    });
-
+  function buildBundle() {
+    const local = collectLocalStorage();
+    const candidates = collectBackupCandidates().map(classifyCandidate);
     return {
-      foundTargetDates: foundDates,
-      allDates: allDates,
-      dateSources: dateSources,
-      hasJune18: foundDates.includes("2026-06-18"),
-      localStorageKeyCount: bundle.localStorage.keys ? bundle.localStorage.keys.length : 0,
-      localStorageSkippedCount: bundle.localStorage.skippedCount || 0,
-      localStorageTotalBytes: bundle.localStorage.totalBytes || 0,
-      keyCategories: keyCategories,
-      indexedDbCount: bundle.indexedDB.databases ? bundle.indexedDB.databases.length : 0,
-      cacheCount: bundle.cacheStorage.caches ? bundle.cacheStorage.caches.length : 0,
-      likelyPayloads: likelyPayloads,
-      snippets: snippets
+      meta: { generatedAt: new Date().toISOString(), href: location.href, origin: location.origin, userAgent: navigator.userAgent },
+      localStorage: local,
+      candidates
     };
   }
 
-  function renderQuick(analysis) {
-    const items = [];
-    items.push('<div class="pill ' + (analysis.hasJune18 ? "ok" : "danger") + '">2026-06-18：' + (analysis.hasJune18 ? "发现" : "未发现") + '</div>');
-    items.push('<div class="pill">业务 localStorage：' + analysis.localStorageKeyCount + ' 个 key（跳过 ' + analysis.localStorageSkippedCount + ' 个非业务 key），约 ' + analysis.localStorageTotalBytes + ' bytes</div>');
-    items.push('<div class="pill">IndexedDB：' + analysis.indexedDbCount + ' 个库（仅统计，不读记录）</div>');
-    items.push('<div class="pill">Cache Storage：' + analysis.cacheCount + ' 个缓存（仅统计，不读 body）</div>');
-    items.push('<div class="pill">发现日期：' + (analysis.allDates.slice(-8).join("、") || "无") + '</div>');
-    $("quick").innerHTML = items.join("\n");
-  }
-
-  function buildSummary(bundle, analysis) {
+  function buildSummary(bundle) {
+    const stateRaw = localStorage.getItem(HASH_SYNC_STATE_KEY);
+    const syncState = parseJson(stateRaw || "{}", {});
+    const validNonEmpty = bundle.candidates.filter(c => c.kind === "valid_nonempty").length;
     const lines = [];
     lines.push("刷词机本地数据救援诊断摘要");
     lines.push("================================");
-    function fmtLocal(value) {
-      if (!value) return "无";
-      var d = new Date(value);
-      if (Number.isNaN(d.getTime())) return String(value);
-      return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(d);
-    }
-    lines.push("生成时间：" + fmtLocal(bundle.meta.generatedAt) + "（UTC: " + bundle.meta.generatedAt + "）");
+    lines.push("生成时间：" + bundle.meta.generatedAt);
     lines.push("页面地址：" + bundle.meta.href);
-    lines.push("Origin：" + bundle.meta.origin);
     lines.push("User Agent：" + bundle.meta.userAgent);
-    lines.push("🔒 敏感信息已自动脱敏（Token / 密码 / PAT）");
+    lines.push("敏感信息：默认诊断已脱敏，完整备份可能包含 GitHub Token");
+    lines.push("localRecoveryRequired：" + (syncState.localRecoveryRequired === true));
+    lines.push("localDirty：" + (syncState.localDirty === true));
+    lines.push("lastSyncStatus：" + (syncState.lastSyncStatus || "无"));
+    lines.push("lastSyncError：" + (syncState.lastSyncError || "无"));
+    lines.push("业务 localStorage key 数量：" + bundle.localStorage.keys.length);
+    lines.push("跳过非业务 key：" + bundle.localStorage.skippedCount);
+    lines.push("业务 localStorage 大小：" + bundle.localStorage.totalBytes + " bytes");
+    lines.push("备份候选数量：" + bundle.candidates.length);
+    lines.push("可自动恢复的非空备份：" + validNonEmpty);
     lines.push("");
-    lines.push("是否发现 2026-06-18：" + (analysis.hasJune18 ? "是" : "否"));
-    lines.push("命中的目标日期：");
-    Object.keys(analysis.dateSources || {}).forEach(function(date) {
-      lines.push("  " + date + " ← " + (analysis.dateSources[date] || []).join(", "));
-    });
-    if (Object.keys(analysis.dateSources || {}).length === 0) {
-      lines.push("  （无）");
-    }
-    lines.push("所有日期：" + (analysis.allDates.join(", ") || "无"));
-    lines.push("");
-
-    // ── P0: 按类别展示 key ──────────────────────────────────────────────
-    lines.push("localStorage 业务 key 分类统计：");
-    var catLabels = { progress: "[progress 进度]", unknownProgress: "[unknownProgress 重难点进度]", marks: "[marks 标记]", activity: "[activity 活动]", unitStats: "[unitStats 单元统计]", settings: "[settings 设置]", syncState: "[syncState 同步状态]", backup: "[backup 备份]", audit: "[audit 审计]", snapshot: "[snapshot 快照]", other: "[other 其他]" };
-    Object.keys(analysis.keyCategories || {}).sort().forEach(function(cat) {
-      lines.push("  " + (catLabels[cat] || cat) + "：" + analysis.keyCategories[cat].length + " 个 key");
-      analysis.keyCategories[cat].forEach(function(k) {
-        var parsed = bundle.localStorage.parsed[k];
-        var sizeHint = bundle.localStorage.items[k] ? byteSize(bundle.localStorage.items[k]) : 0;
-        var detail = "";
-        if (parsed && typeof parsed === "object") {
-          if (parsed.savedAt) detail += " savedAt=" + parsed.savedAt;
-          if (parsed.reason) detail += " reason=" + parsed.reason;
-        }
-        lines.push("    - " + k + " (" + sizeHint + " bytes" + detail + ")");
-      });
-    });
-    lines.push("跳过的非业务 key：" + (analysis.localStorageSkippedCount || 0) + " 个");
-    lines.push("localStorage 总大小估计：" + analysis.localStorageTotalBytes + " bytes");
-    lines.push("");
-
-    lines.push("IndexedDB 数据库数：" + analysis.indexedDbCount + "（仅统计，不读记录值）");
-    (bundle.indexedDB.databases || []).forEach(function(db) {
-      lines.push("- DB " + db.name + " v" + db.version + ": " + (db.objectStores ? db.objectStores.length : 0) + " stores" + (db.error ? " ERROR: " + db.error : ""));
-      (db.objectStores || []).forEach(function(store) {
-        lines.push("  · " + store.name + ": count=" + store.count + (store.error ? " ERROR: " + store.error : ""));
-      });
-    });
-    if (bundle.indexedDB.error) lines.push("IndexedDB 错误：" + bundle.indexedDB.error);
-    lines.push("");
-
-    lines.push("Cache Storage 缓存数：" + analysis.cacheCount + "（仅统计，不读 body）");
-    (bundle.cacheStorage.caches || []).forEach(function(cache) {
-      lines.push("- Cache " + cache.name + ": " + (cache.entryCount || 0) + " entries");
-    });
-    if (bundle.cacheStorage.error) lines.push("Cache 错误：" + bundle.cacheStorage.error);
-    lines.push("");
-
-    lines.push("疑似同步 payload：");
-    if (!analysis.likelyPayloads.length) {
-      lines.push("无");
-    } else {
-      analysis.likelyPayloads.forEach(function(item) {
-        lines.push("- " + item.source);
-        lines.push(JSON.stringify(item.summary, null, 2));
-      });
-    }
-    return lines.join("\n");
+    lines.push("备份候选：");
+    bundle.candidates.forEach(c => lines.push("- " + c.kind + " | " + c.key + " | savedAt=" + (c.savedAt || "无") + " | hash=" + (c.payloadHash || "无") + " | progress=" + c.progressCount + " marks=" + c.marksCount + " activityDays=" + c.activityDayCount + " | " + (c.reason || "")));
+    return sanitizeText(lines.join("\n"));
   }
 
-  async function runScan() {
-    $("scanBtn").disabled = true;
-    $("downloadBtn").disabled = true;
-    $("copyBtn").disabled = true;
-    $("status").textContent = "正在读取本机存储，请不要关闭页面……";
-    $("status").className = "big-status warn";
-    $("summary").value = "读取中……";
-    $("snippets").textContent = "读取中……";
+  function renderQuick(bundle) {
+    const nonEmpty = bundle.candidates.filter(c => c.kind === "valid_nonempty").length;
+    const broken = bundle.candidates.filter(c => /broken|invalid/.test(c.kind)).length;
+    $("quick").innerHTML = [
+      '<div class="pill ' + (nonEmpty ? 'ok' : 'warn') + '">非空可恢复备份：' + nonEmpty + '</div>',
+      '<div class="pill ' + (broken ? 'warn' : 'ok') + '">异常备份：' + broken + '</div>',
+      '<div class="pill">业务 key：' + bundle.localStorage.keys.length + '</div>',
+      '<div class="pill">大小：' + bundle.localStorage.totalBytes + ' bytes</div>'
+    ].join('');
+  }
+  function renderCandidates(candidates) {
+    if (!candidates.length) { $("candidateTable").textContent = "没有发现候选。"; return; }
+    const rows = candidates.map((c, index) => '<tr>' +
+      '<td><code>' + escapeHtml(c.key) + '</code></td>' +
+      '<td>' + escapeHtml(c.kind) + '</td>' +
+      '<td>' + escapeHtml(c.savedAt || '无') + '</td>' +
+      '<td><code>' + escapeHtml(c.payloadHash || '无') + '</code></td>' +
+      '<td>' + c.parseOk + '</td><td>' + c.validateOk + '</td><td>' + c.nonEmpty + '</td>' +
+      '<td>progress ' + c.progressCount + '<br>marks ' + c.marksCount + '<br>activity ' + c.activityDayCount + '</td>' +
+      '<td>' + escapeHtml(c.reason || '') + '</td>' +
+      '<td><button class="secondary" data-action="raw" data-index="' + index + '">原始</button><button class="secondary" data-action="norm" data-index="' + index + '" ' + (!c.validateOk ? 'disabled' : '') + '>payload</button><button class="danger-btn" data-action="restore" data-index="' + index + '" ' + (!(c.validateOk && c.nonEmpty) ? 'disabled' : '') + '>恢复</button></td>' +
+      '</tr>').join('');
+    $("candidateTable").innerHTML = '<table><thead><tr><th>key</th><th>kind</th><th>savedAt</th><th>payloadHash</th><th>parse</th><th>valid</th><th>nonEmpty</th><th>摘要</th><th>原因</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  function escapeHtml(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch])); }
 
-    const rawBundle = {
-      meta: {
-        generatedAt: new Date().toISOString(),
-        href: location.href,
-        origin: location.origin,
-        pathname: location.pathname,
-        userAgent: navigator.userAgent,
-        language: navigator.language
-      },
-      localStorage: collectLocalStorage(),
-      sessionStorage: collectSessionStorage(),
-      indexedDB: await collectIndexedDB(),
-      cacheStorage: await collectCaches()
-    };
+  function downloadJson(name, obj, sanitizeFirst) {
+    const data = sanitizeFirst ? sanitize(obj) : obj;
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name; document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+  }
 
-    // ── P0: 先全局脱敏，再分析，确保 snippets/quick/summary 不含敏感信息 ──
-    var safeBundle = sanitizeForExport(rawBundle);
-    var analysis = analyzeBundle(safeBundle);
-    safeBundle.analysis = analysis;
-    lastBundle = safeBundle;
-    lastSummaryText = buildSummary(safeBundle, analysis);
-
-    renderQuick(analysis);
-    $("summary").value = lastSummaryText;
-    $("snippets").textContent = analysis.snippets.length ? analysis.snippets.join("\n\n") : "没有发现关键片段。";
-
-    if (analysis.hasJune18) {
-      $("status").textContent = "发现 2026-06-18 痕迹！请立刻下载完整备份 JSON。";
-      $("status").className = "big-status ok";
-    } else {
-      $("status").textContent = "未发现 2026-06-18 字样，但仍建议下载完整备份 JSON 保存。";
-      $("status").className = "big-status danger";
-    }
-
-    $("scanBtn").disabled = false;
-    $("downloadBtn").disabled = false;
+  function runScan() {
+    lastBundle = buildBundle();
+    lastSafeBundle = sanitize(lastBundle);
+    lastCandidates = lastBundle.candidates;
+    lastSummary = buildSummary(lastBundle);
+    renderQuick(lastBundle);
+    renderCandidates(lastCandidates);
+    $("summary").value = lastSummary;
+    $("status").textContent = "扫描完成。默认请下载脱敏诊断包；完整备份只应自己保管。";
+    $("status").className = "big-status ok";
+    $("downloadSafeBtn").disabled = false;
+    $("downloadFullBtn").disabled = false;
     $("copyBtn").disabled = false;
   }
 
-  function downloadBackup() {
-    if (!lastBundle) return;
-    // P0: 再次脱敏后导出
-    const safe = sanitizeForExport(lastBundle);
-    const json = JSON.stringify(safe, null, 2);
-    const blob = new Blob([json], { type: "application/json;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "shua-ci-ji-local-rescue-" + stamp + ".json";
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(function() {
-      URL.revokeObjectURL(url);
-      a.remove();
-    }, 1000);
+  function exportCurrentFullBeforeRestore() {
+    const full = buildBundle();
+    downloadJson("shua-ci-ji-before-restore-full-" + nowStamp() + ".json", full, false);
   }
 
-  async function copySummary() {
-    if (!lastSummaryText) return;
+
+  function safeSet(key, value) {
     try {
-      await navigator.clipboard.writeText(lastSummaryText);
-      $("status").textContent = "诊断摘要已复制。完整数据请仍然下载 JSON 备份。";
-    } catch (error) {
-      $("status").textContent = "复制失败，请手动长按摘要文本复制。";
+      localStorage.setItem(key, value);
+      return true;
+    } catch (err) {
+      const message = err && (err.name === "QuotaExceededError" || String(err).toLowerCase().includes("quota"))
+        ? "本地浏览器存储空间不足，恢复已停止。请先保存完整备份，再清理浏览器空间后重试。"
+        : "写入本地存储失败，恢复已停止：" + (err && err.message ? err.message : String(err));
+      $("status").textContent = message;
+      $("status").className = "big-status danger";
+      throw err;
     }
+  }
+  function restoreCandidate(index) {
+    const c = lastCandidates[index];
+    if (!c || !c.validateOk || !c.nonEmpty || !c.payload) return;
+    alert("将先下载当前完整 localStorage 备份。该文件可能包含 GitHub Token，请自行保存，勿发给陌生人。");
+    exportCurrentFullBeforeRestore();
+    const confirmText = prompt("确认恢复该备份到本机请输入：恢复到本机");
+    if (confirmText !== "恢复到本机") { $("status").textContent = "已取消恢复。"; return; }
+    const p = c.payload;
+    safeSet(SETTINGS_KEY, JSON.stringify(p.settings || {}));
+    Object.keys(p.progress || {}).forEach(bookId => safeSet("progress:" + bookId, JSON.stringify(p.progress[bookId])));
+    Object.keys(p.marks || {}).forEach(bookId => safeSet("marks:" + bookId, JSON.stringify(p.marks[bookId])));
+    Object.keys(p.activity || {}).forEach(bookId => safeSet("activity:" + bookId, JSON.stringify(p.activity[bookId])));
+    Object.keys(p.unitStats || {}).forEach(bookId => safeSet("unit_stats:" + bookId, JSON.stringify(p.unitStats[bookId])));
+    Object.keys(p.unknownProgress || {}).forEach(bookId => {
+      const up = p.unknownProgress[bookId] || {};
+      if (up.book) safeSet("unknown_progress:" + bookId + ":book", JSON.stringify(up.book));
+      Object.keys(up.units || {}).forEach(unit => safeSet("unknown_progress:" + bookId + ":unit:" + unit, JSON.stringify(up.units[unit])));
+    });
+    const stateRaw = parseJson(localStorage.getItem(HASH_SYNC_STATE_KEY) || "{}", {});
+    stateRaw.localDirty = true;
+    stateRaw.dirtySince = new Date().toISOString();
+    stateRaw.lastSyncStatus = "dirty";
+    stateRaw.lastSyncError = "已通过 rescue.html 从本地备份恢复，等待用户回主页面确认同步";
+    stateRaw.localRecoveryRequired = false;
+    stateRaw.localPayloadHash = c.payloadHash;
+    safeSet(HASH_SYNC_STATE_KEY, JSON.stringify(stateRaw));
+    safeSet("vocab_machine_rescue_audit_" + nowStamp(), JSON.stringify({ at: new Date().toISOString(), restoredKey: c.key, payloadHash: c.payloadHash }));
+    $("status").textContent = "已恢复到本机。请回主页面检查数据，再手动确认同步到云端。";
+    $("status").className = "big-status ok";
   }
 
   $("scanBtn").addEventListener("click", runScan);
-  $("downloadBtn").addEventListener("click", downloadBackup);
-  $("copyBtn").addEventListener("click", copySummary);
+  $("downloadSafeBtn").addEventListener("click", () => { if (lastSafeBundle) downloadJson("shua-ci-ji-sanitized-diagnosis-" + nowStamp() + ".json", lastSafeBundle, true); });
+  $("downloadFullBtn").addEventListener("click", () => { if (lastBundle && confirm("完整备份可能包含 GitHub Token。确认只为自己保存，不发给陌生人？")) downloadJson("shua-ci-ji-full-local-backup-" + nowStamp() + ".json", lastBundle, false); });
+  $("copyBtn").addEventListener("click", async () => { if (lastSummary) await navigator.clipboard.writeText(lastSummary); $("status").textContent = "诊断摘要已复制。"; });
+  $("candidateTable").addEventListener("click", function(event) {
+    const btn = event.target.closest("button[data-action]");
+    if (!btn) return;
+    const index = Number(btn.dataset.index);
+    const c = lastCandidates[index];
+    if (!c) return;
+    if (btn.dataset.action === "raw") downloadJson("backup-raw-" + index + "-" + nowStamp() + ".json", { key: c.key, raw: c.raw }, false);
+    if (btn.dataset.action === "norm") downloadJson("backup-normalized-payload-" + index + "-" + nowStamp() + ".json", c.payload, true);
+    if (btn.dataset.action === "restore") restoreCandidate(index);
+  });
 })();
 </script>
 </body>

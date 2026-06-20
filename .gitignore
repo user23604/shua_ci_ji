@@ -1,2 +1,4 @@
 *.md
+*.zip
 旧版文档归档/
+.rescue-script-check.js
