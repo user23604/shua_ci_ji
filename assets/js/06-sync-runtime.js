@@ -120,6 +120,27 @@ function releaseStuckSyncLockIfNeeded() {
   return true;
 }
 
+// ── P0.8: PATCH 事务锁（仅页面内存级，不替代 cross-tab lock）─────────────
+// 仅用于同一页面会话内防止并发 PATCH。
+// 多设备冲突仍依赖 remote hash / verify / merge 处理。
+var activePatchTransaction = null;
+
+function hasActivePatchTransaction() {
+  return Boolean(activePatchTransaction);
+}
+
+function beginPatchTransaction(runId, reason) {
+  if (activePatchTransaction) return false;
+  activePatchTransaction = { runId: runId, reason: reason || "", startedAt: Date.now() };
+  return true;
+}
+
+function endPatchTransaction(runId) {
+  if (!activePatchTransaction) return;
+  if (String(activePatchTransaction.runId) !== String(runId)) return;
+  activePatchTransaction = null;
+}
+
 // ── P0.6: 同步失败短横幅 ─────────────────────────────────────────────────
 
 function backoffDelayForFailure(count) {

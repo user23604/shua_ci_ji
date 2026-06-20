@@ -1,6 +1,6 @@
 {
-  "appVersion": "2026-06-20-p4-modular5",
-  "buildId": "2026-06-20-p4-modular5",
+  "appVersion": "2026-06-20-p4-modular6",
+  "buildId": "2026-06-20-p4-modular6",
   "deployedAt": "2026-06-20T00:00:00+08:00",
-  "note": "LOCAL_CHANGED_DURING_VERIFY silent + sync light fix + scroll fix + audit log"
+  "note": "sync transaction atomicity: await + patch lock + session remote check + blocking error"
 }

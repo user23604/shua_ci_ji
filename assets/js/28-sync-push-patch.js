@@ -14,9 +14,9 @@ async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, re
       recordHashSyncFailure("GitHub Gist 并发更新冲突，已重试" + MAX_PATCH_409_RETRIES + "次仍失败。本地数据已保留，请稍后重新同步。", { errorKind: "patch_conflict_409", banner: true, dialog: true, runId, httpStatus: 409 });
       return false;
     }
-    appendAuditEvent({ type: "sync:patch_retry", message: "409 retry " + (patch409Retries + 1) + "/" + MAX_PATCH_409_RETRIES, httpStatus: 409 });
+    appendAuditEvent({ type: "sync:patch_retry", message: "session=" + TAB_ID + " 409 retry " + (patch409Retries + 1) + "/" + MAX_PATCH_409_RETRIES, httpStatus: 409 });
     await delay(1200);
-    return syncBranchPushLocal({ remote, local: currentSyncFacts({ persistHash: true }), keepalive, reason: "patch_409_retry", runId, remoteHashAtDecision, rebaseCount, patch409Retries: patch409Retries + 1 });
+    return await syncBranchPushLocal({ remote, local: currentSyncFacts({ persistHash: true }), keepalive, reason: "patch_409_retry", runId, remoteHashAtDecision, rebaseCount, patch409Retries: patch409Retries + 1 });
   }
   if (result.preflightChanged) {
     if (rebaseCount >= MAX_PREFLIGHT_REBASE) {
@@ -24,12 +24,12 @@ async function syncBranchPushLocal({ remote, local, keepalive, reason, runId, re
       return false;
     }
     const latestRemote = result.remote;
-    return syncBranchMerge({ remote: latestRemote, remotePayload: currentRemotePayload(latestRemote), local: currentSyncFacts({ persistHash: true }), keepalive, reason: "preflight_rebase", runId, rebaseCount: rebaseCount + 1 });
+    return await syncBranchMerge({ remote: latestRemote, remotePayload: currentRemotePayload(latestRemote), local: currentSyncFacts({ persistHash: true }), keepalive, reason: result.verifyMismatch ? "verify_mismatch_rebase" : "preflight_rebase", runId, rebaseCount: rebaseCount + 1 });
   }
   if (!result.ok) return false;
   var finalResult = finalizeVerifiedPatch({ uploadedPayload: payload, uploadedHash, verifiedRemote: result.remote, runId });
   if (finalResult && finalResult.localChangedDuringVerify) {
-    return false;
+    return finalResult;
   }
   return finalResult;
 }
@@ -63,9 +63,9 @@ async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason
       recordHashSyncFailure("GitHub Gist 并发更新冲突，已重试" + MAX_PATCH_409_RETRIES + "次仍失败。本地数据已保留，请稍后重新同步。", { errorKind: "patch_conflict_409", banner: true, dialog: true, runId, httpStatus: 409 });
       return false;
     }
-    appendAuditEvent({ type: "sync:patch_retry", message: "409 retry " + (patch409Retries + 1) + "/" + MAX_PATCH_409_RETRIES, httpStatus: 409 });
+    appendAuditEvent({ type: "sync:patch_retry", message: "session=" + TAB_ID + " 409 retry " + (patch409Retries + 1) + "/" + MAX_PATCH_409_RETRIES, httpStatus: 409 });
     await delay(1200);
-    return syncBranchMerge({ remote, remotePayload, local: currentSyncFacts({ persistHash: true }), keepalive, reason: "patch_409_retry", runId, rebaseCount, patch409Retries: patch409Retries + 1 });
+    return await syncBranchMerge({ remote, remotePayload, local: currentSyncFacts({ persistHash: true }), keepalive, reason: "patch_409_retry", runId, rebaseCount, patch409Retries: patch409Retries + 1 });
   }
   if (result.preflightChanged) {
     if (rebaseCount >= MAX_PREFLIGHT_REBASE) {
@@ -73,12 +73,12 @@ async function syncBranchMerge({ remote, remotePayload, local, keepalive, reason
       return false;
     }
     const latestRemote = result.remote;
-    return syncBranchMerge({ remote: latestRemote, remotePayload: currentRemotePayload(latestRemote), local: currentSyncFacts({ persistHash: true }), keepalive, reason: "preflight_rebase", runId, rebaseCount: rebaseCount + 1 });
+    return await syncBranchMerge({ remote: latestRemote, remotePayload: currentRemotePayload(latestRemote), local: currentSyncFacts({ persistHash: true }), keepalive, reason: result.verifyMismatch ? "verify_mismatch_rebase" : "preflight_rebase", runId, rebaseCount: rebaseCount + 1 });
   }
   if (!result.ok) return false;
   var finalResult = finalizeVerifiedPatch({ uploadedPayload: mergedPayload, uploadedHash: mergedHash, verifiedRemote: result.remote, runId });
   if (finalResult && finalResult.localChangedDuringVerify) {
-    return false;
+    return finalResult;
   }
   return finalResult;
 }
@@ -106,110 +106,143 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
     return { ok: false };
   }
 
-  markSyncProgress("preflight:get:start", runId);
-  let latestRemote;
+  // P0.8: PATCH 事务锁 — 包住 preflight GET + PATCH + verify GET 全过程
+  if (!beginPatchTransaction(runId, "patchBusinessPayloadToGist")) {
+    appendAuditEvent({ type: "sync:blocked_patch_in_flight", message: "session=" + TAB_ID + " runId=" + runId });
+    return { ok: false, patchInFlight: true, retryable: true };
+  }
+
   try {
-    latestRemote = await fetchGistSyncPayload();
-  } catch (error) {
-    recordHashSyncFailure("PATCH 前 preflight GET 失败：" + (error && error.message || "unknown"), { errorKind: "remote_get_failed", banner: true, dialog: true, runId });
-    return { ok: false };
-  }
-  markSyncProgress("preflight:get:done", runId);
-  if (isStaleSyncRun(runId)) return { ok: false };
-  if (latestRemote.kind === "invalid" || latestRemote.kind === "v2_unknown_ops") {
-    recordHashSyncFailure("PATCH 前发现云端 sync.json 无法安全解析，已停止上传", { errorKind: latestRemote.kind, banner: true, dialog: true, runId, technical: latestRemote.reason || "" });
-    return { ok: false };
-  }
-  const latestRemoteHash = currentRemoteHash(latestRemote);
-  if (String(latestRemoteHash || "") !== String(remoteHashAtDecision || "")) {
-    return { ok: false, preflightChanged: true, remote: latestRemote };
-  }
-
-  const envelope = buildSyncEnvelope(normalized);
-  const payloadJson = JSON.stringify(envelope, null, 2);
-  const today = localDateKey();
-  const files = {};
-  files[SYNC_FILE_NAME] = { content: payloadJson };
-  files[SYNC_BACKUP_FILE_NAME] = { content: (remote && remote.rawContent) || "{}" };
-  files[SYNC_CLOUD_BACKUP_PREFIX + today + ".json"] = { content: payloadJson };
-
-  let response;
-  try {
-    markSyncProgress("patch:start", runId);
-    appendAuditEvent({ type: "sync:patch_sent", message: "runId=" + runId + " hash=" + String(businessPayloadHash(normalized)).slice(0, 8) });
-    response = await fetchWithTimeout("https://api.github.com/gists/" + encodeURIComponent(state.cloud.gistId), {
-      method: "PATCH",
-      keepalive,
-      headers: {
-        Authorization: "Bearer " + state.cloud.token,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ files })
-    }, GITHUB_PATCH_TIMEOUT_MS);
-    markSyncProgress("patch:done", runId);
-  } catch (error) {
-    recordHashSyncFailure("网络请求失败：" + (error && error.message || "unknown"), { errorKind: "patch_failed", banner: true, dialog: true, runId });
-    return { ok: false };
-  }
-
-  if (!response.ok) {
-    // 409 Conflict: GitHub Gist 并发/短时间连续更新冲突，可重试
-    if (response.status === 409) {
-      appendAuditEvent({ type: "sync:patch_409", message: "HTTP 409", httpStatus: 409 });
-      await delay(1000 + Math.floor(Math.random() * 500));
-      var recheckRemote;
-      try {
-        recheckRemote = await fetchGistSyncPayload();
-      } catch (_) {
-        recheckRemote = null;
-      }
-      if (recheckRemote && isRemoteValidKind(recheckRemote.kind)) {
-        var recheckHash = currentRemoteHash(recheckRemote);
-        var uploadedHash409 = businessPayloadHash(normalized);
-        // 虽然 PATCH 返回 409，但云端内容已是本轮内容
-        if (recheckHash === uploadedHash409) {
-          return { ok: true, remote: recheckRemote, uploadedHash: uploadedHash409 };
-        }
-        // 远端已变 → 走 rebase
-        if (String(recheckHash || "") !== String(remoteHashAtDecision || "")) {
-          return { ok: false, preflightChanged: true, remote: recheckRemote };
-        }
-      }
-      // 远端没变但 GitHub 仍拒绝 → 上层重试
-      return { ok: false, retryableConflict: true, httpStatus: 409 };
+    markSyncProgress("preflight:get:start", runId);
+    let latestRemote;
+    try {
+      latestRemote = await fetchGistSyncPayload();
+      markSessionRemoteChecked(latestRemote, runId, "patch.preflight");
+    } catch (error) {
+      recordHashSyncFailure("PATCH 前 preflight GET 失败：" + (error && error.message || "unknown"), { errorKind: "remote_get_failed", banner: true, dialog: true, runId });
+      return { ok: false };
     }
-    // 422: 请求内容/格式错误，不可重试
-    var is422 = response.status === 422;
-    const classified = await classifyGithubResponseError(response, "PATCH sync.json");
-    recordHashSyncFailure(classified.message, { errorKind: is422 ? "patch_failed_422" : "patch_failed_network", banner: true, dialog: true, runId, httpStatus: response.status, technical: classified.technical });
-    return { ok: false, fatal: true, httpStatus: response.status, message: classified.message, technical: classified.technical };
-  }
+    markSyncProgress("preflight:get:done", runId);
+    if (isStaleSyncRun(runId)) return { ok: false };
+    if (latestRemote.kind === "invalid" || latestRemote.kind === "v2_unknown_ops") {
+      recordHashSyncFailure("PATCH 前发现云端 sync.json 无法安全解析，已停止上传", { errorKind: latestRemote.kind, banner: true, dialog: true, runId, technical: latestRemote.reason || "" });
+      return { ok: false };
+    }
+    const latestRemoteHash = currentRemoteHash(latestRemote);
+    if (String(latestRemoteHash || "") !== String(remoteHashAtDecision || "")) {
+      return { ok: false, preflightChanged: true, remote: latestRemote };
+    }
 
-  const uploadedHash = businessPayloadHash(normalized);
-  appendAuditEvent({ type: "sync:patch_success", message: "runId=" + runId + " uploadedHash=" + String(uploadedHash).slice(0, 8) });
-  let verified;
-  try {
-    markSyncProgress("verify:get:start", runId);
-    appendAuditEvent({ type: "sync:verify_start", message: "runId=" + runId });
-    verified = await fetchGistSyncPayload();
-    markSyncProgress("verify:get:done", runId);
-    appendAuditEvent({ type: "sync:verify_done", message: "runId=" + runId + " verifiedHash=" + String(currentRemoteHash(verified) || "").slice(0, 8) });
-  } catch (error) {
-    recordHashSyncFailure("PATCH 成功但 GET 校验失败：" + (error && error.message || "unknown"), { errorKind: "verify_failed", banner: true, dialog: true, runId });
-    return { ok: false };
-  }
+    const envelope = buildSyncEnvelope(normalized);
+    const payloadJson = JSON.stringify(envelope, null, 2);
+    const today = localDateKey();
+    const files = {};
+    files[SYNC_FILE_NAME] = { content: payloadJson };
+    files[SYNC_BACKUP_FILE_NAME] = { content: (remote && remote.rawContent) || "{}" };
+    files[SYNC_CLOUD_BACKUP_PREFIX + today + ".json"] = { content: payloadJson };
 
-  if (!isRemoteValidKind(verified.kind)) {
-    recordHashSyncFailure("PATCH 成功但云端 sync.json 无法通过校验", { errorKind: "verify_failed", banner: true, dialog: true, runId, technical: verified.reason || verified.kind || "" });
-    return { ok: false };
+    let response;
+    try {
+      markSyncProgress("patch:start", runId);
+      appendAuditEvent({ type: "sync:patch_sent", message: "session=" + TAB_ID + " runId=" + runId + " hash=" + String(businessPayloadHash(normalized)).slice(0, 8) });
+      response = await fetchWithTimeout("https://api.github.com/gists/" + encodeURIComponent(state.cloud.gistId), {
+        method: "PATCH",
+        keepalive,
+        headers: {
+          Authorization: "Bearer " + state.cloud.token,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ files })
+      }, GITHUB_PATCH_TIMEOUT_MS);
+      markSyncProgress("patch:done", runId);
+    } catch (error) {
+      recordHashSyncFailure("网络请求失败：" + (error && error.message || "unknown"), { errorKind: "patch_failed", banner: true, dialog: true, runId });
+      return { ok: false };
+    }
+
+    if (!response.ok) {
+      // 409 Conflict: GitHub Gist 并发/短时间连续更新冲突，可重试
+      if (response.status === 409) {
+        appendAuditEvent({ type: "sync:patch_409", message: "session=" + TAB_ID + " HTTP 409", httpStatus: 409 });
+        await delay(1000 + Math.floor(Math.random() * 500));
+        var recheckRemote;
+        try {
+          recheckRemote = await fetchGistSyncPayload();
+        } catch (_) {
+          recheckRemote = null;
+        }
+        if (recheckRemote && isRemoteValidKind(recheckRemote.kind)) {
+          var recheckHash = currentRemoteHash(recheckRemote);
+          var uploadedHash409 = businessPayloadHash(normalized);
+          // 虽然 PATCH 返回 409，但云端内容已是本轮内容
+          if (recheckHash === uploadedHash409) {
+            return { ok: true, remote: recheckRemote, uploadedHash: uploadedHash409 };
+          }
+          // 远端已变 → 走 rebase
+          if (String(recheckHash || "") !== String(remoteHashAtDecision || "")) {
+            return { ok: false, preflightChanged: true, remote: recheckRemote };
+          }
+        }
+        // 远端没变但 GitHub 仍拒绝 → 上层重试
+        return { ok: false, retryableConflict: true, httpStatus: 409 };
+      }
+      // 422: 请求内容/格式错误，不可重试
+      var is422 = response.status === 422;
+      const classified = await classifyGithubResponseError(response, "PATCH sync.json");
+      recordHashSyncFailure(classified.message, { errorKind: is422 ? "patch_failed_422" : "patch_failed_network", banner: true, dialog: true, runId, httpStatus: response.status, technical: classified.technical });
+      return { ok: false, fatal: true, httpStatus: response.status, message: classified.message, technical: classified.technical };
+    }
+
+    const uploadedHash = businessPayloadHash(normalized);
+    appendAuditEvent({ type: "sync:patch_success", message: "session=" + TAB_ID + " runId=" + runId + " uploadedHash=" + String(uploadedHash).slice(0, 8) });
+    let verified;
+    try {
+      markSyncProgress("verify:get:start", runId);
+      appendAuditEvent({ type: "sync:verify_start", message: "session=" + TAB_ID + " runId=" + runId });
+      verified = await fetchGistSyncPayload();
+      markSessionRemoteChecked(verified, runId, "patch.verify");
+      markSyncProgress("verify:get:done", runId);
+      appendAuditEvent({ type: "sync:verify_done", message: "session=" + TAB_ID + " runId=" + runId + " verifiedHash=" + String(currentRemoteHash(verified) || "").slice(0, 8) });
+    } catch (error) {
+      recordHashSyncFailure("PATCH 成功但 GET 校验失败：" + (error && error.message || "unknown"), { errorKind: "verify_failed", banner: true, dialog: true, runId });
+      return { ok: false };
+    }
+
+    if (!isRemoteValidKind(verified.kind)) {
+      recordHashSyncFailure("PATCH 成功但云端 sync.json 无法通过校验", { errorKind: "verify_failed", banner: true, dialog: true, runId, technical: verified.reason || verified.kind || "" });
+      return { ok: false };
+    }
+    const verifiedHash = currentRemoteHash(verified);
+    if (verifiedHash !== uploadedHash) {
+      // P0.8: verify mismatch → recheck，不立即 fatal
+      appendAuditEvent({ type: "sync:verify_mismatch", message: "session=" + TAB_ID + " runId=" + runId + " expected=" + String(uploadedHash).slice(0, 8) + " actual=" + String(verifiedHash).slice(0, 8) });
+      await delay(1200);
+      var recheck;
+      try {
+        recheck = await fetchGistSyncPayload();
+        markSessionRemoteChecked(recheck, runId, "patch.verify_mismatch_recheck");
+      } catch (_) {
+        recheck = null;
+      }
+      if (recheck) {
+        var recheckHash = currentRemoteHash(recheck);
+        if (recheckHash === uploadedHash) {
+          appendAuditEvent({ type: "sync:verify_recheck_matched", message: "session=" + TAB_ID + " runId=" + runId + " hash=" + String(uploadedHash).slice(0, 8) });
+          return { ok: true, remote: recheck, uploadedHash };
+        }
+        if (isRemoteValidKind(recheck.kind)) {
+          appendAuditEvent({ type: "sync:verify_recheck_remote_changed", message: "session=" + TAB_ID + " runId=" + runId + " expected=" + String(uploadedHash).slice(0, 8) + " actual=" + String(recheckHash).slice(0, 8) });
+          return { ok: false, preflightChanged: true, remote: recheck, verifyMismatch: true };
+        }
+      }
+      recordHashSyncFailure("PATCH 成功但云端内容 hash 不匹配", { errorKind: "verify_failed", banner: true, dialog: true, runId, technical: "expected=" + uploadedHash + ", actual=" + (recheck && currentRemoteHash(recheck) || String(verifiedHash)) });
+      return { ok: false, verifyFailed: true };
+    }
+    return { ok: true, remote: verified, uploadedHash };
+  } finally {
+    endPatchTransaction(runId);
   }
-  const verifiedHash = currentRemoteHash(verified);
-  if (verifiedHash !== uploadedHash) {
-    recordHashSyncFailure("PATCH 成功但云端内容 hash 不匹配", { errorKind: "verify_failed", banner: true, dialog: true, runId, technical: "expected=" + uploadedHash + ", actual=" + verifiedHash });
-    return { ok: false };
-  }
-  return { ok: true, remote: verified, uploadedHash };
 }
 
 
@@ -224,6 +257,7 @@ function finalizeVerifiedPatch({ uploadedPayload, uploadedHash, verifiedRemote, 
     // 云端已确认 uploadedHash
     state.syncHashState.baseRemoteHash = uploadedHash;
     state.syncHashState.lastSuccessfulPushAt = now;
+    state.syncHashState.lastSyncedPayloadHash = uploadedHash;
 
     // 当前本地又变，保持 dirty
     state.syncHashState.localPayloadHash = current.hash;
@@ -242,7 +276,8 @@ function finalizeVerifiedPatch({ uploadedPayload, uploadedHash, verifiedRemote, 
     appendAuditEvent({
       type: "sync:local_changed_during_verify",
       message:
-        "runId=" + runId +
+        "session=" + TAB_ID +
+        " runId=" + runId +
         " uploadedHash=" + String(uploadedHash || "").slice(0, 8) +
         " currentHash=" + String(current.hash || "").slice(0, 8)
     });
@@ -252,7 +287,7 @@ function finalizeVerifiedPatch({ uploadedPayload, uploadedHash, verifiedRemote, 
 
     return { ok: false, localChangedDuringVerify: true };
   }
-  markHashCleanFromRemote(verifiedRemote, uploadedHash, "cloud_saved", { runId });
+  markHashCleanFromRemote(verifiedRemote, uploadedHash, "cloud_saved", { runId: runId, remoteVerified: true });
   return true;
 }
 

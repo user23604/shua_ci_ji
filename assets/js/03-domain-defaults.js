@@ -159,7 +159,12 @@ const DEFAULT_HASH_SYNC_STATE = {
   consecutiveSyncFailures: 0,
   nextRetryAt: "",
   lastBackupError: "",
-  localRecoveryRequired: false
+  localRecoveryRequired: false,
+  lastBlockingErrorAt: "",
+  lastBlockingErrorCode: "",
+  lastBlockingErrorText: "",
+  lastBlockingErrorClearedAt: "",
+  lastSyncedPayloadHash: ""
 };
 
 

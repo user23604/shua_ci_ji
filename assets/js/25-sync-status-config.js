@@ -36,6 +36,22 @@ function buildStatusDetail(status, baseMessage, opsCount) {
 }
 
 
+// ── P0.8: green confirmation gate ────────────────────────────────────
+
+function canShowConfirmedCloudState(facts, syncState) {
+  syncState = ensureHashSyncState(syncState || state.syncHashState);
+  if (state.isSyncing) return false;
+  if (!state.sessionRemoteCheckDone) return false;
+  if (!hasCurrentSessionRemoteConfirmation(facts)) return false;
+  if (facts.effectiveDirty) return false;
+  if (syncState.localDirty) return false;
+  if (!syncState.baseRemoteHash) return false;
+  if (String(facts.localPayloadHash || "") !== String(syncState.baseRemoteHash || "")) return false;
+  if (hasUnclearedBlockingSyncError(syncState)) return false;
+  if (syncState.lastSyncedPayloadHash && String(syncState.lastSyncedPayloadHash) !== String(facts.localPayloadHash || "")) return false;
+  return true;
+}
+
 function computeSyncStatus() {
   const syncState = ensureHashSyncState(state.syncHashState);
 
@@ -63,6 +79,11 @@ function computeSyncStatus() {
   const cloud = validateSavedCloudConfig(state.cloud);
   if (!cloud.ok) {
     return { status: "invalid_config", detail: cloud.errors.join("；") };
+  }
+
+  // P0.8: 没有本会话 remote_checked 之前不能绿色
+  if (!state.sessionRemoteCheckDone && cloud.ok) {
+    return { status: "syncing", detail: "正在检查云端" };
   }
 
   if (state.isSyncing) return { status: "syncing", detail: "正在同步" };
@@ -96,19 +117,17 @@ function computeSyncStatus() {
 
   // P0: cloud_saved 只能由 finalizeVerifiedPatch() 写入。
   // 这里的检查只是读取已写入的状态，不自算 hash 是否匹配。
-  if (syncState.lastSyncStatus === "cloud_saved" && syncState.localPayloadHash && syncState.localPayloadHash === syncState.baseRemoteHash) {
+  if (syncState.lastSyncStatus === "cloud_saved" && canShowConfirmedCloudState(facts, syncState)) {
     return { status: "cloud_saved", detail: syncState.lastSuccessfulPushAt || "" };
   }
 
-  if (syncState.lastSyncStatus === "cloud_loaded") {
+  if (syncState.lastSyncStatus === "cloud_loaded" && canShowConfirmedCloudState(facts, syncState)) {
     return { status: "cloud_loaded", detail: syncState.lastSuccessfulPullAt || "已从云端更新" };
   }
 
   // P0.7 clean fallback: hash 一致 + 有成功记录 → cloud_saved/cloud_loaded
   if (
-    !facts.effectiveDirty &&
-    Boolean(syncState.baseRemoteHash) &&
-    facts.localPayloadHash === syncState.baseRemoteHash &&
+    canShowConfirmedCloudState(facts, syncState) &&
     (syncState.lastSuccessfulPushAt || syncState.lastSuccessfulPullAt)
   ) {
     var pushAt = syncState.lastSuccessfulPushAt || "";
@@ -228,6 +247,11 @@ function shouldSkipSyncForBackoff(bypassBackoff) {
 
 
 async function bootstrapSyncAfterInit(reason = "init") {
+  // P0.8: 防重入 — 仅限制 init，不限制 config_saved/manual/local_change
+  if (reason === "init") {
+    if (state.initialSyncStarted) return;
+    state.initialSyncStarted = true;
+  }
   state.syncHashState = ensureHashSyncState(state.syncHashState);
   const localAtStart = refreshLocalPayloadHash({ persist: true });
   writeHashBackup("startup", localAtStart.payload, reason);

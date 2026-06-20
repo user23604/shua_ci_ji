@@ -73,7 +73,13 @@ const state = {
   cloudConfigDraft: { token: "", gistId: "" },
   autoPushDebounceTimer: null,
   periodicPushTimer: null,
-  consecutivePushFailures: 0
+  consecutivePushFailures: 0,
+  sessionRemoteCheckDone: false,
+  sessionRemoteCheckAt: "",
+  latestRemoteHashSeen: "",
+  latestRemoteKindSeen: "",
+  latestRemoteCheckRunId: 0,
+  initialSyncStarted: false
 };
 
 

@@ -198,7 +198,12 @@ function ensureHashSyncState(sourceState = state.syncHashState) {
     consecutiveSyncFailures: Math.max(0, Number(source.consecutiveSyncFailures) || 0),
     nextRetryAt: typeof source.nextRetryAt === "string" ? source.nextRetryAt : "",
     lastBackupError: typeof source.lastBackupError === "string" ? source.lastBackupError : "",
-    localRecoveryRequired: source.localRecoveryRequired === true
+    localRecoveryRequired: source.localRecoveryRequired === true,
+    lastBlockingErrorAt: typeof source.lastBlockingErrorAt === "string" ? source.lastBlockingErrorAt : "",
+    lastBlockingErrorCode: typeof source.lastBlockingErrorCode === "string" ? source.lastBlockingErrorCode : "",
+    lastBlockingErrorText: typeof source.lastBlockingErrorText === "string" ? source.lastBlockingErrorText : "",
+    lastBlockingErrorClearedAt: typeof source.lastBlockingErrorClearedAt === "string" ? source.lastBlockingErrorClearedAt : "",
+    lastSyncedPayloadHash: typeof source.lastSyncedPayloadHash === "string" ? source.lastSyncedPayloadHash : ""
   };
 }
 
@@ -448,6 +453,41 @@ function clearHashSyncError() {
 }
 
 
+// ── P0.8 session remote check ─────────────────────────────────────────
+
+function markSessionRemoteChecked(remote, runId, source) {
+  if (!remote || remote.kind === "error") return;
+  var remoteHash = currentRemoteHash(remote);
+  state.sessionRemoteCheckDone = true;
+  state.sessionRemoteCheckAt = beijingISOString();
+  state.latestRemoteHashSeen = remoteHash || "";
+  state.latestRemoteKindSeen = (remote && remote.kind) || "";
+  state.latestRemoteCheckRunId = runId || 0;
+  appendAuditEvent({
+    type: "sync:remote_checked",
+    message: "session=" + TAB_ID + " runId=" + (runId || "") + " source=" + String(source || "") + " kind=" + String(state.latestRemoteKindSeen || "") + " hash=" + String(state.latestRemoteHashSeen || "").slice(0, 8)
+  });
+}
+
+function hasCurrentSessionRemoteConfirmation(facts) {
+  if (!state.sessionRemoteCheckDone) return false;
+  if (!state.latestRemoteHashSeen) return false;
+  return String(state.latestRemoteHashSeen) === String(facts.localPayloadHash || "");
+}
+
+// ── P0.8 blocking error ───────────────────────────────────────────────
+
+function isBlockingSyncErrorKind(errorKind) {
+  return ["verify_failed","remote_invalid","remote_v2_unknown_ops","patch_failed_422","patch_conflict_409","preflight_remote_changed","merge_failed","local_apply_verify_failed","apply_failed"].indexOf(errorKind || "") !== -1;
+}
+
+function hasUnclearedBlockingSyncError(syncState) {
+  syncState = ensureHashSyncState(syncState || state.syncHashState);
+  if (!syncState.lastBlockingErrorAt) return false;
+  if (!syncState.lastBlockingErrorClearedAt) return true;
+  return Date.parse(syncState.lastBlockingErrorAt) > Date.parse(syncState.lastBlockingErrorClearedAt);
+}
+
 // ── P0.7 clean 状态判断（watchdog/网络错误不覆盖已确认的 cloud_saved/cloud_loaded）──
 
 function isCleanConfirmedSyncState(facts, syncState) {
@@ -501,6 +541,12 @@ function recordHashSyncFailure(message, options) {
     syncState.lastSyncStatus = options.status || "error";
     syncState.lastSyncError = text;
     syncState.lastSyncErrorAt = beijingISOString();
+    // P0.8: 写 blocking error
+    if (isBlockingSyncErrorKind(options.errorKind)) {
+      syncState.lastBlockingErrorAt = beijingISOString();
+      syncState.lastBlockingErrorCode = options.errorKind || "SYNC_FAILED";
+      syncState.lastBlockingErrorText = text;
+    }
   }
   syncState.localPayloadHash = facts.localPayloadHash;
   syncState.consecutiveSyncFailures += 1;
@@ -511,7 +557,7 @@ function recordHashSyncFailure(message, options) {
   state.syncMeta.lastSyncErrorMessage = text;
   persistSyncMeta();
   persistHashSyncState();
-  appendAuditEvent({ type: "sync:failed", message: text, httpStatus: options.httpStatus || 0 });
+  appendAuditEvent({ type: "sync:failed", message: "session=" + TAB_ID + " " + text, httpStatus: options.httpStatus || 0 });
   refreshVisibleSyncDiagnostics();
   if (options.banner === true) showSyncFailureBanner("同步失败", text, { runId: options.runId });
   if (options.dialog === true || options.banner === true) {

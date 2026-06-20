@@ -45,6 +45,15 @@ function markHashClean() {
 
 // ── P0.1 syncTick ─────────────────────────────────────────────────────
 
+function summarizeSyncResult(result) {
+  if (!result) return "false";
+  if (result === true) return "true";
+  if (result.localChangedDuringVerify) return "deferred_dirty";
+  if (result.verifyFailed) return "verify_failed";
+  if (result.preflightChanged) return "preflight_changed";
+  if (result.ok) return "ok";
+  return "not_ok";
+}
 
 function makeSyncRiskProblemFields(remote, facts, options = {}) {
   const currentFacts = facts && facts.payload ? facts : currentSyncFacts({ persistHash: false });
@@ -169,6 +178,13 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   }
   if (typeof document !== "undefined" && document.hidden) return false;
 
+  // P0.8: PATCH 事务锁 — 同一页面会话内不并发 PATCH
+  if (hasActivePatchTransaction()) {
+    appendAuditEvent({ type: "sync:skip_patch_in_flight", message: "session=" + TAB_ID + " reason=" + reason });
+    scheduleSyncSoon("patch_in_flight_reschedule", 1500);
+    return false;
+  }
+
   const gate = savedCloudConfigGate();
   if (!gate.ok) {
     if (gate.configured) {
@@ -181,7 +197,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   var isManualSync = reason === "manual" || reason === "manual_retry" || reason === "manual_push" || reason === "manual_pull" || reason === "ignore_empty_backup" || reason === "config_saved" || reason === "remote_restore_merge";
   if (!isManualSync && state.lastSyncFinishedAt && Date.now() - state.lastSyncFinishedAt < SYNC_MIN_INTERVAL_MS) {
     var syncStateForSkip = ensureHashSyncState(state.syncHashState);
-    appendAuditEvent({ type: "sync:skip_min_interval", message: "reason=" + reason + " remaining=" + (SYNC_MIN_INTERVAL_MS - (Date.now() - state.lastSyncFinishedAt)) });
+    appendAuditEvent({ type: "sync:skip_min_interval", message: "session=" + TAB_ID + " reason=" + reason + " remaining=" + (SYNC_MIN_INTERVAL_MS - (Date.now() - state.lastSyncFinishedAt)) });
     if (syncStateForSkip.localDirty) {
       var remainingMs = SYNC_MIN_INTERVAL_MS - (Date.now() - state.lastSyncFinishedAt) + 300;
       scheduleSyncSoon("min_interval_reschedule", remainingMs);
@@ -203,11 +219,14 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   state.syncStartedAt = Date.now();
   state.syncLastProgressAt = state.syncStartedAt;
   state.syncLastProgressStage = "sync:start";
-  appendAuditEvent({ type: "sync:start", message: "reason=" + reason + " runId=" + runId });
+  appendAuditEvent({ type: "sync:start", message: "session=" + TAB_ID + " reason=" + reason + " runId=" + runId });
   const localRevisionAtStart = state.localBusinessRevision || 0;
   const localHashAtStart = businessPayloadHash(collectSyncPayload());
   setSyncStatus("syncing");
   markSyncProgress("sync:start", runId);
+
+  var syncResult = { ok: false, unknown: true };
+  var startedAtMs = Date.now();
 
   try {
     state.syncMeta = ensureSyncMeta(state.syncMeta);
@@ -216,6 +235,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
 
     markSyncProgress("remote:get:start", runId);
     const remote = await fetchGistSyncPayload();
+    markSessionRemoteChecked(remote, runId, "syncTick.remote_get");
     markSyncProgress("remote:get:done", runId);
     if (isStaleSyncRun(runId)) return false;
 
@@ -278,7 +298,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     const readOnly = remote.readOnlyAuthFallback === true;
 
     if (remoteEmpty && localHasBusinessData) {
-      appendAuditEvent({ type: "sync:decision", message: "branch=empty_cloud_protect_local remoteKind=" + (remote && remote.kind) + " readOnly=" + readOnly + " runId=" + runId });
+      appendAuditEvent({ type: "sync:decision", message: "session=" + TAB_ID + " branch=empty_cloud_protect_local remoteKind=" + (remote && remote.kind) + " readOnly=" + readOnly + " runId=" + runId });
       const message = readOnly
         ? "只读模式：云端为空，但本地有学习数据。已阻止云端空数据覆盖本地。请更换可写 PAT 后重新同步。"
         : "云端 sync.json 是空数据，但本机仍有学习记录。已阻止云端空数据覆盖本地。";
@@ -298,7 +318,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
       });
 
       if (!readOnly) {
-        return syncBranchPushLocal({
+        syncResult = await syncBranchPushLocal({
           remote,
           local: facts,
           keepalive,
@@ -306,6 +326,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
           runId,
           remoteHashAtDecision: remoteHash
         });
+        return syncResult;
       }
 
       markReadOnlyDirtyState(message, facts, { runId });
@@ -328,13 +349,14 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
       }
 
       if (remoteHasData) {
-        appendAuditEvent({ type: "sync:decision", message: "branch=pull_remote remoteKind=" + (remote && remote.kind) + " runId=" + runId });
+        appendAuditEvent({ type: "sync:decision", message: "session=" + TAB_ID + " branch=pull_remote remoteKind=" + (remote && remote.kind) + " runId=" + runId });
         if (hasUserLocalChangeSinceSyncStart(localRevisionAtStart, localHashAtStart, runId)) {
           const recheck = currentSyncFacts({ persistHash: true });
           if (remote.readOnlyAuthFallback) {
             return syncBranchReadOnlyMergeLocal({ remote, remotePayload, local: recheck, reason: "local_changed_before_pull_read_only", runId });
           }
-          return syncBranchMerge({ remote, remotePayload, local: recheck, keepalive, reason: "local_changed_before_pull", runId });
+          syncResult = await syncBranchMerge({ remote, remotePayload, local: recheck, keepalive, reason: "local_changed_before_pull", runId });
+          return syncResult;
         }
         return pullRemotePayload({ remote, remotePayload, remoteHash, reason, runId, localRevisionAtStart, localHashAtStart });
       }
@@ -365,21 +387,27 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
       return false;
     }
 
-    if (remoteHash === syncState.baseRemoteHash && !effectiveDirty) return true;
+    if (remoteHash === syncState.baseRemoteHash && !effectiveDirty) {
+      markSessionRemoteChecked(remote, runId, "syncTick.noop_same_hash");
+      return true;
+    }
 
     if (remoteHash === syncState.baseRemoteHash && effectiveDirty) {
-      appendAuditEvent({ type: "sync:decision", message: "branch=push_local hash_match dirty=true runId=" + runId });
-      return syncBranchPushLocal({ remote, local: facts, keepalive, reason, runId, remoteHashAtDecision: remoteHash });
+      appendAuditEvent({ type: "sync:decision", message: "session=" + TAB_ID + " branch=push_local hash_match dirty=true runId=" + runId });
+      syncResult = await syncBranchPushLocal({ remote, local: facts, keepalive, reason, runId, remoteHashAtDecision: remoteHash });
+      return syncResult;
     }
 
     if (remoteHash !== syncState.baseRemoteHash) {
       if (remoteHasData) {
-        appendAuditEvent({ type: "sync:decision", message: "branch=merge hash_diff remoteHasData=true runId=" + runId });
+        appendAuditEvent({ type: "sync:decision", message: "session=" + TAB_ID + " branch=merge hash_diff remoteHasData=true runId=" + runId });
         if (hasUserLocalChangeSinceSyncStart(localRevisionAtStart, localHashAtStart, runId)) {
           const recheck = currentSyncFacts({ persistHash: true });
-          return syncBranchMerge({ remote, remotePayload, local: recheck, keepalive, reason: "local_changed_before_merge", runId });
+          syncResult = await syncBranchMerge({ remote, remotePayload, local: recheck, keepalive, reason: "local_changed_before_merge", runId });
+          return syncResult;
         }
-        return syncBranchMerge({ remote, remotePayload, local: facts, keepalive, reason: "remote_changed_local_has_data", runId });
+        syncResult = await syncBranchMerge({ remote, remotePayload, local: facts, keepalive, reason: "remote_changed_local_has_data", runId });
+        return syncResult;
       }
 
       recordHashSyncFailure("云端 sync.json 无法安全解析为可合并数据，已停止自动同步", {
@@ -396,27 +424,35 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
       return false;
     }
 
-    return syncBranchMerge({ remote, remotePayload, local: facts, keepalive, reason, runId });
+    syncResult = await syncBranchMerge({ remote, remotePayload, local: facts, keepalive, reason, runId });
+    return syncResult;
   } catch (error) {
     if (!isStaleSyncRun(runId)) {
       recordHashSyncFailure(syncErrorMessage(error), { errorKind: "remote_get_failed", title: "云同步请求失败", banner: true, dialog: true, runId, technical: error && (error.stack || error.message) });
     }
-    return false;
+    syncResult = { ok: false, error: true };
+    return syncResult;
   } finally {
     if (!isStaleSyncRun(runId)) {
       markSyncProgress("sync:finalize", runId);
-      var elapsedMs = Date.now() - state.syncStartedAt;
-      state.isSyncing = false;
-      state.syncStartedAt = 0;
-      state.syncLastProgressAt = 0;
-      state.lastSyncFinishedAt = Date.now();
+      var elapsedMs = Date.now() - startedAtMs;
+
       // sync:complete = syncTick 流程结束（不一定已 cloud_saved）
       // sync:mark_clean = 已确认云端保存或加载
       // sync:local_changed_during_verify = 上一轮云端已写入，但本地又产生新变化
       // sync:failed = 真失败
-      appendAuditEvent({ type: "sync:complete", message: "runId=" + runId + " elapsed=" + elapsedMs + "ms reason=" + (reason || "") });
+      appendAuditEvent({
+        type: "sync:complete",
+        message: "session=" + TAB_ID + " runId=" + runId + " elapsed=" + elapsedMs + "ms reason=" + (reason || "") + " result=" + summarizeSyncResult(syncResult)
+      });
+
+      state.isSyncing = false;
+      state.syncStartedAt = 0;
+      state.syncLastProgressAt = 0;
+      state.lastSyncFinishedAt = Date.now();
       refreshVisibleSyncDiagnostics();
     }
+
     releaseCrossTabSyncLock();
   }
 }

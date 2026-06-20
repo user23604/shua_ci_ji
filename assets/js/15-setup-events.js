@@ -248,6 +248,32 @@ function exportDiagnosisSummary() {
   });
 }
 
+// ── P0.8: 审计顺序验证 ─────────────────────────────────────────────
+
+function validateAuditSyncOrder(events) {
+  var byKey = {};
+  (events || []).forEach(function(e) {
+    if (!e.at || !e.type) return;
+    var msg = e.message || "";
+    var sessionMatch = /session=([^ ]+)/.exec(msg);
+    var runMatch = /runId=([0-9]+)/.exec(msg);
+    if (!runMatch) return;
+    var key = (sessionMatch ? sessionMatch[1] : "legacy") + "#" + runMatch[1];
+    if (!byKey[key]) byKey[key] = [];
+    byKey[key].push(e);
+  });
+  var problems = [];
+  Object.keys(byKey).forEach(function(key) {
+    var list = byKey[key].slice().sort(function(a, b) { return (Date.parse(a.at || "") || 0) - (Date.parse(b.at || "") || 0); });
+    var completeIdx = list.findIndex(function(e) { return e.type === "sync:complete"; });
+    var patchIdx = list.findIndex(function(e) { return e.type === "sync:patch_sent"; });
+    var verifyIdx = list.findIndex(function(e) { return e.type === "sync:verify_done"; });
+    if (completeIdx >= 0 && patchIdx >= 0 && completeIdx < patchIdx) problems.push(key + " complete before patch_sent");
+    if (completeIdx >= 0 && verifyIdx >= 0 && completeIdx < verifyIdx) problems.push(key + " complete before verify_done");
+  });
+  return problems;
+}
+
 function exportAuditLog() {
   try {
     if (typeof flushAuditBuffer === "function") flushAuditBuffer();
@@ -256,12 +282,14 @@ function exportAuditLog() {
     events.sort(function(a, b) {
       return (Date.parse(a.at || "") || 0) - (Date.parse(b.at || "") || 0);
     });
+    var orderProblems = validateAuditSyncOrder(events);
     var bundle = {
       exportedAt: beijingISOString(),
       appVersion: APP_VERSION,
       buildId: APP_BUILD_ID,
       userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
       totalEvents: events.length,
+      auditOrderProblems: orderProblems,
       events: events
     };
     var json = JSON.stringify(bundle, null, 2);

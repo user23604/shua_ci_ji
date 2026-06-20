@@ -31,6 +31,7 @@ function markHashCleanFromRemote(remote, payloadHash, status, options = {}) {
   state.syncHashState = ensureHashSyncState(state.syncHashState);
   state.syncHashState.baseRemoteHash = payloadHash || "";
   state.syncHashState.localPayloadHash = payloadHash || "";
+  state.syncHashState.lastSyncedPayloadHash = payloadHash || "";
   state.syncHashState.localDirty = false;
   state.syncHashState.dirtySince = "";
   state.syncHashState.localRecoveryRequired = false;
@@ -38,17 +39,30 @@ function markHashCleanFromRemote(remote, payloadHash, status, options = {}) {
   state.syncHashState.lastSyncError = "";
   state.syncHashState.consecutiveSyncFailures = 0;
   state.syncHashState.nextRetryAt = "";
+  // P0.8: 清 blocking error
+  state.syncHashState.lastBlockingErrorAt = "";
+  state.syncHashState.lastBlockingErrorCode = "";
+  state.syncHashState.lastBlockingErrorText = "";
+  state.syncHashState.lastBlockingErrorClearedAt = now;
   if (status === "cloud_saved") state.syncHashState.lastSuccessfulPushAt = now;
   if (status === "cloud_loaded") state.syncHashState.lastSuccessfulPullAt = now;
   persistHashSyncState();
   if (status === "cloud_saved" || status === "cloud_loaded") {
     updateLegacyMetaAfterRemote(remote, payloadHash, status === "cloud_saved" ? "push" : "pull");
   }
+  // P0.8: 只有真实 remote GET 确认后才更新 session remote confirmation
+  if (options && options.remoteVerified === true) {
+    state.sessionRemoteCheckDone = true;
+    state.latestRemoteHashSeen = payloadHash || "";
+    state.latestRemoteKindSeen = (remote && remote.kind) || "";
+    state.sessionRemoteCheckAt = now;
+  }
   refreshVisibleSyncDiagnostics();
   appendAuditEvent({
     type: "sync:mark_clean",
     message:
-      "runId=" + (options && options.runId || "") +
+      "session=" + TAB_ID +
+      " runId=" + (options && options.runId || "") +
       " status=" + String(status || "") +
       " hash=" + String(payloadHash || "").slice(0, 8)
   });
@@ -72,7 +86,8 @@ function markHashDirty(localHash, reason, options = {}) {
     appendAuditEvent({
       type: "sync:mark_dirty",
       message:
-        "runId=" + (options.runId || "") +
+        "session=" + TAB_ID +
+        " runId=" + (options.runId || "") +
         " reason=" + String(reason || "").slice(0, 100)
     });
   }
@@ -184,7 +199,7 @@ function restoreRemotePayloadFromDialog(remotePayload, remoteHash, remote) {
     return false;
   }
   renderCurrentView({ touchProgress: false });
-  markHashCleanFromRemote(remote || { kind: "valid_nonempty", payloadHash: computedHash, snapshot: normalized }, computedHash, "cloud_loaded");
+  markHashCleanFromRemote(remote || { kind: "valid_nonempty", payloadHash: computedHash, snapshot: normalized }, computedHash, "cloud_loaded", { remoteVerified: true });
   enterSyncInfoMode("已从云端恢复到本机");
   return true;
 }
@@ -231,7 +246,7 @@ function pullRemotePayload({ remote, remotePayload, remoteHash, reason, runId, l
     return false;
   }
   renderCurrentView({ touchProgress: false });
-  markHashCleanFromRemote(remote, remoteHash, "cloud_loaded", { runId });
+  markHashCleanFromRemote(remote, remoteHash, "cloud_loaded", { runId: runId, remoteVerified: true });
   enterSyncInfoMode("已从云端加载");
   return true;
 }
