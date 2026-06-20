@@ -91,7 +91,8 @@ const state = {
   initialSyncStarted: false,
   lastCleanRemotePollAt: 0,
   lastForcedRemoteCheckAt: 0,
-  pageHiddenDuringSyncAt: 0
+  pageHiddenDuringSyncAt: 0,
+  pendingActiveStudyUpload: false
 };
 
 

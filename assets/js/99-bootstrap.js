@@ -9,13 +9,44 @@ function flushDirtyOnPageHide(reason) {
     appendAuditEvent({ type: "sync:pagehide_flush_start", message: "session=" + TAB_ID + " reason=" + reason });
     syncTick({ reason: reason, bypassBackoff: true, keepalive: true }).then(function(result) {
       if (!result) {
+        state.pendingActiveStudyUpload = true;
         appendAuditEvent({ type: "sync:pagehide_flush_deferred", message: "session=" + TAB_ID + " reason=" + reason + " dirty_preserved=true" });
       }
     }).catch(function(error) {
+      state.pendingActiveStudyUpload = true;
       appendAuditEvent({ type: "sync:pagehide_flush_deferred", message: "session=" + TAB_ID + " reason=" + reason + " dirty_preserved=true error=" + String(error && error.message || error || "") });
     });
   } catch (error) {
+    state.pendingActiveStudyUpload = true;
     appendAuditEvent({ type: "sync:pagehide_flush_deferred", message: "session=" + TAB_ID + " reason=" + reason + " dirty_preserved=true error=" + String(error && error.message || error || "") });
+  }
+}
+
+
+function flushPendingDirtyAfterVisible(reason) {
+  try {
+    var syncState = ensureHashSyncState(state.syncHashState);
+    var shouldFlush = Boolean((syncState && syncState.localDirty) || state.pendingActiveStudyUpload);
+    if (!shouldFlush) {
+      if (typeof requestFreshRemoteCheck === "function") requestFreshRemoteCheck(reason || "visibility_resume");
+      return;
+    }
+    state.pendingActiveStudyUpload = false;
+    appendAuditEvent({ type: "sync:visibility_resume_dirty_flush_start", message: "session=" + TAB_ID + " reason=" + String(reason || "visibility_resume_dirty_flush") });
+    Promise.resolve(syncTick({ reason: reason || "visibility_resume_dirty_flush", bypassBackoff: true })).then(function(result) {
+      var latestState = ensureHashSyncState(state.syncHashState);
+      if (!result && latestState && latestState.localDirty) {
+        state.pendingActiveStudyUpload = true;
+        scheduleSyncSoon("visibility_resume_dirty_flush", 2000);
+        appendAuditEvent({ type: "sync:visibility_resume_dirty_flush_rescheduled", message: "session=" + TAB_ID + " reason=result_false dirty_preserved=true" });
+      }
+    }).catch(function(error) {
+      state.pendingActiveStudyUpload = true;
+      scheduleSyncSoon("visibility_resume_dirty_flush", 2000);
+      appendAuditEvent({ type: "sync:visibility_resume_dirty_flush_rescheduled", message: "session=" + TAB_ID + " error=" + String(error && error.message || error || "") + " dirty_preserved=true" });
+    });
+  } catch (error) {
+    appendAuditEvent({ type: "sync:visibility_resume_dirty_flush_failed", message: "session=" + TAB_ID + " error=" + String(error && error.message || error || "") });
   }
 }
 
@@ -35,7 +66,6 @@ function init() {
   } catch (_) {}
   // P0: 启动时检查 localRecoveryRequired 是否可以解除
   try {
-    if (typeof markPageHiddenDuringSync === "function") markPageHiddenDuringSync();
     var syncState = ensureHashSyncState(state.syncHashState);
     if (syncState.localRecoveryRequired) {
       var currentPayload = normalizeSyncPayload(collectSyncPayload());
@@ -64,7 +94,7 @@ function init() {
     }
     checkServerVersion({ force: false });
     scheduleVisibleSync();
-    if (typeof requestFreshRemoteCheck === "function") requestFreshRemoteCheck("visibility_resume");
+    flushPendingDirtyAfterVisible("visibility_resume_dirty_flush");
   });
   window.addEventListener("pagehide", function() {
     if (typeof markPageHiddenDuringSync === "function") markPageHiddenDuringSync();

@@ -1,7 +1,7 @@
 "use strict";
 
-const APP_VERSION = "2026-06-20-p7-active-study-stability";
-const APP_BUILD_ID = "2026-06-20-p7-active-study-stability";
+const APP_VERSION = "2026-06-20-p8-hidden-idle-sync-lock-fix";
+const APP_BUILD_ID = "2026-06-20-p8-hidden-idle-sync-lock-fix";
 
 
 const ACCESS_KEY = "ky2027";

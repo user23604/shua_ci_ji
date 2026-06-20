@@ -179,7 +179,7 @@ function isHardForcedSyncReason(reason) {
     "manual", "manual_retry", "manual_push", "manual_pull",
     "ignore_empty_backup", "config_saved", "remote_restore_merge",
     "startup", "view_open_remote_check", "archive_open", "archive_tab_switch",
-    "stats_open", "visibility_resume",
+    "stats_open", "visibility_resume", "visibility_resume_dirty_flush",
     "pagehide_flush", "visibility_hidden_flush"
   ].includes(String(reason || ""));
 }
@@ -202,7 +202,11 @@ function isForcedRemoteCheckReason(reason) {
 }
 
 function canRunWhileHidden(reason) {
-  return ["pagehide_flush", "visibility_hidden_flush"].includes(String(reason || ""));
+  return [
+    "pagehide_flush",
+    "visibility_hidden_flush",
+    "active_study_idle_upload"
+  ].includes(String(reason || ""));
 }
 
 function shouldDeferForActiveStudy(reason) {
@@ -221,7 +225,9 @@ function shouldDeferForActiveStudy(reason) {
       }
       state.activeStudySyncTimer = setTimeout(function() {
         state.activeStudySyncTimer = null;
-        syncTick({ reason: "active_study_idle_upload", bypassBackoff: true });
+        state.pendingActiveStudyUpload = true;
+        var hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+        syncTick({ reason: "active_study_idle_upload", bypassBackoff: true, keepalive: hidden });
       }, delay);
       return true;
     }
@@ -289,6 +295,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   if (state.isSyncing) {
     if (!releaseStuckSyncLockIfNeeded()) {
       if (reason === "active_study_idle_upload" && typeof scheduleActiveStudyUpload === "function") {
+        state.pendingActiveStudyUpload = true;
         scheduleActiveStudyUpload();
         appendAuditEvent({ type: "sync:active_study_idle_upload_rescheduled", message: "session=" + TAB_ID + " reason=isSyncing" });
       }
@@ -296,7 +303,12 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     }
   }
   if (typeof document !== "undefined" && document.hidden && !canRunWhileHidden(reason)) {
-    appendAuditEvent({ type: "sync:skip_hidden", message: "session=" + TAB_ID + " reason=" + reason });
+    if (reason === "active_study_idle_upload") {
+      state.pendingActiveStudyUpload = true;
+      appendAuditEvent({ type: "sync:active_study_idle_upload_deferred_hidden", message: "session=" + TAB_ID + " dirty_preserved=true" });
+    } else {
+      appendAuditEvent({ type: "sync:skip_hidden", message: "session=" + TAB_ID + " reason=" + reason });
+    }
     return false;
   }
 
@@ -351,6 +363,12 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
   if (shouldSkipSyncForBackoff(bypassBackoff || shouldBypassMinInterval(reason))) return false;
   if (!tryAcquireCrossTabSyncLock(reason)) {
     setHashSyncStatus("syncing", "其他标签页正在同步");
+    appendAuditEvent({ type: "sync:skip_cross_tab_lock", message: "session=" + TAB_ID + " reason=" + reason });
+    if (reason === "active_study_idle_upload" && typeof scheduleActiveStudyUpload === "function") {
+      state.pendingActiveStudyUpload = true;
+      scheduleActiveStudyUpload();
+      appendAuditEvent({ type: "sync:active_study_idle_upload_rescheduled", message: "session=" + TAB_ID + " reason=cross_tab_lock" });
+    }
     return false;
   }
 

@@ -1,6 +1,6 @@
 {
-  "appVersion": "2026-06-20-p7-active-study-stability",
-  "buildId": "2026-06-20-p7-active-study-stability",
+  "appVersion": "2026-06-20-p8-hidden-idle-sync-lock-fix",
+  "buildId": "2026-06-20-p8-hidden-idle-sync-lock-fix",
   "deployedAt": "2026-06-20T00:00:00+08:00",
-  "note": "P7: active study stability, flashcard transition safety, lightweight study dirty, safer pagehide/verify, settings-local hash policy"
+  "note": "P8: hidden active-study idle upload, visibility-resume dirty flush, and stale sync-lock recovery fixes"
 }

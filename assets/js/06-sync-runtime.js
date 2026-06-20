@@ -55,11 +55,53 @@ function readCrossTabSyncLock() {
 }
 
 
+function isUrgentSyncReason(reason) {
+  return [
+    "active_study_idle_upload",
+    "visibility_resume_dirty_flush",
+    "visibility_resume",
+    "pagehide_flush",
+    "visibility_hidden_flush",
+    "archive_open",
+    "archive_tab_switch",
+    "stats_open",
+    "startup",
+    "manual",
+    "manual_push",
+    "manual_pull",
+    "manual_retry"
+  ].indexOf(String(reason || "")) !== -1;
+}
+
+function isCrossTabSyncLockLikelyAbandoned(lock, now, reason) {
+  if (!lock || lock.owner === TAB_ID) return false;
+  var touchedAt = Math.max(Number(lock.renewedAt || 0), Number(lock.startedAt || 0));
+  if (!touchedAt) return false;
+  var noProgressMs = now - touchedAt;
+  if (noProgressMs <= SYNC_NO_PROGRESS_TIMEOUT_MS) return false;
+  // 真实活跃同步会通过 markSyncProgress() 续租；超过 watchdog 时间还无进展的外部锁视为遗留锁。
+  return isUrgentSyncReason(reason) || noProgressMs > Math.min(CROSS_TAB_LOCK_LEASE_MS, SYNC_NO_PROGRESS_TIMEOUT_MS + 15000);
+}
+
 function tryAcquireCrossTabSyncLock(reason) {
   const now = Date.now();
   const existing = readCrossTabSyncLock();
-  if (existing && existing.expiresAt && existing.expiresAt > now && existing.owner !== TAB_ID) return false;
-  const lock = { owner: TAB_ID, startedAt: now, expiresAt: now + CROSS_TAB_LOCK_LEASE_MS, reason: reason || "" };
+  if (existing && existing.expiresAt && existing.expiresAt > now && existing.owner !== TAB_ID) {
+    if (isCrossTabSyncLockLikelyAbandoned(existing, now, reason)) {
+      try { localStorage.removeItem(SYNC_LOCK_KEY); } catch (_) {}
+      appendAuditEvent({
+        type: "sync:stale_cross_tab_lock_cleared",
+        message:
+          "session=" + TAB_ID +
+          " reason=" + String(reason || "") +
+          " owner=" + String(existing.owner || "") +
+          " age=" + String(now - Math.max(Number(existing.renewedAt || 0), Number(existing.startedAt || 0)))
+      });
+    } else {
+      return false;
+    }
+  }
+  const lock = { owner: TAB_ID, startedAt: now, renewedAt: now, expiresAt: now + CROSS_TAB_LOCK_LEASE_MS, reason: reason || "" };
   safeLocalStorageSet(SYNC_LOCK_KEY, JSON.stringify(lock), { priority: "sync_lock" });
   const check = readCrossTabSyncLock();
   return Boolean(check && check.owner === TAB_ID);

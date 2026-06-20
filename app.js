@@ -1,7 +1,7 @@
 (function() {
   "use strict";
 
-  var BUILD_ID = "2026-06-20-p7-active-study-stability";
+  var BUILD_ID = "2026-06-20-p8-hidden-idle-sync-lock-fix";
 
   window.__SHUA_APP_VERSION__ = BUILD_ID;
   window.__SHUA_BUILD_ID__ = BUILD_ID;

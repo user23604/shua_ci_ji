@@ -123,23 +123,36 @@ function shouldUseActiveStudyDebounce() {
 
 
 function scheduleActiveStudyUpload() {
+  state.pendingActiveStudyUpload = true;
   if (state.activeStudySyncTimer) {
     clearTimeout(state.activeStudySyncTimer);
     state.activeStudySyncTimer = null;
   }
   state.activeStudySyncTimer = setTimeout(function() {
     state.activeStudySyncTimer = null;
-    appendAuditEvent({ type: "sync:active_study_idle_upload", message: "session=" + TAB_ID });
-    syncTick({ reason: "active_study_idle_upload", bypassBackoff: true });
+    var hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+    appendAuditEvent({ type: "sync:active_study_idle_upload", message: "session=" + TAB_ID + " hidden=" + String(!!hidden) });
+    Promise.resolve(syncTick({ reason: "active_study_idle_upload", bypassBackoff: true, keepalive: hidden })).then(function(result) {
+      var syncState = ensureHashSyncState(state.syncHashState);
+      if (result && syncState && !syncState.localDirty) {
+        state.pendingActiveStudyUpload = false;
+      }
+    }).catch(function(error) {
+      state.pendingActiveStudyUpload = true;
+      appendAuditEvent({ type: "sync:active_study_idle_upload_deferred", message: "session=" + TAB_ID + " dirty_preserved=true error=" + String(error && error.message || error || "") });
+    });
   }, ACTIVE_STUDY_SYNC_DEBOUNCE_MS);
 }
 
 
 function clearActiveStudyTimerIfClean() {
   var syncState = ensureHashSyncState(state.syncHashState);
-  if (!syncState.localDirty && state.activeStudySyncTimer) {
-    clearTimeout(state.activeStudySyncTimer);
-    state.activeStudySyncTimer = null;
+  if (!syncState.localDirty) {
+    state.pendingActiveStudyUpload = false;
+    if (state.activeStudySyncTimer) {
+      clearTimeout(state.activeStudySyncTimer);
+      state.activeStudySyncTimer = null;
+    }
   }
 }
 
