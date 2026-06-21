@@ -1,0 +1,195 @@
+/* ── Buttons ── */
+.btn {
+  min-height: var(--tap);
+  border-radius: var(--card-radius);
+  background: var(--surface-strong);
+  color: var(--text);
+  padding: 0 16px;
+  font-weight: 800;
+  transition: transform 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+
+.btn:active {
+  transform: translate3d(0, 1px, 0);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.btn--primary {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.btn--primary:focus-visible,
+.btn--primary:hover {
+  background: var(--accent-strong);
+}
+
+.btn--ghost {
+  background: transparent;
+  border: 1px solid var(--line);
+}
+
+.btn--wide {
+  width: 100%;
+  min-height: 58px;
+  font-size: 18px;
+}
+
+.btn--danger {
+  background: rgba(180, 35, 24, 0.12);
+  color: var(--danger);
+}
+
+/* ── Field label ── */
+.field-label {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* ── Input / Select ── */
+.input,
+.select {
+  width: 100%;
+  height: var(--tap);
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 14px;
+  outline: none;
+}
+
+.select {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.input:focus,
+.select:focus,
+.range:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.18);
+}
+
+.input.is-error {
+  border-color: var(--danger);
+  animation: shake 0.34s ease both;
+}
+
+@keyframes shake {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  25% {
+    transform: translate3d(-9px, 0, 0);
+  }
+  50% {
+    transform: translate3d(8px, 0, 0);
+  }
+  75% {
+    transform: translate3d(-5px, 0, 0);
+  }
+}
+
+/* ── Status ── */
+.status {
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.status--error {
+  color: var(--danger);
+}
+
+.status--ok {
+  color: var(--known);
+}
+
+/* ── Settings panel ── */
+.settings-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  padding: 16px;
+  min-width: 0;
+}
+
+.settings-panel--span2 {
+  grid-column: span 2;
+}
+
+.settings-panel--span4 {
+  grid-column: span 4;
+}
+
+.panel-title {
+  margin: 0 0 14px;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+/* ── Controls ── */
+.control-list {
+  display: grid;
+  gap: 14px;
+}
+
+.control-row {
+  display: grid;
+  gap: 8px;
+}
+
+.control-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.control-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.range {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+/* ── Radio / Toggle ── */
+.radio-group,
+.toggle-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.radio-option,
+.toggle-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  color: var(--text);
+}
+
+.radio-option input,
+.toggle-option input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
