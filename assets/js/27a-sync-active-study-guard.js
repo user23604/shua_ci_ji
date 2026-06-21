@@ -27,7 +27,7 @@ function isForcedRemoteCheckReason(reason) {
 }
 
 function canRunWhileHidden(reason) {
-  return ["pagehide_flush", "visibility_hidden_flush", "active_study_idle_upload"].includes(String(reason || ""));
+  return ["pagehide_flush", "visibility_hidden_flush"].includes(String(reason || ""));
 }
 
 function getActiveStudyFacts() {
@@ -60,6 +60,7 @@ function getActiveStudyFacts() {
 function activeStudyDelayRemainingMs() {
   var facts = getActiveStudyFacts();
   if (!facts.inFlash || !facts.lastActiveStudyAt) return ACTIVE_STUDY_SYNC_DEBOUNCE_MS;
+  if (facts.studyMoving || facts.playbackActive || facts.speechSpeaking || facts.timersActive || facts.pointerActive || facts.transitioning) return Math.max(3000, ACTIVE_STUDY_SYNC_DEBOUNCE_MS - Math.max(0, facts.elapsedMs));
   return Math.max(1000, ACTIVE_STUDY_SYNC_DEBOUNCE_MS - Math.max(0, facts.elapsedMs));
 }
 

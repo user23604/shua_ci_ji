@@ -235,11 +235,11 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
       }, GITHUB_PATCH_TIMEOUT_MS);
       markSyncProgress("patch:done", runId);
     } catch (error) {
-      if (reason === "pagehide_flush" || reason === "visibility_hidden_flush") {
-        appendAuditEvent({ type: "sync:pagehide_flush_deferred", message: "session=" + TAB_ID + " runId=" + runId + " reason=" + reason + " stage=patch dirty_preserved=true error=" + String(error && error.message || error || "") });
-        return { ok: false, pagehideDeferred: true };
+      if (typeof shouldDowngradeFailureForBackground === "function" && shouldDowngradeFailureForBackground(reason)) {
+        appendAuditEvent({ type: "sync:background_patch_deferred", message: "session=" + TAB_ID + " runId=" + runId + " reason=" + reason + " stage=patch dirty_preserved=true error=" + String(error && error.message || error || "") });
+        return { ok: false, pagehideDeferred: true, backgroundDeferred: true };
       }
-      recordHashSyncFailure("网络请求失败：" + (error && error.message || "unknown"), { errorKind: "patch_failed", banner: true, dialog: true, runId });
+      recordHashSyncFailure("网络请求失败：" + (error && error.message || "unknown"), { errorKind: "patch_failed_network", retryable: true, banner: false, dialog: false, runId });
       return { ok: false };
     }
 
@@ -272,9 +272,9 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
       // 422: 请求内容/格式错误，不可重试。pagehide 的普通网络/限流失败只保留 dirty，不红；配置/权限错误仍需要提示。
       var is422 = response.status === 422;
       const classified = await classifyGithubResponseError(response, "PATCH sync.json");
-      if ((reason === "pagehide_flush" || reason === "visibility_hidden_flush") && response.status !== 401 && response.status !== 403 && !is422) {
-        appendAuditEvent({ type: "sync:pagehide_flush_deferred", message: "session=" + TAB_ID + " runId=" + runId + " reason=" + reason + " stage=patch_response dirty_preserved=true httpStatus=" + response.status });
-        return { ok: false, pagehideDeferred: true, httpStatus: response.status };
+      if (typeof shouldDowngradeFailureForBackground === "function" && shouldDowngradeFailureForBackground(reason) && response.status !== 401 && response.status !== 403 && !is422) {
+        appendAuditEvent({ type: "sync:background_patch_deferred", message: "session=" + TAB_ID + " runId=" + runId + " reason=" + reason + " stage=patch_response dirty_preserved=true httpStatus=" + response.status });
+        return { ok: false, pagehideDeferred: true, backgroundDeferred: true, httpStatus: response.status };
       }
       recordHashSyncFailure(classified.message, { errorKind: is422 ? "patch_failed_422" : "patch_failed_network", banner: true, dialog: true, runId, httpStatus: response.status, technical: classified.technical });
       return { ok: false, fatal: true, httpStatus: response.status, message: classified.message, technical: classified.technical };

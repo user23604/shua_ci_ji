@@ -251,7 +251,13 @@ function scheduleActiveStudyUpload(delayOverride) {
     state.activeStudySyncTimer = null;
     var hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
     appendAuditEvent({ type: "sync:active_study_idle_upload", message: "session=" + TAB_ID + " hidden=" + String(!!hidden) + " delay=" + String(delay) });
-    Promise.resolve(syncTick({ reason: "active_study_idle_upload", bypassBackoff: true, keepalive: hidden })).then(function(result) {
+    if (hidden) {
+      state.pendingActiveStudyUpload = true;
+      appendAuditEvent({ type: "sync:active_study_idle_upload_deferred_hidden", message: "session=" + TAB_ID + " dirty_preserved=true wait=visibility_resume" });
+      updateSyncIndicator();
+      return;
+    }
+    Promise.resolve(syncTick({ reason: "active_study_idle_upload", bypassBackoff: true, keepalive: false })).then(function(result) {
       var syncState = ensureHashSyncState(state.syncHashState);
       if (result && syncState && !syncState.localDirty && !(typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists())) {
         state.pendingActiveStudyUpload = false;

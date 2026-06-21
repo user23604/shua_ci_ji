@@ -21,15 +21,15 @@ function decideSyncAction({ remote, facts, syncState, remoteHash, reason = "", r
   if (remote.kind === "invalid" || remote.kind === "v2_unknown_ops") {
     type = "REMOTE_INVALID";
     riskCode = remote.kind || "remote_invalid";
-  } else if (readOnly && effective) {
-    type = "READ_ONLY_DIRTY";
-    riskCode = "read_only_dirty";
   } else if (!localHasData && remoteEmpty) {
     type = "BOTH_EMPTY_NOOP";
     shouldNoop = true;
   } else if (!localHasData && remoteHasData) {
     type = "LOCAL_EMPTY_REMOTE_NONEMPTY_PULL";
     shouldPull = true;
+  } else if (readOnly && effective && localHasData) {
+    type = "READ_ONLY_DIRTY";
+    riskCode = "read_only_dirty";
   } else if (localHasData && remoteEmpty) {
     type = "LOCAL_NONEMPTY_REMOTE_EMPTY_PUSH";
     shouldPatch = !readOnly;

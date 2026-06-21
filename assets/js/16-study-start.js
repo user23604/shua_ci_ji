@@ -94,10 +94,13 @@ function getStartIndexFromProgress(progress) {
   if (state.settings.mode !== "resume") return 0;
   const lastWordId = Number(progress.lastWordId);
   if (!Number.isFinite(lastWordId)) return 0;
+  if (!state.unitWords.length) return 0;
   const index = state.unitWords.findIndex((word) => word.id === lastWordId);
   if (index >= 0) return index;
   const nextIndex = state.unitWords.findIndex((word) => Number(word.id) > lastWordId);
-  return nextIndex >= 0 ? nextIndex : state.unitWords.length;
+  if (nextIndex >= 0) return nextIndex;
+  appendAuditEvent({ type: "study:resume_progress_out_of_range", message: "lastWordId=" + String(lastWordId || "") + " unitWords=" + String(state.unitWords.length || 0) + " fallback=0" });
+  return 0;
 }
 
 

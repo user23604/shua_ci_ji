@@ -136,6 +136,7 @@ function showSyncProblemDialog(problem) {
   if (state.activeSyncProblemDialogKey === key) return false;
   if (state.dismissedSyncProblemDialogKeys && state.dismissedSyncProblemDialogKeys[key] && now - state.dismissedSyncProblemDialogKeys[key] < 60000 && !problem.force) return false;
   state.activeSyncProblemDialogKey = key;
+  state.activeSyncProblemDialogProblem = { code: problem.code || "", severity: problem.severity || "", title: problem.title || "", message: problem.message || "", shownAt: now };
   state.lastSyncProblemDialogKey = key;
   state.lastSyncProblemDialogShownAt = now;
   var existing = document.getElementById("sync-problem-dialog");
@@ -220,6 +221,27 @@ function closeSyncProblemDialog(key) {
   if (dialog) dialog.remove();
   if (key) state.dismissedSyncProblemDialogKeys[key] = Date.now();
   state.activeSyncProblemDialogKey = null;
+  state.activeSyncProblemDialogProblem = null;
+}
+
+function isRecoverableSyncProblemCode(code) {
+  return [
+    "REMOTE_EMPTY_LOCAL_HAS_DATA",
+    "READONLY_REMOTE_EMPTY_LOCAL_HAS_DATA",
+    "patch_failed_network",
+    "remote_get_failed",
+    "verify_failed",
+    "SYNC_BACKGROUND_DEFERRED"
+  ].indexOf(String(code || "")) !== -1;
+}
+
+function closeRecoverableSyncProblemDialogAfterClean() {
+  var problem = state.activeSyncProblemDialogProblem || {};
+  var code = problem.code || "";
+  if (!code || !isRecoverableSyncProblemCode(code)) return false;
+  closeSyncProblemDialog(state.activeSyncProblemDialogKey);
+  appendAuditEvent({ type: "sync:recoverable_dialog_closed_after_clean", message: "session=" + TAB_ID + " code=" + String(code || "") });
+  return true;
 }
 
 function renderSyncIndicator() {

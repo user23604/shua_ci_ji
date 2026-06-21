@@ -65,6 +65,7 @@ function markHashCleanFromRemote(remote, payloadHash, status, options = {}) {
     state.sessionRemoteCheckAt = now;
   }
   refreshVisibleSyncDiagnostics();
+  if (typeof closeRecoverableSyncProblemDialogAfterClean === "function") closeRecoverableSyncProblemDialogAfterClean();
   if (typeof clearActiveStudyTimerIfClean === "function") clearActiveStudyTimerIfClean();
   appendAuditEvent({
     type: "sync:mark_clean",

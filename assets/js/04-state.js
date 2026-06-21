@@ -73,6 +73,7 @@ const state = {
   lastDirtyReason: "",
   lastDirtyFromVerify: false,
   activeSyncProblemDialogKey: null,
+  activeSyncProblemDialogProblem: null,
   lastSyncProblemDialogKey: null,
   lastSyncProblemDialogShownAt: 0,
   dismissedSyncProblemDialogKeys: {},

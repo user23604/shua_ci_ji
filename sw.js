@@ -1,4 +1,4 @@
-const APP_VERSION = "2026-06-21-p14-sync-architecture-cleanup";
+const APP_VERSION = "2026-06-21-p14-1-sync-hardening";
 
 self.addEventListener("install", function(event) {
   self.skipWaiting();

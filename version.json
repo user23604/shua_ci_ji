@@ -1,6 +1,6 @@
 {
-  "appVersion": "2026-06-21-p14-sync-architecture-cleanup",
-  "buildId": "2026-06-21-p14-sync-architecture-cleanup",
+  "appVersion": "2026-06-21-p14-1-sync-hardening",
+  "buildId": "2026-06-21-p14-1-sync-hardening",
   "deployedAt": "2026-06-21T00:00:00+08:00",
   "note": "P14: sync status core split, active-study guard and decision helper extracted, stricter cloud_ok gate, progress write guard, rescue scoring, core tests added"
 }

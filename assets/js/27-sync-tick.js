@@ -234,6 +234,20 @@ function isRetryableVerifyFailure(error, reason) {
   return false;
 }
 
+function clearStaleDirtyIfRemoteMatches(remote, facts, runId) {
+  var syncState = ensureHashSyncState(state.syncHashState);
+  var localHash = String(facts && facts.localPayloadHash || syncState.localPayloadHash || "");
+  var baseHash = String(syncState.baseRemoteHash || "");
+  var remoteHash = String(currentRemoteHash(remote) || state.latestRemoteHashSeen || "");
+  var hasPending = Boolean((typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()) || (typeof hasPendingProgressSync === "function" && hasPendingProgressSync()) || (typeof hasPendingActivityDraft === "function" && hasPendingActivityDraft()));
+  if (!syncState.localDirty || !localHash || !baseHash || !remoteHash || hasPending) return false;
+  if (localHash !== baseHash || localHash !== remoteHash) return false;
+  var status = syncState.lastSuccessfulPushAt ? "cloud_ok" : "cloud_loaded";
+  appendAuditEvent({ type: "sync:stale_dirty_cleared", message: "session=" + TAB_ID + " runId=" + String(runId || "") + " hash=" + localHash.slice(0, 8) + " status=" + status });
+  markHashCleanFromRemote(remote, localHash, status, { runId: runId, remoteVerified: true });
+  return true;
+}
+
 function requestFreshRemoteCheck(reason) {
   var gate = savedCloudConfigGate();
   if (!gate.ok) return;
@@ -305,7 +319,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
       state.pendingActiveStudyUpload = true;
       appendAuditEvent({ type: "sync:active_study_idle_upload_pending", message: "session=" + TAB_ID + " reason=patch_in_flight" });
     } else {
-      scheduleSyncSoon("patch_in_flight_reschedule", 1500);
+      if (!(typeof document !== "undefined" && document.hidden)) scheduleSyncSoon("patch_in_flight_reschedule", 1500);
     }
     return false;
   }
@@ -349,7 +363,7 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     appendAuditEvent({ type: "sync:skip_cross_tab_lock", message: "session=" + TAB_ID + " reason=" + reason + " owner=" + String(lockInfo && lockInfo.owner || "") + " lockReason=" + String(lockInfo && lockInfo.reason || "") + " expiresIn=" + String(lockInfo && lockInfo.expiresAt ? lockInfo.expiresAt - Date.now() : "") });
     if (reason === "active_study_idle_upload" && typeof scheduleActiveStudyUpload === "function") {
       state.pendingActiveStudyUpload = true;
-      scheduleActiveStudyUpload();
+      scheduleActiveStudyUpload(3000);
       appendAuditEvent({ type: "sync:active_study_idle_upload_rescheduled", message: "session=" + TAB_ID + " reason=cross_tab_lock delay=3000" });
     }
     return false;
@@ -447,6 +461,11 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
     }
 
     const syncState = ensureHashSyncState(state.syncHashState);
+    if (clearStaleDirtyIfRemoteMatches(remote, facts, runId)) {
+      syncResult = { ok: true, staleDirtyCleared: true };
+      return syncResult;
+    }
+    facts = currentSyncFacts({ persistHash: false });
     const effectiveDirty = facts.effectiveDirty;
     const localHasBusinessData = hasBusinessData(facts.payload);
     const remoteHasData = remoteHasBusinessPayload(remote);
@@ -465,18 +484,20 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
         : "云端 sync.json 是空数据，但本机仍有学习记录。已阻止云端空数据覆盖本地。";
       markHashDirty(facts.localPayloadHash, message, { runId });
       const fields = makeSyncRiskProblemFields(remote, facts, { remoteHash, remoteHasBusinessData: remoteHasData, readOnly, runId });
-      showSyncProblemDialog({
-        severity: "warning",
-        code: readOnly ? "READONLY_REMOTE_EMPTY_LOCAL_HAS_DATA" : "REMOTE_EMPTY_LOCAL_HAS_DATA",
-        title: readOnly ? "只读模式下已保护本地数据" : "已阻止云端空数据覆盖本地",
-        message: readOnly
-          ? "当前 PAT 不能写入 Gist。云端 sync.json 是空数据，但本机仍有学习记录，因此没有把云端空数据拉到本机。请更换可写 PAT 后重新同步。"
-          : "云端 sync.json 是合法空数据，但本机仍有学习记录。为了防止数据丢失，本轮没有把云端空数据拉到本机。",
-        technical: syncRiskTechnicalText(fields),
-        canRetry: true,
-        canCopy: true,
-        ...fields
-      });
+      if (readOnly) {
+        showSyncProblemDialog({
+          severity: "warning",
+          code: "READONLY_REMOTE_EMPTY_LOCAL_HAS_DATA",
+          title: "只读模式下已保护本地数据",
+          message: "当前 PAT 不能写入 Gist。云端 sync.json 是空数据，但本机仍有学习记录，因此没有把云端空数据拉到本机。请更换可写 PAT 后重新同步。",
+          technical: syncRiskTechnicalText(fields),
+          canRetry: true,
+          canCopy: true,
+          ...fields
+        });
+      } else {
+        appendAuditEvent({ type: "sync:remote_empty_local_data_auto_push", message: "session=" + TAB_ID + " runId=" + runId + " localHash=" + String(facts.localPayloadHash || "").slice(0, 8) });
+      }
 
       if (!readOnly) {
         syncResult = await syncBranchPushLocal({
