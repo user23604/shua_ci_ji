@@ -240,7 +240,28 @@ function activeStudyIdleDelayMs(delayOverride) {
 }
 
 
+function activeStudySyncWorkExists() {
+  var syncState = ensureHashSyncState(state.syncHashState);
+  var localHash = String(syncState.localPayloadHash || "");
+  var baseHash = String(syncState.baseRemoteHash || "");
+  var hashDirty = Boolean(baseHash && localHash && localHash !== baseHash);
+  return Boolean(syncState.localDirty || hashDirty || (typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()) || state.lastDirtyFromVerify);
+}
+
 function scheduleActiveStudyUpload(delayOverride) {
+  if (!activeStudySyncWorkExists()) {
+    state.pendingActiveStudyUpload = false;
+    if (state.activeStudySyncTimer) {
+      clearTimeout(state.activeStudySyncTimer);
+      state.activeStudySyncTimer = null;
+    }
+    var now = Date.now();
+    if (!state.lastActiveStudySkipCleanAuditAt || now - state.lastActiveStudySkipCleanAuditAt > 10000) {
+      state.lastActiveStudySkipCleanAuditAt = now;
+      appendAuditEvent({ type: "sync:active_study_idle_upload_skip_clean", message: "session=" + TAB_ID + " reason=no_dirty_or_pending" });
+    }
+    return false;
+  }
   state.pendingActiveStudyUpload = true;
   if (state.activeStudySyncTimer) {
     clearTimeout(state.activeStudySyncTimer);

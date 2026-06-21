@@ -1,4 +1,4 @@
-const APP_VERSION = "2026-06-21-p14-2-startup-sync-hardening";
+const APP_VERSION = "2026-06-21-p14-3-polish-and-deep-test";
 
 self.addEventListener("install", function(event) {
   self.skipWaiting();

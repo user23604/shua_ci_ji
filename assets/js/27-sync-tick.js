@@ -692,10 +692,14 @@ async function syncTick({ reason = "heartbeat", keepalive = false, bypassBackoff
       refreshVisibleSyncDiagnostics();
       if (typeof refreshCurrentBusinessViewAfterSync === "function") refreshCurrentBusinessViewAfterSync();
       var finalSyncState = ensureHashSyncState(state.syncHashState);
-      if ((state.pendingActiveStudyUpload || (typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists()) || finalSyncState.localDirty) && typeof scheduleActiveStudyUpload === "function") {
+      var finalHashDirty = Boolean(finalSyncState.baseRemoteHash && finalSyncState.localPayloadHash && finalSyncState.localPayloadHash !== finalSyncState.baseRemoteHash);
+      var finalPendingStudy = typeof pendingStudyFlushExists === "function" && pendingStudyFlushExists();
+      if ((finalPendingStudy || finalSyncState.localDirty || finalHashDirty) && typeof scheduleActiveStudyUpload === "function") {
         if (state.view === "flash" && !state.activeStudySyncTimer) {
           scheduleActiveStudyUpload();
         }
+      } else if (!finalPendingStudy && !finalSyncState.localDirty && !finalHashDirty) {
+        state.pendingActiveStudyUpload = false;
       }
     } else {
       state.syncActuallyStarted = false;

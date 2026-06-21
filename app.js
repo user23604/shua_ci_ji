@@ -1,7 +1,7 @@
 (function() {
   "use strict";
 
-  var BUILD_ID = "2026-06-21-p14-2-startup-sync-hardening";
+  var BUILD_ID = "2026-06-21-p14-3-polish-and-deep-test";
 
   window.__SHUA_APP_VERSION__ = BUILD_ID;
   window.__SHUA_BUILD_ID__ = BUILD_ID;

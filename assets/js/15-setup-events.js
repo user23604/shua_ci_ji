@@ -1,5 +1,25 @@
 "use strict";
 
+function setCloudConfigStatus(message, kind) {
+  var statusEl = document.getElementById("cloudConfigStatus");
+  var btn = document.getElementById("testSaveCloudBtn");
+  var normalizedKind = kind || "info";
+  if (statusEl) {
+    statusEl.textContent = message || "";
+    statusEl.className = "status" + (normalizedKind === "ok" ? " status--ok" : normalizedKind === "error" ? " status--error" : "");
+    statusEl.setAttribute("data-sync-config-status", normalizedKind);
+  }
+  try {
+    window.__lastCloudConfigStatus = { kind: normalizedKind, message: String(message || ""), at: Date.now() };
+    document.dispatchEvent(new CustomEvent("cloud-config-status-change", { detail: window.__lastCloudConfigStatus }));
+  } catch (_) {}
+  if (btn) {
+    btn.setAttribute("data-sync-config-status", normalizedKind);
+    btn.disabled = normalizedKind === "testing";
+  }
+}
+
+
 async function testAndSaveCloudConfig() {
   var tokenInput = document.getElementById("tokenInput");
   var gistInput = document.getElementById("gistInput");
@@ -13,17 +33,11 @@ async function testAndSaveCloudConfig() {
 
   var validation = validateCloudConfigDraft(draft);
   if (!validation.ok) {
-    if (statusEl) {
-      statusEl.textContent = validation.errors.join("；");
-      statusEl.className = "status status--error";
-    }
+    setCloudConfigStatus(validation.errors.join("；"), "error");
     return;
   }
 
-  if (statusEl) {
-    statusEl.textContent = "正在测试连接…";
-    statusEl.className = "status";
-  }
+  setCloudConfigStatus("正在测试连接…", "testing");
 
   // Step 1: GET Gist
   var getUrl = "https://api.github.com/gists/" + encodeURIComponent(draft.gistId);
@@ -33,7 +47,7 @@ async function testAndSaveCloudConfig() {
       headers: { Authorization: "Bearer " + draft.token, Accept: "application/vnd.github+json" }
     }, GITHUB_GET_TIMEOUT_MS);
   } catch (e) {
-    if (statusEl) { statusEl.textContent = "网络错误：无法访问 GitHub。"; statusEl.className = "status status--error"; }
+    setCloudConfigStatus("网络错误：无法访问 GitHub。", "error");
     return;
   }
 
@@ -41,17 +55,19 @@ async function testAndSaveCloudConfig() {
     // 尝试公开访问
     var publicResp = await fetchWithTimeout(getUrl, { headers: { Accept: "application/vnd.github+json" } }, GITHUB_GET_TIMEOUT_MS).catch(function() { return null; });
     if (publicResp && publicResp.ok) {
-      if (statusEl) { statusEl.textContent = "❌ PAT 无效，但 Gist 是公开的——只能读取，无法上传。请重新生成有 Gist 写入权限的 PAT。"; statusEl.className = "status status--error"; }
+      setCloudConfigStatus("❌ PAT 无效，但 Gist 是公开的——只能读取，无法上传。请重新生成有 Gist 写入权限的 PAT。", "error");
     } else {
-      if (statusEl) { statusEl.textContent = "❌ PAT 无效、已过期或没有此 Gist 的访问权限。"; statusEl.className = "status status--error"; }
+      setCloudConfigStatus("❌ PAT 无效、已过期或没有此 Gist 的访问权限。", "error");
     }
     return;
   }
 
   if (!getResponse.ok) {
-    if (statusEl) { statusEl.textContent = "❌ 无法访问 Gist：HTTP " + getResponse.status; statusEl.className = "status status--error"; }
+    setCloudConfigStatus("❌ 无法访问 Gist：HTTP " + getResponse.status, "error");
     return;
   }
+
+  setCloudConfigStatus("已连通 Gist，正在测试写权限…", "testing");
 
   // Step 2: PATCH healthcheck to test write permission
   var patchResponse;
@@ -72,15 +88,15 @@ async function testAndSaveCloudConfig() {
       })
     }, GITHUB_PATCH_TIMEOUT_MS);
   } catch (e) {
-    if (statusEl) { statusEl.textContent = "❌ 写权限测试网络错误。"; statusEl.className = "status status--error"; }
+    setCloudConfigStatus("❌ 写权限测试网络错误。", "error");
     return;
   }
 
   if (!patchResponse.ok) {
     if (patchResponse.status === 403) {
-      if (statusEl) { statusEl.textContent = "❌ PAT 没有 Gist 写入权限（只能读）。请更新 PAT 权限范围。"; statusEl.className = "status status--error"; }
+      setCloudConfigStatus("❌ PAT 没有 Gist 写入权限（只能读）。请更新 PAT 权限范围。", "error");
     } else {
-      if (statusEl) { statusEl.textContent = "❌ 写权限测试失败：HTTP " + patchResponse.status; statusEl.className = "status status--error"; }
+      setCloudConfigStatus("❌ 写权限测试失败：HTTP " + patchResponse.status, "error");
     }
     return;
   }
@@ -107,7 +123,7 @@ async function testAndSaveCloudConfig() {
   });
   persistHashSyncState();
   updateSyncIndicator();
-  if (statusEl) { statusEl.textContent = "配置保存成功，已确认 Gist 可写；业务数据将在后台安全同步。"; statusEl.className = "status status--ok"; }
+  setCloudConfigStatus("配置保存成功，已确认 Gist 可写；业务数据将在后台安全同步。", "ok");
 
   syncTick({ reason: "config_saved", bypassBackoff: true });
 }
