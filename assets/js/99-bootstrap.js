@@ -103,6 +103,12 @@ function init() {
   window.addEventListener("pagehide", function() {
     if (typeof markPageHiddenDuringSync === "function") markPageHiddenDuringSync();
     appendAuditEvent({ type: "app:background" });
+    try {
+      if (typeof releaseCrossTabSyncLock === "function") {
+        releaseCrossTabSyncLock();
+        appendAuditEvent({ type: "sync:pagehide_lock_released", message: "session=" + TAB_ID });
+      }
+    } catch (_) {}
     pausePlaybackForBackground();
     flushDirtyOnPageHide("pagehide_flush");
   });

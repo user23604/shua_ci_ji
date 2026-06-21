@@ -2,11 +2,11 @@
    New index.html loads assets/css/*.css directly.
    This file is kept for old cached index.html. */
 
-@import url("assets/css/00-tokens.css?v=2026-06-21-p14-1-sync-hardening");
-@import url("assets/css/01-base.css?v=2026-06-21-p14-1-sync-hardening");
-@import url("assets/css/02-components.css?v=2026-06-21-p14-1-sync-hardening");
-@import url("assets/css/03-auth-setup.css?v=2026-06-21-p14-1-sync-hardening");
-@import url("assets/css/04-flashcard.css?v=2026-06-21-p14-1-sync-hardening");
-@import url("assets/css/05-drawers-stats.css?v=2026-06-21-p14-1-sync-hardening");
-@import url("assets/css/06-sync-version-dialog.css?v=2026-06-21-p14-1-sync-hardening");
-@import url("assets/css/07-responsive.css?v=2026-06-21-p14-1-sync-hardening");
+@import url("assets/css/00-tokens.css?v=2026-06-21-p14-2-startup-sync-hardening");
+@import url("assets/css/01-base.css?v=2026-06-21-p14-2-startup-sync-hardening");
+@import url("assets/css/02-components.css?v=2026-06-21-p14-2-startup-sync-hardening");
+@import url("assets/css/03-auth-setup.css?v=2026-06-21-p14-2-startup-sync-hardening");
+@import url("assets/css/04-flashcard.css?v=2026-06-21-p14-2-startup-sync-hardening");
+@import url("assets/css/05-drawers-stats.css?v=2026-06-21-p14-2-startup-sync-hardening");
+@import url("assets/css/06-sync-version-dialog.css?v=2026-06-21-p14-2-startup-sync-hardening");
+@import url("assets/css/07-responsive.css?v=2026-06-21-p14-2-startup-sync-hardening");

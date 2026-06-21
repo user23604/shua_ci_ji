@@ -1,7 +1,7 @@
 "use strict";
 
-const APP_VERSION = "2026-06-21-p14-1-sync-hardening";
-const APP_BUILD_ID = "2026-06-21-p14-1-sync-hardening";
+const APP_VERSION = "2026-06-21-p14-2-startup-sync-hardening";
+const APP_BUILD_ID = "2026-06-21-p14-2-startup-sync-hardening";
 
 
 const ACCESS_KEY = "ky2027";

@@ -1,10 +1,46 @@
 "use strict";
 
+
+function startStudyDelay(ms) {
+  return new Promise(function(resolve) { setTimeout(resolve, ms); });
+}
+
+
+function hasForeignSyncLock() {
+  try {
+    if (typeof readCrossTabSyncLock !== "function") return false;
+    var lock = readCrossTabSyncLock();
+    return Boolean(lock && lock.owner && lock.owner !== TAB_ID && Number(lock.expiresAt || 0) > Date.now());
+  } catch (_) {
+    return false;
+  }
+}
+
+
+async function waitForStartupSyncBeforeStudy(maxMs) {
+  var startedAt = Date.now();
+  var warned = false;
+  while (Date.now() - startedAt < (maxMs || 26000)) {
+    var blocked = Boolean(state.isSyncing || hasForeignSyncLock());
+    if (!blocked) return true;
+    if (!warned) {
+      warned = true;
+      appendAuditEvent({ type: "study:start_wait_sync", message: "isSyncing=" + String(Boolean(state.isSyncing)) + " foreignLock=" + String(hasForeignSyncLock()) });
+      setSetupStatus("正在完成云端检查，稍后自动开始刷词...");
+    }
+    await startStudyDelay(250);
+  }
+  appendAuditEvent({ type: "study:start_wait_sync_timeout", message: "isSyncing=" + String(Boolean(state.isSyncing)) + " foreignLock=" + String(hasForeignSyncLock()) });
+  return false;
+}
+
+
 async function startStudy() {
   clearTimers();
   unlockSpeech();
   setSetupStatus("正在加载词库...");
   try {
+    await waitForStartupSyncBeforeStudy(26000);
     const book = currentBook();
     state.roundReturn = null;
     state.playbackPaused = false;
