@@ -1,0 +1,54 @@
+刷词机最终稳定版测试记录
+版本: 2026-07-26-final-stable-v3
+日期: 2026-07-26 (Asia/Taipei)
+
+执行命令:
+  npm run build
+  npm test
+
+构建结果:
+  Built assets/js/app.bundle.js (44 modules, 415379 bytes)
+  Bundle is current (44 modules, 415379 bytes)
+
+自动测试结果:
+  PASS Loader smoke tests
+  PASS Sync core tests
+  PASS Critical storage and merge tests
+  PASS Transport compaction tests
+  PASS Audit retention tests
+  PASS Compact backup compatibility tests
+  PASS Final robustness regression tests
+       - clean local + changed remote must merge, not blind Pull
+       - remote localStorage apply failure must roll back completely
+  PASS Durable cursor and logical clock tests
+  PASS Final v3 recovery, blocker, corruption, backup-order and activity-durability tests
+       - rollback failure creates a hard recovery lock that survives startup
+       - verified PATCH clears historical blocker
+       - transaction recovery prefers pre-overwrite checkpoint
+       - corrupt authoritative JSON is quarantined and blocks sync
+       - activity dirty state is persisted before draft pending is cleared
+  PASS Final network fallback tests
+       - anonymous GET sends no PAT and no extra API-version header
+       - authenticated fallback sends PAT but no unnecessary version header
+       - JSONP read-only fallback works after fetch network failure
+       - GitHub rate-limit reset is preserved
+  PASS Final transport efficiency tests
+  PASS Final static quality tests
+  PASS Rescue recovery tests
+  PASS CSV data integrity tests
+  PASS All release tests
+
+额外独立检查:
+  PASS 全部 JavaScript 语法检查
+  PASS 可维护源码模块: 44
+  PASS 可维护源码行数: 10243
+  PASS 顶层函数声明扫描: 509 个，重复 0
+  PASS 核心源码最大文件: 462 行（生成 bundle 除外）
+  PASS 所有 JSON 可解析
+  PASS TODO/FIXME/HACK/XXX 扫描无确认项
+  PASS 仓库 GitHub token 模式扫描
+  PASS 版本一致性、Service Worker 资源和 bundle 一致性
+
+未计为通过的环境项:
+  Headless Chromium 在当前容器中于发出本地页面请求前超时，HTTP 服务没有收到请求，因此没有伪报浏览器级 smoke 通过。
+  发布后仍需按 FINAL_AUDIT_REPORT.md 与 docs/MAINTENANCE_CHECKLIST.md 完成中国大陆真机/VPN、顺序跨设备、断网和 Service Worker 场景。

@@ -1,0 +1,237 @@
+/* ── Responsive layout: ≤ 980px ── */
+@media (max-width: 980px) {
+  .setup-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-panel--span4 {
+    grid-column: span 2;
+  }
+
+  .flash-view {
+    grid-template-columns: 128px minmax(0, 1fr) 112px;
+  }
+}
+
+/* ── Portrait / phone layout ── */
+@media (orientation: portrait) {
+  html,
+  body,
+  .app-shell {
+    overflow: hidden;
+  }
+
+  .view {
+    background: var(--bg);
+  }
+
+  .setup-view {
+    overflow: auto;
+    padding: 14px;
+  }
+
+  .setup-topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .setup-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .setup-actions .btn {
+    flex: 1 1 30%;
+    min-width: 92px;
+  }
+
+  .setup-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-panel,
+  .settings-panel--span2,
+  .settings-panel--span4 {
+    grid-column: auto;
+  }
+
+  .sync-grid,
+  .stats-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .flash-view {
+    height: 100dvh;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 8px;
+    overflow: hidden;
+  }
+
+  .side-panel {
+    height: auto;
+    min-height: 0;
+    padding: 10px;
+    border-radius: var(--card-radius);
+  }
+
+  .flash-view > .side-panel:first-child {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: center;
+    gap: 8px;
+  }
+
+  .flash-view > .side-panel:first-child .btn {
+    min-height: 42px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .progress-block {
+    grid-column: 1 / -1;
+    margin-top: 0;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+  }
+
+  .live-counter {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .progress-title {
+    grid-column: 1 / -1;
+  }
+
+  .progress-main {
+    font-size: clamp(18px, 5vw, 24px);
+  }
+
+  .progress-sub {
+    text-align: right;
+  }
+
+  .stage {
+    height: auto;
+    min-height: 0;
+  }
+
+  .card-stack {
+    width: 100%;
+    height: min(62dvh, 620px);
+  }
+
+  .word-card {
+    padding: clamp(18px, 5vw, 34px);
+  }
+
+  .word-card__meta {
+    top: 12px;
+    left: 14px;
+    right: 14px;
+  }
+
+  .word-card__en {
+    font-size: clamp(42px, 15vw, 88px);
+  }
+
+  .word-card__zh {
+    width: 96%;
+    min-height: 92px;
+    font-size: clamp(18px, 5.3vw, 28px);
+  }
+
+  .gesture-panel {
+    justify-content: stretch;
+    padding: 0;
+  }
+
+  .gesture-list {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0;
+  }
+
+  .gesture-item {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 6px;
+    min-height: 58px;
+    padding: 8px 6px;
+    border-bottom: 0;
+    border-right: 1px solid var(--line);
+    text-align: center;
+  }
+
+  .gesture-item:last-child {
+    border-right: 0;
+  }
+
+  .gesture-symbol {
+    width: 32px;
+    height: 32px;
+  }
+
+  .gesture-text {
+    font-size: 12px;
+  }
+
+  .archive-drawer,
+  .stats-drawer {
+    width: 100vw;
+  }
+}
+
+/* ── Responsive: ≤ 640px ── */
+@media (max-width: 640px) {
+  .auth-panel {
+    padding: 22px;
+  }
+
+  .setup-actions .btn {
+    flex-basis: 100%;
+  }
+
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .week-heatmap,
+  .month-weekdays,
+  .month-heatmap {
+    gap: 5px;
+  }
+
+  .week-cell {
+    min-height: 58px;
+  }
+
+  .month-cell strong {
+    font-size: 13px;
+  }
+
+  .month-cell span {
+    font-size: 10px;
+  }
+}
+
+/* ── Short landscape ── */
+@media (max-height: 520px) and (orientation: landscape) {
+  .setup-view {
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .settings-panel {
+    padding: 12px;
+  }
+
+  .word-card__en {
+    font-size: clamp(42px, 9vw, 86px);
+  }
+
+  .word-card__zh {
+    font-size: clamp(18px, 3vw, 26px);
+  }
+}

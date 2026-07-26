@@ -1,0 +1,6 @@
+{
+  "appVersion": "2026-07-26-final-stable-v3",
+  "buildId": "2026-07-26-final-stable-v3",
+  "deployedAt": "2026-07-26T00:10:00+08:00",
+  "note": "Final stable release: preserves the single-Gist/single-sync.json workflow; fixes hard recovery-lock persistence, rollback verification, historical blocker recovery after verified PATCH, backup ordering, authoritative local JSON corruption quarantine, and activity-draft durability. Concurrent activity counters remain intentionally idempotent because devices are used sequentially."
+}
