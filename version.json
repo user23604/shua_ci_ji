@@ -1,0 +1,6 @@
+{
+  "appVersion": "2026-07-27-final-ux-sync-v4",
+  "buildId": "2026-07-27-final-ux-sync-v4",
+  "deployedAt": "2026-07-27T21:26:27+08:00",
+  "note": "Resume-first study release: authenticated startup restores the last card directly in paused state; archive units are explicitly collapsed; Unit and word long-press selection are separated; selected archive Units can be reviewed together; selected archived words can be batch-unmarked; full-unit replay and manual Chinese reveal are added; tablet swipes use nonlinear amplification; all previous safe auto/manual sync protections remain."
+}

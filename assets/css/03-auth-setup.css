@@ -1,0 +1,92 @@
+/* ── Auth view ── */
+.auth-view {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.auth-panel {
+  width: min(420px, 92vw);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  box-shadow: var(--shadow);
+  padding: 30px;
+}
+
+.auth-panel h1,
+.setup-title h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.auth-panel p,
+.setup-title p {
+  margin: 10px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 26px;
+}
+
+/* ── Setup view ── */
+.setup-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px clamp(18px, 3vw, 34px);
+  overflow: auto;
+}
+
+.setup-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.setup-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.setup-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+/* ── Sync config grid ── */
+.sync-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+
+/* Primary study entry stays at the top so transient setup status changes never require a long scroll. */
+.setup-launchbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: 2px 0;
+  background: linear-gradient(180deg, var(--bg) 70%, transparent);
+}
+
+.setup-start-btn {
+  min-height: 52px;
+  font-size: 17px;
+  box-shadow: var(--shadow);
+}
+
+.manual-sync-controls[hidden] {
+  display: none !important;
+}
