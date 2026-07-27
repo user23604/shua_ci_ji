@@ -1,0 +1,6 @@
+{
+  "appVersion": "2026-07-27-final-audio-v5",
+  "buildId": "2026-07-27-final-audio-v5",
+  "deployedAt": "2026-07-27T23:30:00+08:00",
+  "note": "Standard-pronunciation release: English playback now prefers same-origin offline audio packs, then a cached US dictionary recording, and only then device Web Speech. Current and upcoming words are prefetched, the current Unit can be cached explicitly, transient network failures retry after cooldown, and an offline pack builder supports dictionary recordings or one fixed Piper voice. All v4 study, archive, gesture, session-resume, and sync protections remain."
+}

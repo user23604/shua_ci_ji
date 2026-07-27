@@ -1,0 +1,634 @@
+/* ── Flash view layout ── */
+.flash-view {
+  display: grid;
+  grid-template-columns: minmax(150px, 18vw) minmax(0, 1fr) minmax(132px, 16vw);
+  gap: 14px;
+  padding: 12px;
+}
+
+.side-panel {
+  height: calc(100dvh - 24px);
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  background: var(--surface-soft);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* ── Progress block ── */
+.progress-block {
+  display: grid;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.progress-title {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.progress-main {
+  font-size: clamp(17px, 2.1vw, 24px);
+  line-height: 1.25;
+  font-weight: 900;
+}
+
+.progress-sub {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* ── Live counter ── */
+.live-counter {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.live-counter strong {
+  color: var(--accent);
+  font-size: 16px;
+  animation: counter-pop 0.22s ease both;
+}
+
+@keyframes counter-pop {
+  0% {
+    transform: scale(0.95);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ── Stage / Card stack ── */
+.stage {
+  min-width: 0;
+  height: calc(100dvh - 24px);
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+
+.card-stack {
+  position: relative;
+  width: min(760px, 100%);
+  height: min(72dvh, 520px);
+  touch-action: none;
+  user-select: none;
+}
+
+/* ── Word card ── */
+.word-card {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: clamp(14px, 3vh, 28px);
+  border-radius: var(--card-radius);
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, var(--freq-alpha, 0.04)), rgba(15, 118, 110, var(--freq-alpha-soft, 0.015))),
+    var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  padding: clamp(18px, 4vw, 44px);
+  transform: translate3d(0, 0, 0);
+  will-change: transform, opacity;
+  overflow: hidden;
+}
+
+/* ── Swipe edges ── */
+.card-swipe-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.card-swipe-edge {
+  position: absolute;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.card-swipe-edge--left,
+.card-swipe-edge--right {
+  top: 12%;
+  bottom: 12%;
+  width: 22%;
+}
+
+.card-swipe-edge--left {
+  left: 0;
+  background: linear-gradient(90deg, rgba(52, 181, 169, 0.22), rgba(52, 181, 169, 0));
+}
+
+.card-swipe-edge--right {
+  right: 0;
+  background: linear-gradient(270deg, rgba(52, 181, 169, 0.18), rgba(52, 181, 169, 0));
+}
+
+.card-swipe-edge--up,
+.card-swipe-edge--down {
+  left: 12%;
+  right: 12%;
+  height: 22%;
+}
+
+.card-swipe-edge--up {
+  top: 0;
+  background: linear-gradient(180deg, rgba(22, 128, 60, 0.18), rgba(22, 128, 60, 0));
+}
+
+.card-swipe-edge--down {
+  bottom: 0;
+  background: linear-gradient(0deg, rgba(180, 35, 24, 0.17), rgba(180, 35, 24, 0));
+}
+
+.word-card.is-swipe-left .card-swipe-edge--left,
+.word-card.is-swipe-right .card-swipe-edge--right,
+.word-card.is-swipe-up .card-swipe-edge--up,
+.word-card.is-swipe-down .card-swipe-edge--down {
+  opacity: 1;
+}
+
+/* ── Tap zones ── */
+.card-tap-zone {
+  position: absolute;
+  z-index: 6;
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: var(--card-radius);
+  background: transparent;
+  outline: none;
+}
+
+.card-tap-zone::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.card-tap-zone--left,
+.card-tap-zone--right {
+  top: 0;
+  bottom: 0;
+  width: 28%;
+}
+
+.card-tap-zone--left {
+  left: 0;
+}
+
+.card-tap-zone--right {
+  right: 0;
+}
+
+.card-tap-zone--up,
+.card-tap-zone--down {
+  left: 28%;
+  right: 28%;
+  height: 24%;
+}
+
+.card-tap-zone--up {
+  top: 0;
+}
+
+.card-tap-zone--down {
+  bottom: 0;
+}
+
+.card-tap-zone--left::after {
+  background: linear-gradient(90deg, rgba(52, 181, 169, 0.11), rgba(52, 181, 169, 0));
+}
+
+.card-tap-zone--right::after {
+  background: linear-gradient(270deg, rgba(52, 181, 169, 0.1), rgba(52, 181, 169, 0));
+}
+
+.card-tap-zone--up::after {
+  background: linear-gradient(180deg, rgba(22, 128, 60, 0.1), rgba(22, 128, 60, 0));
+}
+
+.card-tap-zone--down::after {
+  background: linear-gradient(0deg, rgba(180, 35, 24, 0.1), rgba(180, 35, 24, 0));
+}
+
+.card-tap-zone:hover::after,
+.card-tap-zone:focus-visible::after {
+  opacity: 1;
+}
+
+/* ── Frequency watermark ── */
+.freq-watermark {
+  position: absolute;
+  right: 18px;
+  bottom: 4px;
+  color: rgba(15, 118, 110, calc(var(--freq-alpha, 0.06) + 0.08));
+  font-size: clamp(52px, 12vw, 128px);
+  line-height: 1;
+  font-weight: 950;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── Card state variants ── */
+.word-card--next {
+  transform: translate3d(0, 14px, 0) scale(0.97);
+  opacity: 0.36;
+  pointer-events: none;
+}
+
+.word-card--enter-from-left {
+  animation: cardEnterFromLeft 160ms cubic-bezier(0.2, 0.78, 0.26, 1) both;
+}
+
+.word-card--enter-from-right {
+  animation: cardEnterFromRight 160ms cubic-bezier(0.2, 0.78, 0.26, 1) both;
+}
+
+.word-card--resume-feedback {
+  animation: resumeCardPulse 720ms ease both;
+}
+
+.word-card--mark-feedback {
+  animation: markCardPulse 560ms ease both;
+}
+
+/* ── Floating feedback labels ── */
+.resume-feedback {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  z-index: 8;
+  transform: translate3d(-50%, -4px, 0);
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.1);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 900;
+  pointer-events: none;
+  animation: resumeFeedbackFade 900ms ease both;
+}
+
+.mark-feedback {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  z-index: 8;
+  transform: translate3d(-50%, -4px, 0);
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(159, 42, 32, 0.1);
+  color: var(--unknown);
+  font-size: 12px;
+  font-weight: 900;
+  pointer-events: none;
+  animation: markFeedbackFade 820ms ease both;
+}
+
+/* ── Card animation keyframes ── */
+@keyframes cardEnterFromLeft {
+  from {
+    opacity: 0.88;
+    transform: translate3d(-18px, 0, 0) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes cardEnterFromRight {
+  from {
+    opacity: 0.88;
+    transform: translate3d(18px, 0, 0) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes resumeCardPulse {
+  0% {
+    box-shadow: var(--shadow), 0 0 0 0 rgba(15, 118, 110, 0);
+  }
+  38% {
+    box-shadow: var(--shadow), 0 0 0 5px rgba(15, 118, 110, 0.14);
+  }
+  100% {
+    box-shadow: var(--shadow), 0 0 0 0 rgba(15, 118, 110, 0);
+  }
+}
+
+@keyframes markCardPulse {
+  0% {
+    box-shadow: var(--shadow), 0 0 0 0 rgba(159, 42, 32, 0);
+  }
+  36% {
+    box-shadow: var(--shadow), 0 0 0 4px rgba(159, 42, 32, 0.1);
+  }
+  100% {
+    box-shadow: var(--shadow), 0 0 0 0 rgba(159, 42, 32, 0);
+  }
+}
+
+@keyframes resumeFeedbackFade {
+  0% {
+    opacity: 0;
+    transform: translate3d(-50%, -7px, 0);
+  }
+  22%,
+  58% {
+    opacity: 1;
+    transform: translate3d(-50%, 0, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(-50%, -3px, 0);
+  }
+}
+
+@keyframes markFeedbackFade {
+  0% {
+    opacity: 0;
+    transform: translate3d(-50%, -7px, 0);
+  }
+  20%,
+  54% {
+    opacity: 1;
+    transform: translate3d(-50%, 0, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(-50%, -3px, 0);
+  }
+}
+
+.word-card.is-animated {
+  transition: transform 0.22s ease, opacity 0.22s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .word-card--enter-from-left,
+  .word-card--enter-from-right,
+  .word-card--resume-feedback,
+  .word-card--mark-feedback,
+  .resume-feedback,
+  .mark-feedback {
+    animation: none;
+  }
+}
+
+/* ── Card inner content ── */
+.word-card__meta {
+  position: absolute;
+  top: 16px;
+  left: 18px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  z-index: 4;
+}
+
+.word-card__en-shell {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  z-index: 4;
+}
+
+.word-card__en {
+  max-width: 100%;
+  text-align: center;
+  font-size: clamp(48px, 10vw, 112px);
+  line-height: 0.98;
+  font-weight: 520;
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+/* ── Speaking highlight ── */
+.word-card__en.is-speaking,
+.speech-token.is-speaking {
+  color: #f3b41b;
+  text-shadow: 0 8px 28px rgba(243, 180, 27, 0.22);
+  animation: speak-pop 0.28s ease both;
+}
+
+@keyframes speak-pop {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.045);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ── Chinese definition ── */
+.word-card__zh {
+  width: min(92%, 680px);
+  min-height: 72px;
+  color: var(--text);
+  font-size: clamp(20px, 3.2vw, 34px);
+  line-height: 1.36;
+  text-align: left;
+  font-weight: 760;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  z-index: 4;
+}
+
+.speech-token {
+  display: block;
+  border-radius: 6px;
+  padding: 1px 6px;
+  transition: color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.meaning-line {
+  max-width: 100%;
+}
+
+.meaning-highlight {
+  background: transparent;
+  color: var(--danger);
+  font-weight: 950;
+}
+
+.word-card__zh.is-hidden {
+  visibility: hidden;
+}
+
+/* ── Undo button on card ── */
+.word-card__actions {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 7;
+}
+
+.undo-btn {
+  min-height: 42px;
+  border-radius: var(--card-radius);
+  padding: 0 14px;
+  background: rgba(161, 92, 7, 0.13);
+  color: var(--warning);
+  font-weight: 900;
+}
+
+/* ── Gesture panel ── */
+.gesture-panel {
+  justify-content: center;
+  padding: 0;
+  overflow: hidden;
+}
+
+.gesture-list {
+  display: grid;
+  gap: 0;
+  width: 100%;
+}
+
+.gesture-item {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  touch-action: manipulation;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.gesture-item:last-child {
+  border-bottom: 0;
+}
+
+.gesture-item:hover,
+.gesture-item:focus-visible {
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--text);
+  outline: none;
+}
+
+.gesture-symbol {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-strong);
+  color: var(--text);
+  font-weight: 950;
+  pointer-events: none;
+}
+
+.gesture-text {
+  font-size: 13px;
+  line-height: 1.25;
+  font-weight: 800;
+  pointer-events: none;
+}
+
+
+/* Persistent pause state: compact, readable and does not blur or cover the word/definition. */
+.word-card--paused {
+  box-shadow: var(--shadow), 0 0 0 3px rgba(243, 180, 27, 0.24);
+  cursor: pointer;
+}
+
+.pause-feedback {
+  position: absolute;
+  top: 48px;
+  left: 50%;
+  z-index: 9;
+  transform: translateX(-50%);
+  max-width: calc(100% - 36px);
+  padding: 6px 11px;
+  border: 1px solid rgba(243, 180, 27, 0.32);
+  border-radius: 999px;
+  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 900;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.08);
+}
+
+.pause-feedback span {
+  display: inline-block;
+  margin-right: 4px;
+  letter-spacing: -2px;
+}
+
+
+.word-card--awaiting-zh {
+  cursor: pointer;
+}
+
+.manual-zh-feedback {
+  position: absolute;
+  right: 18px;
+  top: 48px;
+  z-index: 9;
+  padding: 5px 9px;
+  border: 1px solid rgba(15, 118, 110, 0.24);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 850;
+  pointer-events: none;
+}
+
+.word-card--paused .manual-zh-feedback {
+  top: 82px;
+}

@@ -1,0 +1,51 @@
+刷词机最终测试记录
+版本: 2026-07-27-final-audio-v5
+日期: 2026-07-27
+
+构建
+- npm run build: 通过
+- 生产 bundle: assets/js/app.bundle.js
+- 源码模块: 48
+- bundle 大小: 459901 bytes
+- npm run check:bundle: 通过
+
+全量发布测试
+- Loader smoke tests: 通过
+- Sync core tests: 通过
+- Critical storage and merge tests: 通过
+- Transport compaction tests: 通过
+- Audit retention tests: 通过
+- Compact backup compatibility tests: 通过
+- Final robustness regression tests: 通过
+- Durable cursor and logical clock tests: 通过
+- Final network fallback tests: 通过
+- Final transport efficiency tests: 通过
+- Final static quality tests: 通过
+- UX v4 regression tests: 通过
+- Audio v5 regression tests: 通过
+- Rescue recovery tests: 通过
+- CSV data integrity tests: 通过
+
+音频专项验证
+- 三份 CSV 唯一英文词数: 4515
+- 同源音频 manifest 结构: 通过
+- 同源音频优先于远程词典和设备语音: 通过
+- CacheStorage 独立读音缓存及 Service Worker 保留: 通过
+- 当前及后续单词预取: 通过
+- 当前 Unit 主动缓存和缓存清理控件: 通过
+- CSP 允许指定词典请求与 blob: 音频: 通过
+- 远程音频 2.8 秒超时和全局熔断: 通过
+- 单词级短暂失败冷却与自动恢复: 通过
+- 暂停/切词时 HTML Audio 停止并释放 Blob URL: 通过
+- 完整音频包生成器 --check: 通过
+- Python 生成器语法检查: 通过
+
+维护性
+- 所有源码 JS 模块 <= 500 行: 通过
+- 全局函数声明扫描: 526 个，重名 0
+- GitHub PAT 静态泄漏扫描: 通过
+- 生产 bundle 与源码顺序一致: 通过
+
+环境限制
+- 当前容器 Chromium headless 在本地页面加载阶段持续不退出，未产生可用 DOM；未将其冒充为真机浏览器验证。
+- 当前容器未批量下载第三方音频，因此 ZIP 不内置 4515 个录音；运行时可获取并缓存，或使用包内脚本生成完整同源音频包。
