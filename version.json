@@ -1,0 +1,6 @@
+{
+  "appVersion": "2026-08-31-round-archive-v1",
+  "buildId": "2026-08-31-round-archive-v1",
+  "deployedAt": "2026-08-31T23:51:00+08:00",
+  "note": "Round archive release: users can name and annotate a learning round, archive its semantic study snapshot, reset all live marks/progress/activity/session state, and start a clean next round. Round generations prevent stale multi-device data from resurrecting after reset; archive history remains synchronized and rescue-compatible."
+}

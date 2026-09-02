@@ -1,0 +1,11 @@
+{
+  "name": "shua-ci-ji",
+  "private": true,
+  "version": "2026.8.31-1",
+  "description": "考研词汇自动刷词机",
+  "scripts": {
+    "build": "node tools/build_bundle.js",
+    "check:bundle": "node tools/build_bundle.js --check",
+    "test": "node tools/build_bundle.js --check && node tests/run_all_tests.js"
+  }
+}
