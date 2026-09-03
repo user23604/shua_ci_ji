@@ -1,6 +1,6 @@
 {
-  "appVersion": "2026-09-03-flash-unit-quick-switch-v4",
-  "buildId": "2026-09-03-flash-unit-quick-switch-v4",
+  "appVersion": "2026-09-03-flash-unit-quick-switch-v5",
+  "buildId": "2026-09-03-flash-unit-quick-switch-v5",
   "deployedAt": "",
   "note": "Flash-view unit quick switch: the study side panel now offers a Unit dropdown so users can switch units without going back to the setup page; switching rebuilds the session in place with the same semantics as startStudy (resume cursor, group stats, playback state), persists the setting, and shows a one-shot notice when the target unit has no unmarked words left. Also includes the 2026-09-03 gist read-after-write fix (PATCH 2xx response used as write receipt, authenticated read-after-write verification, no duplicate PATCH on stale verify reads, decoupled best-effort backup cleanup, richer 422 diagnostics)."
 }

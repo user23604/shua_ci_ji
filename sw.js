@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "2026-09-03-flash-unit-quick-switch-v4";
+const APP_VERSION = "2026-09-03-flash-unit-quick-switch-v5";
 const STATIC_CACHE = "shua-ci-ji-static-" + APP_VERSION;
 const RUNTIME_CACHE = "shua-ci-ji-runtime-" + APP_VERSION;
 const AUDIO_CACHE = "shua-ci-ji-pronunciation-v1";

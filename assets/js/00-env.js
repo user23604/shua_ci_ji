@@ -1,7 +1,7 @@
 "use strict";
 
-const APP_VERSION = "2026-09-03-flash-unit-quick-switch-v4";
-const APP_BUILD_ID = "2026-09-03-flash-unit-quick-switch-v4";
+const APP_VERSION = "2026-09-03-flash-unit-quick-switch-v5";
+const APP_BUILD_ID = "2026-09-03-flash-unit-quick-switch-v5";
 
 
 const ACCESS_KEY = "ky2027";

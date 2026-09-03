@@ -179,21 +179,22 @@ function undoLabelForMark(kind) {
 }
 
 
-// 快速切 Unit 下拉选项：与设置页同源的 Unit 列表，附剩余未斩数，便于直接挑选。
+// 快速切 Unit 下拉选项：与设置页同源的 Unit 列表，格式"剩余/总数"（未斩/全部），便于直接挑选。
 // 每张卡片都会重渲染，这里必须单次遍历词表统计，禁止逐 Unit 重复过滤/读 marks。
 function renderUnitQuickOptions(book) {
   const currentUnit = Number(state.settings.unit);
   const knownIds = new Set(loadMarks(book.id).known.map(Number));
-  const remainingByUnit = {};
+  const countByUnit = {};
   state.words.forEach(function(word) {
-    if (!knownIds.has(Number(word.id))) {
-      remainingByUnit[word.unit] = (remainingByUnit[word.unit] || 0) + 1;
-    }
+    const entry = countByUnit[word.unit] || (countByUnit[word.unit] = { remaining: 0, total: 0 });
+    entry.total += 1;
+    if (!knownIds.has(Number(word.id))) entry.remaining += 1;
   });
   const options = [];
   Array.from({ length: book.totalUnits }, (_, index) => index + 1).forEach((unit) => {
+    const counts = countByUnit[unit] || { remaining: 0, total: 0 };
     const selected = unit === currentUnit ? " selected" : "";
-    options.push(`<option value="${unit}"${selected}>${escapeHtml(unitDisplayLabel(book, unit))} · 剩 ${remainingByUnit[unit] || 0}</option>`);
+    options.push(`<option value="${unit}"${selected}>${escapeHtml(unitDisplayLabel(book, unit))} · ${counts.remaining}/${counts.total}</option>`);
   });
   return options.join("");
 }
