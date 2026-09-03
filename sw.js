@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "2026-09-02-round-archive-v2";
+const APP_VERSION = "2026-09-03-gist-read-after-write-v3";
 const STATIC_CACHE = "shua-ci-ji-static-" + APP_VERSION;
 const RUNTIME_CACHE = "shua-ci-ji-runtime-" + APP_VERSION;
 const AUDIO_CACHE = "shua-ci-ji-pronunciation-v1";

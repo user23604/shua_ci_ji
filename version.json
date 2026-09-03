@@ -1,6 +1,6 @@
 {
-  "appVersion": "2026-09-02-round-archive-v2",
-  "buildId": "2026-09-02-round-archive-v2",
-  "deployedAt": "2026-09-02T23:59:40+08:00",
-  "note": "Round archive storage fix: historical archives remain synchronized once, while local safety backups exclude duplicate archive history; existing oversized backups are compacted on startup and quota recovery can evict redundant backup copies without touching live archives. This fixes LOCAL_STORAGE_QUOTA / local_backup_write_failed during manual sync after archiving."
+  "appVersion": "2026-09-03-gist-read-after-write-v3",
+  "buildId": "2026-09-03-gist-read-after-write-v3",
+  "deployedAt": "",
+  "note": "Gist read-after-write fix: a successful PATCH is now confirmed by its own 2xx response body (write receipt) before any read-back; read-after-write verification forces authenticated GET (anonymous GET can hit GitHub edge cache ~60s and return pre-write content); a stale verify mismatch no longer becomes preflightChanged and can never re-PATCH the same payload in one run; expired sync.backup.* cleanup is decoupled from the business PATCH and runs best-effort after a confirmed write (422 cleanup failures no longer fail the sync); 422 diagnostics now include the GitHub message/errors digest and per-file upsert/delete list."
 }

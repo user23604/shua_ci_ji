@@ -1,7 +1,7 @@
 (function() {
   "use strict";
 
-  var BUILD_ID = "2026-09-02-round-archive-v2";
+  var BUILD_ID = "2026-09-03-gist-read-after-write-v3";
 
   window.__SHUA_APP_VERSION__ = BUILD_ID;
   window.__SHUA_BUILD_ID__ = BUILD_ID;
@@ -54,6 +54,7 @@
     "27-sync-tick.js",
     "28a-sync-branches.js",
     "28-sync-push-patch.js",
+    "28b-sync-backup-cleanup.js",
     "29-sync-merge.js",
     "31-wake-lock.js",
     "99-bootstrap.js"

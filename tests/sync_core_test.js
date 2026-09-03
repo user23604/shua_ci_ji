@@ -338,3 +338,288 @@ const logicalClockStates = expr(`loadMarkStates(${JSON.stringify(bookId)})`);
 assert(Date.parse(logicalClockStates['2'].updatedAt) > Date.parse(logicalClockStates['1'].updatedAt), 'new local mark must advance beyond the maximum observed logical timestamp');
 
 console.log('Durable cursor and logical clock tests passed');
+
+
+// ══════════════════════════════════════════════════════════════════════
+// Gist read-after-write 回归（2026-09-03 修复）
+// 故障链：PATCH 200 成功 → 匿名 verify 命中 GitHub 边缘缓存读到旧 hash →
+// 被误判为 preflightChanged → 重发相同 PATCH → GitHub 422 → 同步失败。
+// ══════════════════════════════════════════════════════════════════════
+[
+  'assets/js/28-sync-push-patch.js',
+  'assets/js/28a-sync-branches.js',
+  'assets/js/28b-sync-backup-cleanup.js'
+].forEach(load);
+
+(async function runReadAfterWriteRegression() {
+  // vm 测试环境缺失的依赖桩（07-diagnostics-ui / 06-sync-runtime 未加载）
+  context.showSyncFailureBanner = function(){};
+  context.backoffDelayForFailure = function(){ return 60000; };
+  context.shouldMarkDirtyOnFailure = function(){ return true; };
+  context.beginPatchTransaction = function(){ return true; };
+  context.endPatchTransaction = function(){};
+  context.normalizeSyncRequestError = function(error, details = {}) {
+    return {
+      kind: (error && error.kind) || 'network',
+      stage: (details && details.stage) || '',
+      method: (details && details.method) || 'GET',
+      transport: (details && details.transport) || '',
+      httpStatus: Number(error && error.httpStatus) || 0,
+      message: (error && error.message) || ''
+    };
+  };
+  context.requestErrorTechnical = function(error) {
+    return 'kind=' + String((error && error.kind) || '') + ' message=' + String((error && error.message) || '');
+  };
+  context.delay = function(){ return Promise.resolve(); };
+
+  const auditEvents = [];
+  context.appendAuditEvent = function(event){ auditEvents.push(event || {}); };
+  const scheduleCalls = [];
+  context.scheduleSyncSoon = function(reason){ scheduleCalls.push(String(reason || '')); return true; };
+
+  function makeGistResponse(status, body) {
+    const text = typeof body === 'string' ? body : JSON.stringify(body || {});
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: () => '' },
+      json: async () => JSON.parse(text),
+      text: async () => text
+    };
+  }
+
+  function resetLocalState() {
+    expr(`
+      localStorage.clear();
+      state.cloud = { token: 'ghp_' + 't'.repeat(36), gistId: 'gist123' };
+      state.syncMeta = ensureSyncMeta({ clientId: 'patch-test' });
+      state.syncHashState = ensureHashSyncState({});
+      state.pendingProgressSync = false;
+      state.activityDirtyPending = false;
+      state.activityDraftPending = false;
+      state.applyingRemotePayload = false;
+      state.suppressDirty = false;
+      saveProgress(${JSON.stringify(bookId)}, { unit: 3, lastWordId: 42, updatedAt: '2026-09-03T09:00:00.000+08:00' }, { touch: false });
+      saveMarkStates(${JSON.stringify(bookId)}, {
+        '42': { value: 'known', updatedAt: '2026-09-03T09:00:00.000+08:00', clientId: 'patch-test', seq: 1 }
+      }, { touch: false, syncMarks: true });
+    `);
+  }
+
+  resetLocalState();
+  // 远端旧数据（模拟另一设备的旧状态 / 边缘缓存内容）
+  expr(`
+    var __remoteOldPayload = normalizeSyncPayload({
+      progress: { [${JSON.stringify(bookId)}]: { unit: 2, lastWordId: 30, updatedAt: '2026-09-01T09:00:00.000+08:00' } }
+    });
+    var __remoteOld = {
+      kind: 'valid_nonempty',
+      snapshot: __remoteOldPayload,
+      payload: __remoteOldPayload,
+      payloadHash: businessPayloadHash(__remoteOldPayload),
+      fileNames: ['sync.json'],
+      readTransport: 'anonymous_fetch'
+    };
+    var __remoteOldHash = businessPayloadHash(__remoteOldPayload);
+    var __expected = refreshLocalPayloadHash({ persist: false });
+    var __expectedHash = __expected.hash;
+  `);
+
+  // ── 场景 1：PATCH 200 + 响应收据 hash 一致，随后所有 GET 永远返回旧 hash ──
+  // 期望：同步成功、只发 1 次业务 PATCH、不进 verify_mismatch_rebase、不二次 PATCH。
+  {
+    const patchCalls = [];
+    const verifyCalls = [];
+    context.fetchGistSyncPayload = async function(options = {}) {
+      verifyCalls.push({ forceAuthenticated: options.forceAuthenticated === true });
+      return vm.runInContext('__remoteOld', context); // 永远是旧数据（模拟边缘缓存）
+    };
+    context.fetchWithTimeout = async function(url, options = {}, timeoutMs, ctx = {}) {
+      patchCalls.push({ body: JSON.parse(options.body || '{}'), stage: ctx.stage || '' });
+      const files = JSON.parse(options.body).files;
+      return makeGistResponse(200, {
+        id: 'gist123',
+        updated_at: '2026-09-03T09:10:00Z',
+        history: [{ version: 'rev-receipt' }],
+        files: Object.keys(files).reduce((acc, name) => {
+          acc[name] = files[name] === null ? { filename: name, status: 'removed' } : { filename: name, content: files[name].content };
+          return acc;
+        }, {})
+      });
+    };
+    const pushed = await expr(`syncBranchPushLocal({ remote: __remoteOld, local: null, keepalive: false, reason: 'manual_retry', runId: 901, remoteHashAtDecision: __remoteOldHash })`);
+    assert.strictEqual(pushed, true, 'receipt-confirmed push must succeed even when read-backs stay stale');
+    assert.strictEqual(patchCalls.length, 1, `business PATCH must be sent exactly once, got ${patchCalls.length}`);
+    assert.strictEqual(verifyCalls.length, 1, 'only the preflight GET is expected; no follow-up verify GET');
+    assert.strictEqual(verifyCalls[0].forceAuthenticated, false, 'preflight keeps anonymous-first behaviour');
+    assert.strictEqual(expr('state.syncHashState.lastSyncStatus'), 'cloud_ok', 'receipt-confirmed push must mark cloud_ok');
+    assert.strictEqual(expr('state.syncHashState.localDirty'), false, 'receipt-confirmed push must clear dirty');
+    assert(patchCalls[0].body.files['sync.json'] && typeof patchCalls[0].body.files['sync.json'].content === 'string', 'business PATCH must upsert sync.json content');
+    assert(!Object.values(patchCalls[0].body.files).some((v) => v === null), 'business PATCH must not carry deletion entries');
+    assert(auditEvents.some((e) => e.type === 'sync:patch_receipt_confirmed'), 'audit must record the receipt confirmation');
+  }
+
+  // ── 场景 2：PATCH 200 但响应体无法用于验证，authenticated verify 返回 uploadedHash ──
+  // 期望：成功、只 PATCH 一次、读回确认必须带 forceAuthenticated。
+  {
+    resetLocalState();
+    expr(`
+      var __expected = refreshLocalPayloadHash({ persist: false });
+      var __expectedHash = __expected.hash;
+    `);
+    const patchCalls = [];
+    const verifyCalls = [];
+    context.fetchGistSyncPayload = async function(options = {}) {
+      verifyCalls.push({ forceAuthenticated: options.forceAuthenticated === true });
+      if (verifyCalls.length === 1) return vm.runInContext('__remoteOld', context); // preflight
+      return vm.runInContext(`({ kind: 'valid_nonempty', snapshot: __expected.payload, payload: __expected.payload, payloadHash: __expectedHash, fileNames: ['sync.json'], readTransport: 'authenticated_fetch' })`, context);
+    };
+    context.fetchWithTimeout = async function(url, options = {}, timeoutMs, ctx = {}) {
+      patchCalls.push({ body: JSON.parse(options.body || '{}'), stage: ctx.stage || '' });
+      // 响应体缺少 sync.json 文件条目 → 收据不可用
+      return makeGistResponse(200, { id: 'gist123', updated_at: '2026-09-03T09:10:00Z', history: [{ version: 'rev-2' }], files: {} });
+    };
+    const result = await expr(`patchBusinessPayloadToGist(refreshLocalPayloadHash({ persist: false }).payload, { remote: __remoteOld, keepalive: false, runId: 902, reason: 'manual', remoteHashAtDecision: __remoteOldHash })`);
+    assert.strictEqual(result.ok, true, 'authenticated verify matching uploadedHash must succeed');
+    assert.strictEqual(patchCalls.length, 1, 'unusable receipt must not trigger a second PATCH');
+    assert.strictEqual(verifyCalls.length, 2, 'preflight GET + one verify GET expected');
+    assert.strictEqual(verifyCalls[1].forceAuthenticated, true, 'read-after-write verify must request authenticated read');
+    assert(auditEvents.some((e) => e.type === 'sync:patch_receipt_unusable'), 'audit must record the unusable receipt');
+  }
+
+  // ── 场景 2b：fetchGistMetadataWithCredentials(forceAuthenticated) 契约 ──
+  {
+    const gistBody = { id: 'g1', updated_at: '2026-09-03T09:10:00Z', history: [{ version: 'v1' }], files: { 'sync.json': { filename: 'sync.json', content: JSON.stringify({ version: 2, payloadHash: 'hash-x', payload: {} }) } } };
+    const authCalls = [];
+    context.fetchWithTimeout = async function(url, options = {}, timeoutMs, ctx = {}) {
+      authCalls.push({
+        stage: ctx.stage || '',
+        bearer: Boolean(options.headers && String(options.headers.Authorization || '').includes('Bearer '))
+      });
+      return makeGistResponse(200, gistBody);
+    };
+    const meta = await expr(`fetchGistMetadataWithCredentials({ gistId: 'g1', token: 'tok', forceAuthenticated: true })`);
+    assert.strictEqual(authCalls.length, 1, 'forceAuthenticated must skip the anonymous-first attempt');
+    assert.strictEqual(authCalls[0].bearer, true, 'forceAuthenticated must send the PAT');
+    assert.strictEqual(meta.readTransport, 'authenticated_fetch', 'authenticated read must be reported');
+
+    authCalls.length = 0;
+    context.fetchWithTimeout = async function(url, options = {}, timeoutMs, ctx = {}) {
+      authCalls.push({ stage: ctx.stage || '' });
+      if (ctx.stage === 'gist_metadata_authenticated') return makeGistResponse(401, { message: 'Bad credentials' });
+      return makeGistResponse(200, gistBody);
+    };
+    const metaFallback = await expr(`fetchGistMetadataWithCredentials({ gistId: 'g1', token: 'tok', forceAuthenticated: true })`);
+    assert.strictEqual(authCalls[0].stage, 'gist_metadata_authenticated', 'authenticated attempt must come first');
+    assert.strictEqual(authCalls[1].stage, 'gist_metadata_anonymous', 'invalid PAT (401) must fall back to anonymous read');
+    assert.strictEqual(metaFallback.readTransport, 'anonymous_fetch', 'fallback must be reported');
+  }
+
+  // ── 场景 3：PATCH 200、收据不可用、authenticated verify 持续返回旧 hash ──
+  // 期望：进入 verifyDeferred/patch_result_unknown，本地数据不丢，同一 run 内 PATCH 次数 == 1。
+  {
+    resetLocalState();
+    expr(`
+      var __expected = refreshLocalPayloadHash({ persist: false });
+      var __expectedHash = __expected.hash;
+    `);
+    const patchCalls = [];
+    const verifyCalls = [];
+    context.fetchGistSyncPayload = async function(options = {}) {
+      verifyCalls.push({ forceAuthenticated: options.forceAuthenticated === true });
+      return vm.runInContext('__remoteOld', context); // preflight/verify/recheck 永远读到旧 hash
+    };
+    context.fetchWithTimeout = async function(url, options = {}, timeoutMs, ctx = {}) {
+      patchCalls.push({ body: JSON.parse(options.body || '{}'), stage: ctx.stage || '' });
+      return makeGistResponse(200, { id: 'gist123', files: {} }); // 收据不可用
+    };
+    const beforeHash = expr('businessPayloadHash(collectSyncPayload())');
+    const result = await expr(`patchBusinessPayloadToGist(refreshLocalPayloadHash({ persist: false }).payload, { remote: __remoteOld, keepalive: false, runId: 903, reason: 'heartbeat', remoteHashAtDecision: __remoteOldHash })`);
+    assert.strictEqual(result.ok, false, 'unconfirmed write must not report ok');
+    assert.strictEqual(result.patchResultUnknown, true, 'unconfirmed write must be patch_result_unknown');
+    assert.strictEqual(result.verifyDeferred, true, 'unconfirmed write must be verifyDeferred');
+    assert.strictEqual(result.preflightChanged, undefined, 'stale verify reads must NOT become preflightChanged');
+    assert.strictEqual(patchCalls.length, 1, `verify mismatch must never re-PATCH in the same run, got ${patchCalls.length}`);
+    assert.strictEqual(verifyCalls.length, 3, 'preflight + verify + limited recheck expected');
+    assert(verifyCalls.slice(1).every((call) => call.forceAuthenticated === true), 'verify and recheck must both be authenticated');
+    assert.strictEqual(expr('businessPayloadHash(collectSyncPayload())'), beforeHash, 'local business data must be untouched');
+    assert.strictEqual(expr('state.syncHashState.localDirty'), true, 'local data must stay dirty until the write is confirmed');
+    assert.strictEqual(expr('state.syncHashState.lastErrorKind'), 'patch_result_unknown', 'state must record patch_result_unknown');
+    assert(scheduleCalls.includes('verify_mismatch_retry'), 'a confirmation retry must be scheduled');
+  }
+
+  // ── 场景 4：过期云端备份清理 422，不得污染已确认成功的业务写入 ──
+  // 期望：业务写入仍成功；清理是独立 PATCH 且只含删除条目；清理失败只记 warning。
+  {
+    resetLocalState();
+    expr(`
+      var __expected = refreshLocalPayloadHash({ persist: false });
+      var __expectedHash = __expected.hash;
+    `);
+    const patchCalls = [];
+    const today = expr('localDateKey()');
+    const oldBackupNames = [];
+    for (let d = 25; d >= 17; d -= 1) oldBackupNames.push(`sync.backup.2026-08-${String(d).padStart(2, '0')}.json`);
+    const gistFileNames = ['sync.json', `sync.backup.${today}.json`, ...oldBackupNames];
+    context.fetchGistSyncPayload = async function() {
+      return vm.runInContext('__remoteOld', context); // preflight
+    };
+    context.fetchWithTimeout = async function(url, options = {}, timeoutMs, ctx = {}) {
+      const body = JSON.parse(options.body || '{}');
+      patchCalls.push({ body, stage: ctx.stage || '' });
+      if (ctx.stage === 'gist_backup_cleanup') {
+        return makeGistResponse(422, { message: 'Validation Failed', errors: [{ resource: 'Gist', field: 'data', code: 'missing_field' }] });
+      }
+      const responseFiles = {};
+      gistFileNames.forEach((name) => {
+        responseFiles[name] = body.files[name] && body.files[name].content
+          ? { filename: name, content: body.files[name].content }
+          : { filename: name, content: '{"stale":true}' };
+      });
+      return makeGistResponse(200, { id: 'gist123', updated_at: '2026-09-03T09:10:00Z', history: [{ version: 'rev-4' }], files: responseFiles });
+    };
+    const pushed = await expr(`syncBranchPushLocal({ remote: __remoteOld, local: null, keepalive: false, reason: 'manual', runId: 904, remoteHashAtDecision: __remoteOldHash })`);
+    assert.strictEqual(pushed, true, 'failed backup cleanup must not fail an already-confirmed sync');
+    assert(patchCalls[0].body.files['sync.json'], 'business PATCH must upsert sync.json');
+    assert(!Object.values(patchCalls[0].body.files).some((v) => v === null), 'business PATCH must not mix deletion entries');
+    const cleanupCall = patchCalls.find((call) => call.stage === 'gist_backup_cleanup');
+    assert(cleanupCall, 'expired backup cleanup must run after the business write');
+    assert(Object.values(cleanupCall.body.files).every((v) => v === null), 'cleanup PATCH must only delete old backups');
+    assert(!Object.keys(cleanupCall.body.files).includes('sync.json'), 'cleanup must never delete sync.json');
+    const cleanupFailed = auditEvents.find((e) => e.type === 'sync:backup_cleanup_failed');
+    assert(cleanupFailed && String(cleanupFailed.message).includes('status=422'), 'cleanup failure must be recorded as a warning');
+    assert.strictEqual(expr('state.syncHashState.lastSyncStatus'), 'cloud_ok', 'cleanup failure must not pollute the successful sync state');
+    assert.strictEqual(expr('state.syncHashState.localDirty'), false, 'cleanup failure must not re-dirty a confirmed sync');
+  }
+
+  // ── 场景 5：真正的第一次业务 PATCH 返回 422 ──
+  // 期望：同步失败；日志保存 GitHub message/errors 摘要 + 文件操作清单；不泄露 token。
+  {
+    resetLocalState();
+    const patchCalls = [];
+    context.fetchGistSyncPayload = async function() {
+      return vm.runInContext('__remoteOld', context);
+    };
+    context.fetchWithTimeout = async function(url, options = {}, timeoutMs, ctx = {}) {
+      patchCalls.push({ body: JSON.parse(options.body || '{}'), stage: ctx.stage || '' });
+      return makeGistResponse(422, { message: 'Validation Failed', errors: [{ resource: 'Gist', field: 'data', code: 'missing_field' }] });
+    };
+    const result = await expr(`patchBusinessPayloadToGist(refreshLocalPayloadHash({ persist: false }).payload, { remote: __remoteOld, keepalive: false, runId: 905, reason: 'manual', remoteHashAtDecision: __remoteOldHash })`);
+    assert.strictEqual(result.ok, false, 'a real 422 business PATCH must fail the sync');
+    assert.strictEqual(result.httpStatus, 422, '422 must be reported');
+    assert.strictEqual(expr('state.syncHashState.lastErrorKind'), 'patch_failed_422', 'state must record patch_failed_422');
+    const rejected = auditEvents.find((e) => e.type === 'sync:patch_rejected');
+    assert(rejected, '422 must emit a dedicated diagnostic audit event');
+    assert(String(rejected.message).includes('Validation Failed') && String(rejected.message).includes('missing_field'), 'diagnostic must include the GitHub message/errors digest');
+    assert(String(rejected.message).includes('sync.json:upsert'), 'diagnostic must classify patch file operations');
+    assert(String(expr('state.syncHashState.lastErrorTechnical')).includes('patchFiles='), 'state technical must include the patch file digest');
+    const leaked = JSON.stringify({ auditEvents, state: expr('({ technical: state.syncHashState.lastErrorTechnical, error: state.syncHashState.lastSyncError })') });
+    assert(!leaked.includes('ghp_'), 'no PAT/token may ever reach diagnostics or audit');
+  }
+
+  console.log('Gist read-after-write regression tests passed');
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

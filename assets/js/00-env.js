@@ -1,7 +1,7 @@
 "use strict";
 
-const APP_VERSION = "2026-09-02-round-archive-v2";
-const APP_BUILD_ID = "2026-09-02-round-archive-v2";
+const APP_VERSION = "2026-09-03-gist-read-after-write-v3";
+const APP_BUILD_ID = "2026-09-03-gist-read-after-write-v3";
 
 
 const ACCESS_KEY = "ky2027";

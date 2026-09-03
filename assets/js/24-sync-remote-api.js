@@ -85,9 +85,50 @@ async function fetchGistMetadataWithCredentials(options = {}) {
   const gistId = String(options.gistId || "").trim();
   const token = String(options.token || "").trim();
   const allowJsonp = options.allowJsonp !== false;
+  const forceAuthenticated = options.forceAuthenticated === true && Boolean(token);
   const url = gistApiUrl(gistId);
   let anonymousResponse = null;
   let anonymousError = null;
+
+  if (forceAuthenticated) {
+    // 写后确认（read-after-write）必须携带 PAT 读取：匿名 GET 会命中 GitHub 边缘缓存
+    // （api.github.com 对 GET 响应带 ~60s 的 s-maxage），可能返回写入前的旧内容，
+    // 把一次成功的写入误判成“远端并发变化”。网络失败也不降级到匿名读；
+    // 仅 PAT 失效/只读（401/403）时回退到下方匿名路径，保持既有只读兼容。
+    let authFirstResponse = null;
+    try {
+      authFirstResponse = await fetchWithTimeout(url, {
+        headers: {
+          Authorization: "Bearer " + token,
+          Accept: "application/vnd.github+json"
+        }
+      }, GITHUB_GET_TIMEOUT_MS, { stage: "gist_metadata_authenticated", transport: "authenticated_fetch" });
+    } catch (authFirstError) {
+      throw authFirstError;
+    }
+    if (authFirstResponse.ok) {
+      return {
+        gist: await authFirstResponse.json(),
+        readOnlyAuthFallback: false,
+        authenticatedRead: true,
+        authStatus: authFirstResponse.status,
+        readTransport: "authenticated_fetch"
+      };
+    }
+    if (authFirstResponse.status !== 401 && authFirstResponse.status !== 403) {
+      const authFirstClassified = await classifyGithubResponseError(authFirstResponse, "读取 Gist");
+      const authFirstError = githubHttpError(authFirstResponse, "读取 Gist", {
+        stage: "gist_metadata_authenticated",
+        method: "GET",
+        transport: "authenticated_fetch",
+        rateLimited: authFirstClassified.rateLimited,
+        retryAt: authFirstClassified.retryAt
+      });
+      authFirstError.message = authFirstClassified.message;
+      authFirstError.technical = authFirstClassified.technical;
+      throw authFirstError;
+    }
+  }
 
   try {
     anonymousResponse = await fetchWithTimeout(url, {
@@ -213,8 +254,8 @@ function sortedGistRecoveryCandidates(files) {
     });
 }
 
-async function fetchGistSyncPayload() {
-  const metadataResult = await fetchGistMetadata();
+async function fetchGistSyncPayload(options = {}) {
+  const metadataResult = await fetchGistMetadata({ forceAuthenticated: options.forceAuthenticated === true });
   const { gist, readOnlyAuthFallback, authStatus, authenticatedRead, readTransport } = metadataResult;
   var remoteVersion = (gist.history && gist.history[0] && gist.history[0].version) || "";
   const remoteUpdatedAt = gist.updated_at || "";
@@ -271,11 +312,12 @@ async function fetchGistSyncPayload() {
   };
 }
 
-async function fetchGistMetadata() {
+async function fetchGistMetadata(options = {}) {
   return fetchGistMetadataWithCredentials({
     gistId: state.cloud.gistId,
     token: state.cloud.token,
-    allowJsonp: true
+    allowJsonp: true,
+    forceAuthenticated: options.forceAuthenticated === true
   });
 }
 

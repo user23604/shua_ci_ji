@@ -20,6 +20,7 @@ load(context, 'assets/js/00-env.js');
 load(context, 'assets/js/01-utils-basic.js');
 load(context, 'assets/js/24-sync-remote-api.js');
 load(context, 'assets/js/28-sync-push-patch.js');
+load(context, 'assets/js/28b-sync-backup-cleanup.js');
 
 const today = context.localDateKey();
 const todayName = `sync.backup.${today}.json`;
@@ -36,7 +37,11 @@ const todayName = `sync.backup.${today}.json`;
   const files = context.buildGistPatchFiles('{"ok":1}', { fileNames: names });
   assert.strictEqual(files[todayName], undefined, 'existing daily backup should not be retransmitted');
   const deletions = Object.entries(files).filter(([, value]) => value === null).map(([name]) => name);
-  assert(deletions.length >= 2, 'old cloud backups were not pruned');
+  assert.strictEqual(deletions.length, 0, 'business PATCH must not carry deletion entries (stale file lists turned successful writes into 422 failures)');
+  // 过期备份保留期计算移至独立 best-effort 清理（业务写入确认成功后执行）。
+  const expired = context.collectExpiredCloudBackupNames(names);
+  assert(expired.length >= 2, 'expired backup retention list should still cover old cloud backups');
+  assert(expired.every((name) => name.startsWith('sync.backup.') && name !== todayName), 'cleanup list must only contain old sync.backup.* files, never sync.json');
 }
 
 {

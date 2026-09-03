@@ -6,8 +6,8 @@
 /* ===== 00-env.js ===== */
 "use strict";
 
-const APP_VERSION = "2026-09-02-round-archive-v2";
-const APP_BUILD_ID = "2026-09-02-round-archive-v2";
+const APP_VERSION = "2026-09-03-gist-read-after-write-v3";
+const APP_BUILD_ID = "2026-09-03-gist-read-after-write-v3";
 
 
 const ACCESS_KEY = "ky2027";
@@ -9415,9 +9415,50 @@ async function fetchGistMetadataWithCredentials(options = {}) {
   const gistId = String(options.gistId || "").trim();
   const token = String(options.token || "").trim();
   const allowJsonp = options.allowJsonp !== false;
+  const forceAuthenticated = options.forceAuthenticated === true && Boolean(token);
   const url = gistApiUrl(gistId);
   let anonymousResponse = null;
   let anonymousError = null;
+
+  if (forceAuthenticated) {
+    // 写后确认（read-after-write）必须携带 PAT 读取：匿名 GET 会命中 GitHub 边缘缓存
+    // （api.github.com 对 GET 响应带 ~60s 的 s-maxage），可能返回写入前的旧内容，
+    // 把一次成功的写入误判成“远端并发变化”。网络失败也不降级到匿名读；
+    // 仅 PAT 失效/只读（401/403）时回退到下方匿名路径，保持既有只读兼容。
+    let authFirstResponse = null;
+    try {
+      authFirstResponse = await fetchWithTimeout(url, {
+        headers: {
+          Authorization: "Bearer " + token,
+          Accept: "application/vnd.github+json"
+        }
+      }, GITHUB_GET_TIMEOUT_MS, { stage: "gist_metadata_authenticated", transport: "authenticated_fetch" });
+    } catch (authFirstError) {
+      throw authFirstError;
+    }
+    if (authFirstResponse.ok) {
+      return {
+        gist: await authFirstResponse.json(),
+        readOnlyAuthFallback: false,
+        authenticatedRead: true,
+        authStatus: authFirstResponse.status,
+        readTransport: "authenticated_fetch"
+      };
+    }
+    if (authFirstResponse.status !== 401 && authFirstResponse.status !== 403) {
+      const authFirstClassified = await classifyGithubResponseError(authFirstResponse, "读取 Gist");
+      const authFirstError = githubHttpError(authFirstResponse, "读取 Gist", {
+        stage: "gist_metadata_authenticated",
+        method: "GET",
+        transport: "authenticated_fetch",
+        rateLimited: authFirstClassified.rateLimited,
+        retryAt: authFirstClassified.retryAt
+      });
+      authFirstError.message = authFirstClassified.message;
+      authFirstError.technical = authFirstClassified.technical;
+      throw authFirstError;
+    }
+  }
 
   try {
     anonymousResponse = await fetchWithTimeout(url, {
@@ -9543,8 +9584,8 @@ function sortedGistRecoveryCandidates(files) {
     });
 }
 
-async function fetchGistSyncPayload() {
-  const metadataResult = await fetchGistMetadata();
+async function fetchGistSyncPayload(options = {}) {
+  const metadataResult = await fetchGistMetadata({ forceAuthenticated: options.forceAuthenticated === true });
   const { gist, readOnlyAuthFallback, authStatus, authenticatedRead, readTransport } = metadataResult;
   var remoteVersion = (gist.history && gist.history[0] && gist.history[0].version) || "";
   const remoteUpdatedAt = gist.updated_at || "";
@@ -9601,11 +9642,12 @@ async function fetchGistSyncPayload() {
   };
 }
 
-async function fetchGistMetadata() {
+async function fetchGistMetadata(options = {}) {
   return fetchGistMetadataWithCredentials({
     gistId: state.cloud.gistId,
     token: state.cloud.token,
-    allowJsonp: true
+    allowJsonp: true,
+    forceAuthenticated: options.forceAuthenticated === true
   });
 }
 
@@ -11500,6 +11542,12 @@ function buildSyncEnvelope(payload) {
 
 
 function buildGistPatchFiles(payloadJson, remote) {
+  // 关键业务 PATCH 只包含 sync.json 与当天备份的 upsert。
+  // 旧 sync.backup.* 的保留期删除不再混入业务 PATCH：删除条目依赖“远端当前文件列表”，
+  // 一旦列表陈旧（对端设备刚清理过，或读回内容命中 GitHub 边缘缓存），对已不存在的
+  // 文件再次发送 null 删除会让 GitHub 返回 422 Validation Failed，把一次已成功的
+  // 业务写入变成“同步失败”。清理由 maybeCleanupExpiredCloudBackups 在业务写入
+  // 确认成功后 best-effort 完成，失败只记警告，不影响同步结果。
   var files = {};
   files[SYNC_FILE_NAME] = { content: payloadJson };
 
@@ -11508,15 +11556,6 @@ function buildGistPatchFiles(payloadJson, remote) {
   var todayName = SYNC_CLOUD_BACKUP_PREFIX + localDateKey() + ".json";
   var existingNames = Array.isArray(remote && remote.fileNames) ? remote.fileNames.slice() : [];
   if (!existingNames.includes(todayName)) files[todayName] = { content: payloadJson };
-
-  var backupNames = existingNames.filter(function(name) {
-    return String(name || "").startsWith(SYNC_CLOUD_BACKUP_PREFIX) && /\.json$/i.test(name);
-  });
-  if (!backupNames.includes(todayName)) backupNames.push(todayName);
-  backupNames.sort().reverse();
-  backupNames.slice(Math.max(1, SYNC_CLOUD_BACKUP_RETENTION_DAYS)).forEach(function(name) {
-    files[name] = null;
-  });
   return files;
 }
 
@@ -11549,7 +11588,8 @@ function isGithubRateLimitedResponse(response) {
 async function confirmUploadedHashAfterUncertainPatch(uploadedHash, runId, source) {
   try {
     await delay(1200);
-    var remote = await fetchGistSyncPayload();
+    // 确认刚才那次写入是否生效：必须带 PAT 读取，匿名读可能返回写入前的旧缓存。
+    var remote = await fetchGistSyncPayload({ forceAuthenticated: true });
     markSessionRemoteChecked(remote, runId, source || "patch.uncertain_confirm");
     if (!isRemoteValidKind(remote.kind)) return { confirmed: false, remote: remote };
     var remoteHash = currentRemoteHash(remote);
@@ -11722,6 +11762,22 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
       const invalidRequest = status === 404 || status === 422;
       if (authFailed) setCloudWriteCapability(false, classified.message);
 
+      // 422 诊断增强：GitHub 返回的 message/errors 安全摘要 + 本次 PATCH 的文件操作清单。
+      // 只记录文件名和 upsert/delete 类型，不含 payload 内容，更不含 PAT/token。
+      const patchFileDigest = Object.keys(files).map(function(name) {
+        return files[name] === null ? (name + ":delete") : (name + ":upsert");
+      }).join(",");
+      if (status === 422) {
+        appendAuditEvent({
+          type: "sync:patch_rejected",
+          message: "session=" + TAB_ID + " runId=" + (runId || "") +
+            " httpStatus=" + status +
+            " githubBody=" + String(classified.technical || "").slice(0, 600) +
+            " patchFiles=" + patchFileDigest,
+          httpStatus: status
+        });
+      }
+
       recordHashSyncFailure(classified.message, {
         errorKind: rateLimited ? "rate_limited" : (authFailed ? "auth_failed" : (status === 404 ? "invalid_config" : (status === 422 ? "patch_failed_422" : "patch_failed_http"))),
         retryable: rateLimited || status >= 500,
@@ -11732,7 +11788,7 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
         stage: "gist_patch",
         transport: "authenticated_fetch",
         nextRetryAt: classified.retryAt || "",
-        technical: classified.technical
+        technical: String(classified.technical || "").slice(0, 1200) + (patchFileDigest ? " | patchFiles=" + patchFileDigest : "")
       });
       return { ok: false, fatal: authFailed || invalidRequest, retryable: rateLimited || status >= 500, httpStatus: status };
     }
@@ -11740,10 +11796,58 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
     setCloudWriteCapability(true);
     appendAuditEvent({ type: "sync:patch_success", message: "session=" + TAB_ID + " runId=" + runId + " uploadedHash=" + String(uploadedHash).slice(0, 8) });
 
+    // ── 第一步：用 PATCH 2xx 响应本身作为本次写入的收据 ──
+    // 响应体就是写入完成后的 Gist；只要其中 sync.json 的业务 hash 等于 uploadedHash，
+    // 本次写入即确认成功。之后即使匿名 GET 仍读到旧缓存内容，也绝不因此重新 PATCH。
+    var receipt = null;
+    try {
+      receipt = extractGistReceiptFromPatchResponse(await response.json());
+    } catch (_) {
+      receipt = null;
+    }
+    if (receipt && isRemoteValidKind(receipt.kind)) {
+      if (String(receipt.payloadHash || "") === String(uploadedHash || "")) {
+        appendAuditEvent({
+          type: "sync:patch_receipt_confirmed",
+          message: "session=" + TAB_ID + " runId=" + runId + " hash=" + String(uploadedHash || "").slice(0, 8)
+        });
+        const receiptRemote = {
+          kind: receipt.kind,
+          snapshot: receipt.snapshot,
+          payload: receipt.snapshot,
+          payloadHash: receipt.payloadHash,
+          rawContent: "",
+          remoteVersion: receipt.remoteVersion,
+          remoteUpdatedAt: receipt.remoteUpdatedAt,
+          fileName: SYNC_FILE_NAME,
+          fileNames: receipt.fileNames,
+          readOnlyAuthFallback: false,
+          authenticatedRead: true,
+          authStatus: Number(response.status || 0),
+          readTransport: "patch_response_receipt"
+        };
+        await maybeCleanupExpiredCloudBackups(receipt.fileNames, runId);
+        return { ok: true, remote: receiptRemote, uploadedHash: uploadedHash, confirmedByPatchResponse: true };
+      }
+      appendAuditEvent({
+        type: "sync:patch_receipt_mismatch",
+        message: "session=" + TAB_ID + " runId=" + runId +
+          " expected=" + String(uploadedHash || "").slice(0, 8) +
+          " actual=" + String(receipt.payloadHash || "").slice(0, 8) +
+          " truncated=" + String(receipt.truncated === true)
+      });
+    } else if (receipt) {
+      appendAuditEvent({
+        type: "sync:patch_receipt_unusable",
+        message: "session=" + TAB_ID + " runId=" + runId + " reason=" + String(receipt.kind || "") + " truncated=" + String(receipt.truncated === true)
+      });
+    }
+
+    // ── 第二步：收据不可用时才读回确认，且必须带 PAT（写后确认禁止匿名读） ──
     let verified;
     try {
       markSyncProgress("verify:get:start", runId);
-      verified = await fetchGistSyncPayload();
+      verified = await fetchGistSyncPayload({ forceAuthenticated: true });
       markSessionRemoteChecked(verified, runId, "patch.verify");
       markSyncProgress("verify:get:done", runId);
       appendAuditEvent({ type: "sync:verify_done", message: "session=" + TAB_ID + " runId=" + runId + " verifiedHash=" + String(currentRemoteHash(verified) || "").slice(0, 8) });
@@ -11782,33 +11886,36 @@ async function patchBusinessPayloadToGist(payload, { remote, keepalive = false, 
       var recheck = null;
       var recheckError = null;
       try {
-        recheck = await fetchGistSyncPayload();
+        recheck = await fetchGistSyncPayload({ forceAuthenticated: true });
         markSessionRemoteChecked(recheck, runId, "patch.verify_mismatch_recheck");
       } catch (error) {
         recheckError = error;
       }
 
       if (recheck && currentRemoteHash(recheck) === uploadedHash) {
+        await maybeCleanupExpiredCloudBackups((recheck && recheck.fileNames) || [], runId);
         return { ok: true, remote: recheck, uploadedHash: uploadedHash };
       }
-      if (recheck && isRemoteValidKind(recheck.kind)) {
-        return { ok: false, preflightChanged: true, remote: recheck, verifyMismatch: true };
-      }
 
-      recordHashSyncFailure("云端写入尚未完成一致性确认，本地数据已保留", {
+      // 核心语义：PATCH 已经返回 2xx，读回 hash 不一致 ≠ 远端被并发修改——读回内容
+      // 可能仍是缓存/复制延迟的旧数据。这里只进入“写入结果待确认”状态，保留本地
+      // dirty，稍后重新核验；同一个 sync run 内绝不因 mismatch 再发送相同 PATCH，
+      // 也不再把它转成 preflightChanged 触发 merge+PATCH。
+      recordHashSyncFailure("云端写入尚未完成一致性确认，本地数据已保留，稍后会先核验再确认", {
         errorKind: "patch_result_unknown",
         retryable: true,
         banner: userInitiated,
         dialog: userInitiated,
         runId,
         stage: "verify_recheck",
-        transport: recheckError ? normalizeSyncRequestError(recheckError).transport : "",
+        transport: recheckError ? normalizeSyncRequestError(recheckError).transport : (recheck && recheck.readTransport) || "authenticated_fetch",
         technical: recheckError ? requestErrorTechnical(recheckError) : ("expected=" + uploadedHash + ", actual=" + String(verifiedHash || ""))
       });
       scheduleSyncSoon("verify_mismatch_retry", 10000);
-      return { ok: false, verifyDeferred: true, patchResultUnknown: true };
+      return { ok: false, verifyDeferred: true, patchResultUnknown: true, verifyMismatchUnknown: true };
     }
 
+    await maybeCleanupExpiredCloudBackups(verified.fileNames, runId);
     return { ok: true, remote: verified, uploadedHash: uploadedHash };
   } finally {
     endPatchTransaction(runId);
@@ -11877,6 +11984,117 @@ function finalizeVerifiedPatch({ uploadedPayload, uploadedHash, verifiedRemote, 
 }
 
 // ── 本地数据保护 ──────────────────────────────────────────────────────
+
+/* ===== 28b-sync-backup-cleanup.js ===== */
+"use strict";
+
+// ── 云端备份 housekeeping 与 PATCH 写入收据 ─────────────────────────
+// 职责拆分自 28-sync-push-patch.js：
+// 1. 过期 sync.backup.* 的删除绝不混入关键业务 PATCH（见 buildGistPatchFiles），
+//    只在业务写入确认成功后作为 best-effort 清理执行；
+// 2. PATCH 2xx 响应本身作为写入收据（read-after-write 的第一手证据），
+//    避免依赖可能命中 GitHub 边缘缓存的匿名读回。
+
+function collectExpiredCloudBackupNames(fileNames) {
+  var todayName = SYNC_CLOUD_BACKUP_PREFIX + localDateKey() + ".json";
+  var backupNames = (Array.isArray(fileNames) ? fileNames : []).filter(function(name) {
+    return String(name || "").startsWith(SYNC_CLOUD_BACKUP_PREFIX) && /\.json$/i.test(String(name));
+  });
+  if (!backupNames.includes(todayName)) backupNames.push(todayName);
+  backupNames.sort().reverse();
+  return backupNames.slice(Math.max(1, SYNC_CLOUD_BACKUP_RETENTION_DAYS));
+}
+
+
+async function cleanupExpiredCloudBackups(fileNames, runId) {
+  const expiredNames = collectExpiredCloudBackupNames(fileNames);
+  if (!expiredNames.length) return { ok: true, skipped: true };
+  const files = {};
+  expiredNames.forEach(function(name) { files[name] = null; });
+  try {
+    const response = await fetchWithTimeout(gistApiUrl(state.cloud.gistId), {
+      method: "PATCH",
+      headers: {
+        Authorization: "Bearer " + state.cloud.token,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ files: files })
+    }, GITHUB_PATCH_TIMEOUT_MS, { stage: "gist_backup_cleanup", transport: "authenticated_fetch" });
+    if (!response.ok) {
+      const classified = await classifyGithubResponseError(response, "清理云端旧备份");
+      appendAuditEvent({
+        type: "sync:backup_cleanup_failed",
+        message: "session=" + TAB_ID + " runId=" + (runId || "") + " status=" + Number(response.status || 0) +
+          " names=" + expiredNames.join(",") +
+          " detail=" + String(classified.technical || classified.message || "").slice(0, 300),
+        httpStatus: Number(response.status || 0)
+      });
+      return { ok: false };
+    }
+    appendAuditEvent({
+      type: "sync:backup_cleanup_ok",
+      message: "session=" + TAB_ID + " runId=" + (runId || "") + " removed=" + expiredNames.length + " names=" + expiredNames.join(",")
+    });
+    return { ok: true, removed: expiredNames.length };
+  } catch (error) {
+    appendAuditEvent({
+      type: "sync:backup_cleanup_failed",
+      message: "session=" + TAB_ID + " runId=" + (runId || "") + " error=" + requestErrorTechnical(error).slice(0, 300)
+    });
+    return { ok: false };
+  }
+}
+
+
+// 业务写入确认成功之后的 best-effort housekeeping：清理结果不允许反过来改变同步成败。
+async function maybeCleanupExpiredCloudBackups(fileNames, runId) {
+  if (!state.cloud || !state.cloud.gistId || !state.cloud.token) return { ok: true, skipped: true };
+  try {
+    return await cleanupExpiredCloudBackups(fileNames, runId);
+  } catch (error) {
+    appendAuditEvent({
+      type: "sync:backup_cleanup_failed",
+      message: "session=" + TAB_ID + " runId=" + (runId || "") + " error=" + requestErrorTechnical(error).slice(0, 300)
+    });
+    return { ok: false };
+  }
+}
+
+
+// PATCH 的 2xx 响应本身就是本次写入的“收据”：响应体是写入完成后的 Gist 状态。
+// 优先用它确认业务 hash，而不是立刻依赖一次新的匿名 GET——后者可能命中
+// GitHub 边缘缓存（~60s s-maxage）返回写入前的旧内容，造成 verify 误判。
+function extractGistReceiptFromPatchResponse(gist) {
+  if (!gist || !isPlainObject(gist.files)) return null;
+  const files = gist.files;
+  const fileNames = Object.keys(files).filter(Boolean);
+  const remoteVersion = (gist.history && gist.history[0] && gist.history[0].version) || "";
+  const remoteUpdatedAt = gist.updated_at || "";
+  const primary = files[SYNC_FILE_NAME];
+  const truncated = Boolean(primary && primary.truncated);
+  const candidates = [];
+  if (primary) candidates.push(primary);
+  sortedGistRecoveryCandidates(files).forEach(function(file) {
+    if (!candidates.includes(file)) candidates.push(file);
+  });
+  for (var i = 0; i < candidates.length; i += 1) {
+    var file = candidates[i];
+    if (!file || typeof file.content !== "string" || !file.content.trim()) continue;
+    var parsed = parseSyncPayloadContent(file.content);
+    if (parsed.kind !== "valid_nonempty" && parsed.kind !== "valid_empty") continue;
+    return {
+      kind: parsed.kind,
+      snapshot: parsed.snapshot || parsed.payload || null,
+      payloadHash: parsed.payloadHash || "",
+      fileNames,
+      remoteVersion,
+      remoteUpdatedAt,
+      truncated
+    };
+  }
+  return { kind: "unusable", snapshot: null, payloadHash: "", fileNames, remoteVersion, remoteUpdatedAt, truncated };
+}
 
 /* ===== 29-sync-merge.js ===== */
 "use strict";
