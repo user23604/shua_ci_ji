@@ -1,0 +1,6 @@
+{
+  "appVersion": "2026-09-02-round-archive-v2",
+  "buildId": "2026-09-02-round-archive-v2",
+  "deployedAt": "2026-09-02T23:59:40+08:00",
+  "note": "Round archive storage fix: historical archives remain synchronized once, while local safety backups exclude duplicate archive history; existing oversized backups are compacted on startup and quota recovery can evict redundant backup copies without touching live archives. This fixes LOCAL_STORAGE_QUOTA / local_backup_write_failed during manual sync after archiving."
+}

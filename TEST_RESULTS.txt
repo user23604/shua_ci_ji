@@ -1,0 +1,52 @@
+刷词机最终测试记录
+版本: 2026-09-02-round-archive-v2
+日期: 2026-09-02
+
+构建
+- npm run build: 通过
+- 生产 bundle: assets/js/app.bundle.js
+- 源码模块: 50
+- npm run check:bundle: 通过
+
+全量发布测试
+- Loader smoke tests: 通过
+- Sync core tests: 通过
+- Critical storage and merge tests: 通过
+- Transport compaction tests: 通过
+- Audit retention tests: 通过
+- Compact backup compatibility tests: 通过
+- Final robustness regression tests: 通过
+- Durable cursor and logical clock tests: 通过
+- Round archive regression tests: 通过
+- Round archive storage quota regression tests: 通过
+- Final network fallback tests: 通过
+- Final transport efficiency tests: 通过
+- Final static quality tests: 通过
+- UX v4 regression tests: 通过
+- Audio v5 regression tests: 通过
+- Rescue recovery tests: 通过
+- CSV data integrity tests: 通过
+
+本次同步失败专项
+- 旧版完整备份中重复 archives 可自动压缩: 通过
+- localStorage 接近 quota 时 pre_overwrite 安全备份仍能成功创建: 通过
+- quota 回收只处理冗余备份，不修改 ROUND_ARCHIVES_KEY: 通过
+- 新建安全备份不再重复保存 archives: 通过
+- 备份索引丢失后可直接扫描物理备份键: 通过
+- rescue 恢复紧凑备份时保留真实历史归档: 通过
+
+原归档专项
+- 归档名称必填: 通过
+- 多行备注保存: 通过
+- 历史语义标记/进度/活动/Unit 统计保留: 通过
+- 新一轮 live 数据、游标、草稿、study session 清空: 通过
+- archive-only 状态不会被当作空数据自动恢复旧备份: 通过
+- 不同 generation 禁止旧数据复活: 通过
+- 新版 v2 envelope 往返解析: 通过
+- 远端新轮应用后清除本机旧 session: 通过
+- 模拟 localStorage 写入失败整笔回滚: 通过
+
+维护性
+- 所有源码 JS 模块 <= 500 行: 通过
+- 生产 bundle 与源码顺序一致: 通过
+- rescue 支持 round/archive 且兼容紧凑安全备份: 通过
