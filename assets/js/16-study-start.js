@@ -148,3 +148,53 @@ function getStartIndexFromProgress(progress) {
 }
 
 
+// 刷词页内快速切换 Unit：不回设置页，原地重建会话（与 startStudy 相同的会话字段）。
+// 仅普通 Unit 模式可用（复盘/重难点会话没有 Unit 语义，由调用方隐藏入口）。
+async function switchUnitFromFlash(unit) {
+  if (state.view !== "flash" || state.reviewMode) return false;
+  const book = currentBook();
+  const targetUnit = Number(unit);
+  const previousUnit = Number(state.settings.unit);
+  if (!Number.isFinite(targetUnit) || targetUnit < 1 || targetUnit > book.totalUnits || targetUnit === previousUnit) return false;
+  if (state.unitSwitchPending) return false;
+  state.unitSwitchPending = true;
+  try {
+    commitCurrentCardActivity();
+    clearTimers();
+    await ensureWords(book);
+    const unitWords = buildStudyUnitWords(book.id, targetUnit);
+    if (!unitWords.length) {
+      // 目标 Unit 已全部斩完：不切换，留在当前 Unit，并给出一次性提示。
+      state.unitSwitchNotice = `${unitDisplayLabel(book, targetUnit)} 没有未斩词条，仍停留在 ${unitDisplayLabel(book, previousUnit)}`;
+      appendAuditEvent({ type: "study:unit_switch_blocked", message: "targetUnit=" + targetUnit + " remaining=0" });
+      renderFlashcard({ progressReason: "unit_switch_blocked" });
+      return false;
+    }
+    state.settings.unit = targetUnit;
+    state.settings.unknownScope = "unit";
+    persistSettings();
+    state.unitSwitchNotice = "";
+    state.roundReturn = null;
+    state.playbackPaused = false;
+    state.unitWords = unitWords;
+    state.currentIndex = getStartIndex(book.id);
+    state.groupStats = createGroupStats();
+    state.undoWordId = null;
+    state.navQueue = [];
+    if (typeof resetCardTransitionState === "function") resetCardTransitionState();
+    else state.transitioning = false;
+    state.markFeedback = "";
+    state.currentWordId = null;
+    state.currentWordRecorded = false;
+    state.showZh = false;
+    state.awaitingManualZhReveal = state.settings.manualZhReveal === true;
+    touchStudyActivity("unit_switch");
+    appendAuditEvent({ type: "study:unit_switched", message: "from=" + previousUnit + " to=" + targetUnit + " remaining=" + unitWords.length + " startIndex=" + state.currentIndex });
+    renderFlashcard({ touchProgress: true, progressReason: "unit_switch" });
+    return true;
+  } finally {
+    state.unitSwitchPending = false;
+  }
+}
+
+

@@ -46,6 +46,8 @@ const state = {
   reviewMode: null,
   setupStatus: "",
   studyStartPending: false,
+  unitSwitchPending: false,
+  unitSwitchNotice: "",
   setupPrimeBookIds: new Set(),
   wakeLock: null,
   playbackPaused: false,

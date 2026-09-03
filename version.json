@@ -1,6 +1,6 @@
 {
-  "appVersion": "2026-09-03-gist-read-after-write-v3",
-  "buildId": "2026-09-03-gist-read-after-write-v3",
+  "appVersion": "2026-09-03-flash-unit-quick-switch-v4",
+  "buildId": "2026-09-03-flash-unit-quick-switch-v4",
   "deployedAt": "",
-  "note": "Gist read-after-write fix: a successful PATCH is now confirmed by its own 2xx response body (write receipt) before any read-back; read-after-write verification forces authenticated GET (anonymous GET can hit GitHub edge cache ~60s and return pre-write content); a stale verify mismatch no longer becomes preflightChanged and can never re-PATCH the same payload in one run; expired sync.backup.* cleanup is decoupled from the business PATCH and runs best-effort after a confirmed write (422 cleanup failures no longer fail the sync); 422 diagnostics now include the GitHub message/errors digest and per-file upsert/delete list."
+  "note": "Flash-view unit quick switch: the study side panel now offers a Unit dropdown so users can switch units without going back to the setup page; switching rebuilds the session in place with the same semantics as startStudy (resume cursor, group stats, playback state), persists the setting, and shows a one-shot notice when the target unit has no unmarked words left. Also includes the 2026-09-03 gist read-after-write fix (PATCH 2xx response used as write receipt, authenticated read-after-write verification, no duplicate PATCH on stale verify reads, decoupled best-effort backup cleanup, richer 422 diagnostics)."
 }

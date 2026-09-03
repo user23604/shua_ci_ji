@@ -22,6 +22,13 @@ function renderFlashcard({ touchProgress = false, progressReason = "render" } = 
   const resumeFeedback = state.resumeFeedback;
   const markFeedback = state.markFeedback;
   const modeSuffix = state.reviewMode?.mode === "unknown-archive" ? " · 重难点词库" : state.reviewMode ? " · 复盘" : "";
+  const unitSwitchNotice = state.unitSwitchNotice;
+  state.unitSwitchNotice = "";
+  const unitQuickMarkup = !state.reviewMode ? `
+          <label class="unit-quick">
+            <span>快速切 Unit</span>
+            <select class="select select--compact" id="unitQuickSelect" aria-label="快速切换 Unit">${renderUnitQuickOptions(book)}</select>
+          </label>` : "";
   state.cardEnterDirection = "";
   state.resumeFeedback = false;
   state.markFeedback = "";
@@ -38,6 +45,8 @@ function renderFlashcard({ touchProgress = false, progressReason = "render" } = 
           <div class="progress-title">${escapeHtml(state.reviewMode?.label || bookContextLabel(book, word.unit))}</div>
           <div class="progress-main">${escapeHtml(unitDisplayLabel(book, word.unit))} [${state.currentIndex + 1}/${state.unitWords.length}]</div>
           <div class="progress-sub">词频 ${word.freq} · ID ${word.id}${escapeHtml(modeSuffix)}</div>
+          ${unitQuickMarkup}
+          ${unitSwitchNotice ? `<div class="unit-switch-notice" role="status">${escapeHtml(unitSwitchNotice)}</div>` : ""}
           <div class="live-counter" aria-label="本轮实时计数">
             <span>扫过 <strong>${state.groupStats.seen}</strong></span>
             <span>已斩 <strong>${state.groupStats.known}</strong></span>
@@ -73,6 +82,12 @@ function renderFlashcard({ touchProgress = false, progressReason = "render" } = 
     renderSetup();
     autoPushToGist();
   });
+  const unitQuickSelect = document.getElementById("unitQuickSelect");
+  if (unitQuickSelect) {
+    unitQuickSelect.addEventListener("change", (event) => {
+      switchUnitFromFlash(Number(event.target.value));
+    });
+  }
   document.getElementById("statsBtn").addEventListener("click", openStats);
   document.getElementById("archiveBtn").addEventListener("click", openArchive);
   document.getElementById("manualModeBtn").addEventListener("click", toggleManualModeFromFlash);
@@ -161,6 +176,26 @@ function gesture(symbol, label) {
 
 function undoLabelForMark(kind) {
   return kind === "known" ? "撤销上滑" : "撤销下滑";
+}
+
+
+// 快速切 Unit 下拉选项：与设置页同源的 Unit 列表，附剩余未斩数，便于直接挑选。
+// 每张卡片都会重渲染，这里必须单次遍历词表统计，禁止逐 Unit 重复过滤/读 marks。
+function renderUnitQuickOptions(book) {
+  const currentUnit = Number(state.settings.unit);
+  const knownIds = new Set(loadMarks(book.id).known.map(Number));
+  const remainingByUnit = {};
+  state.words.forEach(function(word) {
+    if (!knownIds.has(Number(word.id))) {
+      remainingByUnit[word.unit] = (remainingByUnit[word.unit] || 0) + 1;
+    }
+  });
+  const options = [];
+  Array.from({ length: book.totalUnits }, (_, index) => index + 1).forEach((unit) => {
+    const selected = unit === currentUnit ? " selected" : "";
+    options.push(`<option value="${unit}"${selected}>${escapeHtml(unitDisplayLabel(book, unit))} · 剩 ${remainingByUnit[unit] || 0}</option>`);
+  });
+  return options.join("");
 }
 
 

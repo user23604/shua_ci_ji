@@ -43,6 +43,30 @@
   line-height: 1.45;
 }
 
+/* ── Unit quick switch (flash view side panel) ── */
+.unit-quick {
+  display: grid;
+  gap: 4px;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.unit-quick .select--compact {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.unit-switch-notice {
+  color: #f59e0b;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
 /* ── Live counter ── */
 .live-counter {
   display: grid;

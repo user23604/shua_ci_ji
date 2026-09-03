@@ -1,7 +1,7 @@
 (function() {
   "use strict";
 
-  var BUILD_ID = "2026-09-03-gist-read-after-write-v3";
+  var BUILD_ID = "2026-09-03-flash-unit-quick-switch-v4";
 
   window.__SHUA_APP_VERSION__ = BUILD_ID;
   window.__SHUA_BUILD_ID__ = BUILD_ID;

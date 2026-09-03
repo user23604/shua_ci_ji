@@ -1,5 +1,20 @@
 # 更新记录
 
+## 2026-09-03-flash-unit-quick-switch-v4
+
+- 刷词界面新增"快速切 Unit"下拉框：不必返回设置页即可在刷词时直接切换 Unit，切换在当前会话内原地重建（恢复游标、清空本轮计数、重置播放状态），并同步保存设置。
+- 目标 Unit 已全部斩完时不切换、停留在当前 Unit，并显示一次性提示；重难点/复盘会话不显示该入口（无 Unit 语义）。
+
+## 2026-09-03-gist-read-after-write-v3
+
+- 修复平板手动同步报 `patch_failed_422` 的故障链：PATCH 200 成功后，匿名读回命中 GitHub 边缘缓存（约 60 秒 s-maxage）返回写入前旧内容，被误判为"远端并发变化"后重发相同 PATCH，第二次 PATCH 因旧备份删除条目与已变化的 Gist 状态冲突被 422 拒绝。
+- PATCH 2xx 响应体现在直接作为"写入收据"：响应内 sync.json 的业务 hash 与上传 hash 一致即确认成功，不再依赖可能陈旧的读回。
+- 写后确认（patch.verify / recheck / 不确定补 confirm）强制携带 PAT 读取；仅 PAT 失效/只读（401/403）时回退匿名读，网络失败不降级。
+- 读回 hash 不一致不再转成 `preflightChanged`，同一次同步内绝不因旧读结果重发相同业务 PATCH；未确认时进入 `patch_result_unknown` 保留本地 dirty 并稍后自动核验。
+- 过期 `sync.backup.*` 保留期删除从业务 PATCH 中解耦，改为业务写入确认成功后 best-effort 清理；清理失败只记警告，不影响同步结果。
+- 422 诊断增强：审计新增 `sync:patch_rejected`，包含 GitHub message/errors 安全摘要与本次 PATCH 的文件操作清单（仅文件名，不含 payload 与 token）。
+- 新增 `sync_core_test.js` 5 个 read-after-write 回归场景；更新 `final_transport_efficiency_test.js` 至新的"业务 PATCH 零删除条目"契约。
+
 ## 2026-09-02-round-archive-v2
 
 - 修复归档后手动同步可能报 `LOCAL_STORAGE_QUOTA` / `local_backup_write_failed`：根因是历史归档被本地快照、每日备份和覆盖前备份反复整包复制。

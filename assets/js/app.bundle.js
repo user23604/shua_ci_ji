@@ -6,8 +6,8 @@
 /* ===== 00-env.js ===== */
 "use strict";
 
-const APP_VERSION = "2026-09-03-gist-read-after-write-v3";
-const APP_BUILD_ID = "2026-09-03-gist-read-after-write-v3";
+const APP_VERSION = "2026-09-03-flash-unit-quick-switch-v4";
+const APP_BUILD_ID = "2026-09-03-flash-unit-quick-switch-v4";
 
 
 const ACCESS_KEY = "ky2027";
@@ -685,6 +685,8 @@ const state = {
   reviewMode: null,
   setupStatus: "",
   studyStartPending: false,
+  unitSwitchPending: false,
+  unitSwitchNotice: "",
   setupPrimeBookIds: new Set(),
   wakeLock: null,
   playbackPaused: false,
@@ -6078,6 +6080,56 @@ function getStartIndexFromProgress(progress) {
   return 0;
 }
 
+
+// 刷词页内快速切换 Unit：不回设置页，原地重建会话（与 startStudy 相同的会话字段）。
+// 仅普通 Unit 模式可用（复盘/重难点会话没有 Unit 语义，由调用方隐藏入口）。
+async function switchUnitFromFlash(unit) {
+  if (state.view !== "flash" || state.reviewMode) return false;
+  const book = currentBook();
+  const targetUnit = Number(unit);
+  const previousUnit = Number(state.settings.unit);
+  if (!Number.isFinite(targetUnit) || targetUnit < 1 || targetUnit > book.totalUnits || targetUnit === previousUnit) return false;
+  if (state.unitSwitchPending) return false;
+  state.unitSwitchPending = true;
+  try {
+    commitCurrentCardActivity();
+    clearTimers();
+    await ensureWords(book);
+    const unitWords = buildStudyUnitWords(book.id, targetUnit);
+    if (!unitWords.length) {
+      // 目标 Unit 已全部斩完：不切换，留在当前 Unit，并给出一次性提示。
+      state.unitSwitchNotice = `${unitDisplayLabel(book, targetUnit)} 没有未斩词条，仍停留在 ${unitDisplayLabel(book, previousUnit)}`;
+      appendAuditEvent({ type: "study:unit_switch_blocked", message: "targetUnit=" + targetUnit + " remaining=0" });
+      renderFlashcard({ progressReason: "unit_switch_blocked" });
+      return false;
+    }
+    state.settings.unit = targetUnit;
+    state.settings.unknownScope = "unit";
+    persistSettings();
+    state.unitSwitchNotice = "";
+    state.roundReturn = null;
+    state.playbackPaused = false;
+    state.unitWords = unitWords;
+    state.currentIndex = getStartIndex(book.id);
+    state.groupStats = createGroupStats();
+    state.undoWordId = null;
+    state.navQueue = [];
+    if (typeof resetCardTransitionState === "function") resetCardTransitionState();
+    else state.transitioning = false;
+    state.markFeedback = "";
+    state.currentWordId = null;
+    state.currentWordRecorded = false;
+    state.showZh = false;
+    state.awaitingManualZhReveal = state.settings.manualZhReveal === true;
+    touchStudyActivity("unit_switch");
+    appendAuditEvent({ type: "study:unit_switched", message: "from=" + previousUnit + " to=" + targetUnit + " remaining=" + unitWords.length + " startIndex=" + state.currentIndex });
+    renderFlashcard({ touchProgress: true, progressReason: "unit_switch" });
+    return true;
+  } finally {
+    state.unitSwitchPending = false;
+  }
+}
+
 /* ===== 16a-study-session.js ===== */
 "use strict";
 
@@ -6288,6 +6340,13 @@ function renderFlashcard({ touchProgress = false, progressReason = "render" } = 
   const resumeFeedback = state.resumeFeedback;
   const markFeedback = state.markFeedback;
   const modeSuffix = state.reviewMode?.mode === "unknown-archive" ? " · 重难点词库" : state.reviewMode ? " · 复盘" : "";
+  const unitSwitchNotice = state.unitSwitchNotice;
+  state.unitSwitchNotice = "";
+  const unitQuickMarkup = !state.reviewMode ? `
+          <label class="unit-quick">
+            <span>快速切 Unit</span>
+            <select class="select select--compact" id="unitQuickSelect" aria-label="快速切换 Unit">${renderUnitQuickOptions(book)}</select>
+          </label>` : "";
   state.cardEnterDirection = "";
   state.resumeFeedback = false;
   state.markFeedback = "";
@@ -6304,6 +6363,8 @@ function renderFlashcard({ touchProgress = false, progressReason = "render" } = 
           <div class="progress-title">${escapeHtml(state.reviewMode?.label || bookContextLabel(book, word.unit))}</div>
           <div class="progress-main">${escapeHtml(unitDisplayLabel(book, word.unit))} [${state.currentIndex + 1}/${state.unitWords.length}]</div>
           <div class="progress-sub">词频 ${word.freq} · ID ${word.id}${escapeHtml(modeSuffix)}</div>
+          ${unitQuickMarkup}
+          ${unitSwitchNotice ? `<div class="unit-switch-notice" role="status">${escapeHtml(unitSwitchNotice)}</div>` : ""}
           <div class="live-counter" aria-label="本轮实时计数">
             <span>扫过 <strong>${state.groupStats.seen}</strong></span>
             <span>已斩 <strong>${state.groupStats.known}</strong></span>
@@ -6339,6 +6400,12 @@ function renderFlashcard({ touchProgress = false, progressReason = "render" } = 
     renderSetup();
     autoPushToGist();
   });
+  const unitQuickSelect = document.getElementById("unitQuickSelect");
+  if (unitQuickSelect) {
+    unitQuickSelect.addEventListener("change", (event) => {
+      switchUnitFromFlash(Number(event.target.value));
+    });
+  }
   document.getElementById("statsBtn").addEventListener("click", openStats);
   document.getElementById("archiveBtn").addEventListener("click", openArchive);
   document.getElementById("manualModeBtn").addEventListener("click", toggleManualModeFromFlash);
@@ -6427,6 +6494,26 @@ function gesture(symbol, label) {
 
 function undoLabelForMark(kind) {
   return kind === "known" ? "撤销上滑" : "撤销下滑";
+}
+
+
+// 快速切 Unit 下拉选项：与设置页同源的 Unit 列表，附剩余未斩数，便于直接挑选。
+// 每张卡片都会重渲染，这里必须单次遍历词表统计，禁止逐 Unit 重复过滤/读 marks。
+function renderUnitQuickOptions(book) {
+  const currentUnit = Number(state.settings.unit);
+  const knownIds = new Set(loadMarks(book.id).known.map(Number));
+  const remainingByUnit = {};
+  state.words.forEach(function(word) {
+    if (!knownIds.has(Number(word.id))) {
+      remainingByUnit[word.unit] = (remainingByUnit[word.unit] || 0) + 1;
+    }
+  });
+  const options = [];
+  Array.from({ length: book.totalUnits }, (_, index) => index + 1).forEach((unit) => {
+    const selected = unit === currentUnit ? " selected" : "";
+    options.push(`<option value="${unit}"${selected}>${escapeHtml(unitDisplayLabel(book, unit))} · 剩 ${remainingByUnit[unit] || 0}</option>`);
+  });
+  return options.join("");
 }
 
 
